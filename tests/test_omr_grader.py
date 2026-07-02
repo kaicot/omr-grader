@@ -129,6 +129,52 @@ def test_detect_marked_index_multi():
     assert result == [1, 3], f"result={result}"
 
 
+def _render_template_page_gray(zoom=og.ZOOM):
+    img = _render_template_page(zoom)
+    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+
+def test_find_table_border_on_clean_render():
+    img_bgr = _render_template_page_gray()
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    corners = og.find_table_border(gray)
+    assert corners is not None
+    expected_tl = (og.TABLE_BORDER_PT[0] * og.ZOOM, og.TABLE_BORDER_PT[1] * og.ZOOM)
+    assert abs(corners[0][0] - expected_tl[0]) < 15
+    assert abs(corners[0][1] - expected_tl[1]) < 15
+
+
+def test_align_sheet_recovers_rotated_scan():
+    img_bgr = _render_template_page_gray()
+    h, w = img_bgr.shape[:2]
+    # 스캐너에 종이가 살짝 삐뚤게 놓인 상황을 흉내: 2도 회전 + 여백 추가
+    canvas = cv2.copyMakeBorder(img_bgr, 80, 80, 80, 80, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    ch, cw = canvas.shape[:2]
+    M = cv2.getRotationMatrix2D((cw / 2, ch / 2), 2.0, 1.0)
+    rotated = cv2.warpAffine(canvas, M, (cw, ch), borderValue=(255, 255, 255))
+
+    aligned = og.align_sheet(rotated)
+    assert aligned.shape[0] == int(og.PAGE_H_PT * og.ZOOM)
+    assert aligned.shape[1] == int(og.PAGE_W_PT * og.ZOOM)
+
+    # 정렬된 이미지에서 다시 테두리를 검출하면 캔버스 기준 좌표와 거의 일치해야 함
+    aligned_gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+    corners = og.find_table_border(aligned_gray)
+    assert corners is not None
+    expected_tl = (og.TABLE_BORDER_PT[0] * og.ZOOM, og.TABLE_BORDER_PT[1] * og.ZOOM)
+    assert abs(corners[0][0] - expected_tl[0]) < 20
+    assert abs(corners[0][1] - expected_tl[1]) < 20
+
+
+def test_align_sheet_raises_on_blank_image():
+    blank = np.full((500, 700, 3), 255, dtype=np.uint8)
+    try:
+        og.align_sheet(blank)
+        assert False, "AlignmentError가 발생해야 함"
+    except og.AlignmentError:
+        pass
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -144,6 +190,9 @@ ALL_TESTS = [
     test_detect_marked_index_blank,
     test_detect_marked_index_single,
     test_detect_marked_index_multi,
+    test_find_table_border_on_clean_render,
+    test_align_sheet_recovers_rotated_scan,
+    test_align_sheet_raises_on_blank_image,
 ]
 
 if __name__ == "__main__":

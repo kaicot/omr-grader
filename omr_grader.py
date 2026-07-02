@@ -132,3 +132,81 @@ def detect_marked_index(fill_ratios, threshold=FILL_RATIO_MARK):
     if len(marked) == 1:
         return marked[0]
     return marked
+
+
+class AlignmentError(Exception):
+    pass
+
+
+def _order_corners(pts):
+    s = pts.sum(axis=1)
+    diff = np.diff(pts, axis=1).flatten()
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    tr = pts[np.argmin(diff)]
+    bl = pts[np.argmax(diff)]
+    return np.array([tl, tr, br, bl], dtype=np.float32)
+
+
+def find_table_border(gray_img):
+    """스캔 이미지에서 답안표를 감싸는 굵은 외곽 테두리 사각형의
+    네 모서리(tl, tr, br, bl)를 검출. 못 찾으면 None."""
+    blur = cv2.GaussianBlur(gray_img, (5, 5), 0)
+    _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    kernel = np.ones((5, 5), np.uint8)
+    dilated = cv2.dilate(binary, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    target_ratio = (TABLE_BORDER_PT[2] - TABLE_BORDER_PT[0]) / (
+        TABLE_BORDER_PT[3] - TABLE_BORDER_PT[1]
+    )
+    img_area = gray_img.shape[0] * gray_img.shape[1]
+
+    best = None
+    best_area = 0
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < img_area * 0.15:
+            continue
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) != 4:
+            continue
+        pts = approx.reshape(4, 2).astype(np.float32)
+        ordered = _order_corners(pts)
+        w = np.linalg.norm(ordered[1] - ordered[0])
+        h = np.linalg.norm(ordered[3] - ordered[0])
+        if h == 0:
+            continue
+        ratio_error = abs((w / h) - target_ratio) / target_ratio
+        if ratio_error > 0.15:
+            continue
+        if area > best_area:
+            best_area = area
+            best = ordered
+    return best
+
+
+def align_sheet(img_bgr):
+    """스캔 이미지를 답안표 테두리 기준으로 투시 보정해
+    (PAGE_H_PT*ZOOM, PAGE_W_PT*ZOOM) 크기의 정렬된 이미지로 반환."""
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    corners = find_table_border(gray)
+    if corners is None:
+        raise AlignmentError("답안표 테두리를 찾지 못했습니다")
+
+    dst = np.array(
+        [
+            [TABLE_BORDER_PT[0] * ZOOM, TABLE_BORDER_PT[1] * ZOOM],
+            [TABLE_BORDER_PT[2] * ZOOM, TABLE_BORDER_PT[1] * ZOOM],
+            [TABLE_BORDER_PT[2] * ZOOM, TABLE_BORDER_PT[3] * ZOOM],
+            [TABLE_BORDER_PT[0] * ZOOM, TABLE_BORDER_PT[3] * ZOOM],
+        ],
+        dtype=np.float32,
+    )
+    M = cv2.getPerspectiveTransform(corners, dst)
+    out_size = (int(PAGE_W_PT * ZOOM), int(PAGE_H_PT * ZOOM))
+    return cv2.warpPerspective(img_bgr, M, out_size, borderValue=(255, 255, 255))
