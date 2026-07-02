@@ -473,22 +473,28 @@ class App:
         self.done_queue = queue.Queue()
 
         tk.Button(root, text="답안지 폴더 선택", command=self.pick_folder).pack(fill="x", padx=10, pady=5)
-        tk.Button(root, text="답안지 파일 선택(개별)", command=self.pick_files).pack(fill="x", padx=10, pady=5)
+        tk.Button(
+            root, text="답안지 파일 선택(PDF, JPG, PNG)", command=self.pick_files
+        ).pack(fill="x", padx=10, pady=5)
         self.scan_label = tk.Label(root, text="선택된 답안지: 없음")
         self.scan_label.pack(padx=10, anchor="w")
 
-        tk.Button(root, text="정답표 파일 선택", command=self.pick_key).pack(fill="x", padx=10, pady=5)
+        tk.Button(
+            root, text="정답표 파일 선택(XLSX, CSV)", command=self.pick_key
+        ).pack(fill="x", padx=10, pady=5)
         self.key_label = tk.Label(root, text="정답표: 없음")
         self.key_label.pack(padx=10, anchor="w")
 
-        tk.Button(root, text="채점 시작", command=self.start).pack(fill="x", padx=10, pady=10)
+        tk.Button(
+            root, text="채점 시작(채점결과 저장 폴더 선택)", command=self.start
+        ).pack(fill="x", padx=10, pady=10)
 
         self.log_text = tk.Text(root, height=12, width=60)
         self.log_text.pack(padx=10, pady=5)
 
         tk.Label(
             root,
-            text="동명대학교 작업치료학과 조승현 (kaic21@gmail.com)",
+            text="제작: 조승현(kaic21@gmail.com)",
             fg="gray40",
         ).pack(pady=(0, 5))
 
