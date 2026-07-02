@@ -57,16 +57,17 @@ def load_answer_key(path):
             reader = csv.reader(f)
             next(reader, None)  # 헤더 skip
             for row in reader:
-                if not row:
+                if not row or row[0] == "" or len(row) < 2 or row[1] == "":
                     continue
                 rows.append((int(row[0]), int(row[1])))
     else:
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
         ws = wb.active
         for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[0] is None:
+            if row[0] is None or row[1] is None:
                 continue
             rows.append((int(row[0]), int(row[1])))
+        wb.close()
 
     key = dict(rows)
     expected = set(range(1, len(key) + 1))
@@ -192,15 +193,40 @@ def find_table_border(gray_img):
     return best
 
 
+_ROTATIONS = (None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+# 표지 제목("동명대학교...", "20__년 중간·기말고사") 텍스트가 찍히는 영역(pt 좌표).
+# 답안표 테두리는 180도 회전해도 사각형 비율이 같아 그것만으로는 상하 반전을 구분할 수
+# 없으므로, 진하게 인쇄된 이 표지 텍스트 영역과 그 반대편(대각선 대칭 위치)의 잉크
+# 밀도를 비교해 상하가 뒤집혔는지 판별한다.
+_HEADER_TEXT_PT = (41.83, 40.06, 200.71, 82.9)
+
+
+def _is_upside_down(aligned_gray):
+    x0, y0, x1, y1 = (int(c * ZOOM) for c in _HEADER_TEXT_PT)
+    header_patch = aligned_gray[y0:y1, x0:x1]
+
+    mx0 = PAGE_W_PT - _HEADER_TEXT_PT[2]
+    my0 = PAGE_H_PT - _HEADER_TEXT_PT[3]
+    mx1 = PAGE_W_PT - _HEADER_TEXT_PT[0]
+    my1 = PAGE_H_PT - _HEADER_TEXT_PT[1]
+    mx0, my0, mx1, my1 = (int(c * ZOOM) for c in (mx0, my0, mx1, my1))
+    mirror_patch = aligned_gray[my0:my1, mx0:mx1]
+
+    if header_patch.size == 0 or mirror_patch.size == 0:
+        return False
+
+    header_dark = np.mean(header_patch < DARK_THRESHOLD)
+    mirror_dark = np.mean(mirror_patch < DARK_THRESHOLD)
+    return mirror_dark > header_dark
+
+
 def align_sheet(img_bgr):
     """스캔 이미지를 답안표 테두리 기준으로 투시 보정해
-    (PAGE_H_PT*ZOOM, PAGE_W_PT*ZOOM) 크기의 정렬된 이미지로 반환."""
+    (PAGE_H_PT*ZOOM, PAGE_W_PT*ZOOM) 크기의 정렬된 이미지로 반환.
+    스캐너가 답안지를 90/180/270도 회전된 방향으로 스캔한 경우까지 시도하고,
+    표지 텍스트 위치를 근거로 상하 반전 여부까지 보정한다."""
     try:
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        corners = find_table_border(gray)
-        if corners is None:
-            raise AlignmentError("답안표 테두리를 찾지 못했습니다")
-
         dst = np.array(
             [
                 [TABLE_BORDER_PT[0] * ZOOM, TABLE_BORDER_PT[1] * ZOOM],
@@ -210,9 +236,32 @@ def align_sheet(img_bgr):
             ],
             dtype=np.float32,
         )
-        M = cv2.getPerspectiveTransform(corners, dst)
         out_size = (int(PAGE_W_PT * ZOOM), int(PAGE_H_PT * ZOOM))
-        return cv2.warpPerspective(img_bgr, M, out_size, borderValue=(255, 255, 255))
+
+        for rotate_code in _ROTATIONS:
+            candidate = img_bgr if rotate_code is None else cv2.rotate(img_bgr, rotate_code)
+            gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
+            corners = find_table_border(gray)
+            if corners is None:
+                continue
+            M = cv2.getPerspectiveTransform(corners, dst)
+            aligned = cv2.warpPerspective(candidate, M, out_size, borderValue=(255, 255, 255))
+            aligned_gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+            if _is_upside_down(aligned_gray):
+                # 캔버스 전체를 뒤집으면 이미 dst 위치에 맞춰 배치된 표가 반대쪽
+                # 구석으로 밀려나므로, 원본 후보를 180도 돌려 테두리 검출/정렬을
+                # 처음부터 다시 수행한다.
+                candidate180 = cv2.rotate(candidate, cv2.ROTATE_180)
+                gray180 = cv2.cvtColor(candidate180, cv2.COLOR_BGR2GRAY)
+                corners180 = find_table_border(gray180)
+                if corners180 is not None:
+                    M180 = cv2.getPerspectiveTransform(corners180, dst)
+                    aligned = cv2.warpPerspective(
+                        candidate180, M180, out_size, borderValue=(255, 255, 255)
+                    )
+            return aligned
+
+        raise AlignmentError("답안표 테두리를 찾지 못했습니다")
     except AlignmentError:
         raise
     except Exception as e:

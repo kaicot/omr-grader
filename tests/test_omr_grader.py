@@ -66,6 +66,25 @@ def test_load_answer_key_csv():
         assert key[50] == 1
 
 
+def test_load_answer_key_xlsx_ignores_trailing_blank_answers():
+    # 100문항 템플릿에 35문항만 채우고 나머지 정답 칸은 빈칸으로 둔 실제 사례 재현
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "key.xlsx")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["문항번호", "정답"])
+        for q in range(1, 36):
+            ws.append([q, (q % 5) + 1])
+        for q in range(36, 101):
+            ws.append([q, None])
+        wb.save(path)
+
+        key = og.load_answer_key(path)
+        assert len(key) == 35
+        assert key[35] == (35 % 5) + 1
+        assert 36 not in key
+
+
 def test_load_answer_key_missing_question_raises():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "key.csv")
@@ -167,6 +186,23 @@ def test_align_sheet_recovers_rotated_scan():
     assert abs(corners[0][1] - expected_tl[1]) < 20
 
 
+def test_align_sheet_recovers_90_degree_rotated_scan():
+    # 실제 스캐너가 답안지를 90도 회전된 방향(세로형)으로 스캔한 경우 재현
+    img_bgr = _render_template_page_gray()
+    rotated = cv2.rotate(img_bgr, cv2.ROTATE_90_CLOCKWISE)
+
+    aligned = og.align_sheet(rotated)
+    assert aligned.shape[0] == int(og.PAGE_H_PT * og.ZOOM)
+    assert aligned.shape[1] == int(og.PAGE_W_PT * og.ZOOM)
+
+    aligned_gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+    corners = og.find_table_border(aligned_gray)
+    assert corners is not None
+    expected_tl = (og.TABLE_BORDER_PT[0] * og.ZOOM, og.TABLE_BORDER_PT[1] * og.ZOOM)
+    assert abs(corners[0][0] - expected_tl[0]) < 20
+    assert abs(corners[0][1] - expected_tl[1]) < 20
+
+
 def test_align_sheet_raises_on_blank_image():
     blank = np.full((500, 700, 3), 255, dtype=np.uint8)
     try:
@@ -181,6 +217,29 @@ def _draw_filled_bubble(img_bgr, cx_pt, cy_pt, zoom=og.ZOOM, radius_pt=og.BUBBLE
     cy_px = int(cy_pt * zoom)
     r_px = int(radius_pt * zoom)
     cv2.circle(img_bgr, (cx_px, cy_px), r_px, (0, 0, 0), -1)
+
+
+def test_recognize_sheet_upside_down_scan_still_reads_correctly():
+    # 실제 스캐너가 답안지를 뒤집힌(180도) 방향으로 스캔한 경우 재현.
+    # 테두리 사각형만으로는 상하가 뒤집힌 것을 구분할 수 없으므로,
+    # 뒤집힌 채로 인식하면 학번/답안이 전부 엉뚱하게 나온다 - 이를 방지해야 한다.
+    canonical = _render_template_page()
+    img_bgr = cv2.cvtColor(canonical, cv2.COLOR_RGB2BGR)
+
+    student_id = "87654321"
+    for col, ch in enumerate(student_id):
+        cx, cy = og.id_bubble_center_pt(col, int(ch))
+        _draw_filled_bubble(img_bgr, cx, cy)
+
+    cx, cy = og.answer_bubble_center_pt(1, 3)
+    _draw_filled_bubble(img_bgr, cx, cy)
+
+    flipped = cv2.rotate(img_bgr, cv2.ROTATE_180)
+
+    result = og.recognize_sheet(flipped, num_questions=1)
+
+    assert result["student_id"] == "87654321", result["student_id"]
+    assert result["answers"][1] == 3, result["answers"]
 
 
 def test_recognize_sheet_end_to_end():
@@ -324,6 +383,7 @@ ALL_TESTS = [
     test_id_bubble_center_col0_digit0,
     test_id_bubble_center_col7_digit9,
     test_load_answer_key_csv,
+    test_load_answer_key_xlsx_ignores_trailing_blank_answers,
     test_load_answer_key_missing_question_raises,
     test_load_scan_images_single_page_pdf,
     test_load_scan_images_image_file,
@@ -334,7 +394,9 @@ ALL_TESTS = [
     test_detect_marked_index_multi,
     test_find_table_border_on_clean_render,
     test_align_sheet_recovers_rotated_scan,
+    test_align_sheet_recovers_90_degree_rotated_scan,
     test_align_sheet_raises_on_blank_image,
+    test_recognize_sheet_upside_down_scan_still_reads_correctly,
     test_recognize_sheet_end_to_end,
     test_recognize_sheet_raises_alignment_error_on_blank,
     test_grade_sheet_basic,
