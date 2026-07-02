@@ -486,6 +486,12 @@ class App:
         self.log_text = tk.Text(root, height=12, width=60)
         self.log_text.pack(padx=10, pady=5)
 
+        tk.Label(
+            root,
+            text="동명대학교 작업치료학과 조승현 (kaic21@gmail.com)",
+            fg="gray40",
+        ).pack(pady=(0, 5))
+
         self.root.after(200, self._poll_log_queue)
 
     def pick_folder(self):
@@ -548,6 +554,13 @@ class App:
 def main():
     root = tk.Tk()
     App(root)
+    root.update()
+    try:
+        import pyi_splash
+
+        pyi_splash.close()
+    except ImportError:
+        pass
     root.mainloop()
 
 

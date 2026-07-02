@@ -8,3 +8,7 @@ __pycache__/
 Scan_0001.pdf
 생리학정답.xlsx
 정답양식.xlsx
+
+# 프로그램 실행 결과물 (어디서 실행하든 생기는 출력 파일)
+debug/
+채점결과.xlsx
