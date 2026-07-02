@@ -43,7 +43,6 @@ A 2-column file, question number then correct answer (1–5):
 Requires Python 3.13 with `numpy`, `opencv-python-headless`, `openpyxl`, `Pillow`, `PyMuPDF`, `pyinstaller` (tkinter is stdlib).
 
 ```bash
-python tests/test_omr_grader.py                 # run the test suite
 python omr_grader.py                             # run the GUI directly
 python -m PyInstaller --onefile --windowed --name omr_grader --splash splash.png omr_grader.py
 ```
@@ -93,7 +92,6 @@ python -m PyInstaller --onefile --windowed --name omr_grader --splash splash.png
 Python 3.13과 `numpy`, `opencv-python-headless`, `openpyxl`, `Pillow`, `PyMuPDF`, `pyinstaller`가 필요합니다 (tkinter는 표준 라이브러리).
 
 ```bash
-python tests/test_omr_grader.py                 # 테스트 실행
 python omr_grader.py                             # GUI 직접 실행
 python -m PyInstaller --onefile --windowed --name omr_grader --splash splash.png omr_grader.py
 ```
