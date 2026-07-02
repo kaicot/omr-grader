@@ -96,7 +96,11 @@ def load_scan_images(paths):
                 label = f"{base}_p{i + 1}"
                 results.append((label, img_bgr))
         else:
-            img_bgr = cv2.imread(p)
+            # cv2.imread는 Windows에서 경로에 한글 등 비ASCII 문자가 있으면
+            # 예외 없이 조용히 실패한다. np.fromfile + cv2.imdecode는
+            # 파일을 파이썬 자체 API로 열기 때문에 이 문제가 없다.
+            data = np.fromfile(p, dtype=np.uint8)
+            img_bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
             if img_bgr is None:
                 raise ValueError(f"이미지를 읽을 수 없습니다: {p}")
             label = os.path.basename(p)
@@ -395,7 +399,13 @@ def save_debug_overlay(aligned_img_bgr, recognition, out_path):
         # 미응답/중복은 원으로 표시할 단일 위치가 없으므로 그리지 않음
         # (엑셀의 확인필요 열 + 이 오버레이의 빨간 원 부재 자체가 "이상함" 신호)
 
-    cv2.imwrite(out_path, overlay)
+    # cv2.imwrite는 Windows에서 경로에 한글 등 비ASCII 문자가 있으면 예외 없이
+    # 조용히 실패한다(파일이 안 만들어지는데 에러도 없음). cv2.imencode로 메모리
+    # 상에서 인코딩한 뒤 파이썬 표준 파일 API로 쓰면 이 문제가 없다.
+    ok, buf = cv2.imencode(".png", overlay)
+    if ok:
+        with open(out_path, "wb") as f:
+            f.write(buf.tobytes())
 
 
 def run_pipeline(scan_paths, answer_key_path, output_dir):
