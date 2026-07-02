@@ -3,6 +3,9 @@
 import csv
 import os
 
+import cv2
+import fitz
+import numpy as np
 import openpyxl
 
 PAGE_W_PT = 841.0
@@ -67,3 +70,29 @@ def load_answer_key(path):
             f"정답표 문항번호가 1~{len(key)}로 연속되어 있지 않습니다: {sorted(key.keys())}"
         )
     return key
+
+
+def load_scan_images(paths):
+    """이미지 파일(jpg/png) 또는 멀티페이지 PDF 경로 목록을 받아
+    (라벨, BGR 이미지) 목록으로 변환. PDF는 페이지마다 한 학생으로 분리."""
+    results = []
+    for p in paths:
+        ext = os.path.splitext(p)[1].lower()
+        if ext == ".pdf":
+            doc = fitz.open(p)
+            base = os.path.splitext(os.path.basename(p))[0]
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(matrix=fitz.Matrix(ZOOM, ZOOM), alpha=False)
+                img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                    pix.height, pix.width, 3
+                )
+                img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                label = f"{base}_p{i + 1}"
+                results.append((label, img_bgr))
+        else:
+            img_bgr = cv2.imread(p)
+            if img_bgr is None:
+                raise ValueError(f"이미지를 읽을 수 없습니다: {p}")
+            label = os.path.basename(p)
+            results.append((label, img_bgr))
+    return results

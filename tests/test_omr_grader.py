@@ -6,6 +6,17 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import omr_grader as og
+import fitz
+import numpy as np
+import cv2
+
+
+def _render_template_page(zoom=og.ZOOM):
+    doc = fitz.open("OCR100.pdf")
+    page = doc[0]
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+    return img.copy()
 
 
 def test_answer_bubble_center_q1_option1():
@@ -69,6 +80,29 @@ def test_load_answer_key_missing_question_raises():
             pass
 
 
+def test_load_scan_images_single_page_pdf():
+    with tempfile.TemporaryDirectory() as d:
+        doc = fitz.open("OCR100.pdf")
+        out_path = os.path.join(d, "scan.pdf")
+        doc.save(out_path)
+        results = og.load_scan_images([out_path])
+        assert len(results) == 1
+        label, img = results[0]
+        assert img.ndim == 3 and img.shape[2] == 3
+
+
+def test_load_scan_images_image_file():
+    with tempfile.TemporaryDirectory() as d:
+        img = _render_template_page()
+        path = os.path.join(d, "student1.png")
+        cv2.imwrite(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        results = og.load_scan_images([path])
+        assert len(results) == 1
+        label, loaded = results[0]
+        assert label == "student1.png"
+        assert loaded.shape[:2] == img.shape[:2]
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -77,6 +111,8 @@ ALL_TESTS = [
     test_id_bubble_center_col7_digit9,
     test_load_answer_key_csv,
     test_load_answer_key_missing_question_raises,
+    test_load_scan_images_single_page_pdf,
+    test_load_scan_images_image_file,
 ]
 
 if __name__ == "__main__":
