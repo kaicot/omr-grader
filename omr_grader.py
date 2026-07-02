@@ -396,3 +396,111 @@ def run_pipeline(scan_paths, answer_key_path, output_dir):
 # 100장 단위 배치에서도 각 정렬은 수십ms 수준이라 체감 성능 문제는 없음 — ponytail: 중복 호출
 # 제거보다 지금은 이 정도 단순함이 낫다. 느려지면 그때 recognize_sheet가 정렬된 이미지를
 # 받도록 인터페이스를 바꾼다.
+
+
+import queue
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+
+def _run_pipeline_worker(scan_paths, key_path, output_dir, log_queue, done_queue):
+    try:
+        result_path = run_pipeline(scan_paths, key_path, output_dir, )
+        log_queue.put(f"완료: {result_path}")
+        done_queue.put(("ok", result_path))
+    except Exception as e:  # noqa: BLE001 - GUI 최상위 경계, 사용자에게 그대로 보여줌
+        log_queue.put(f"오류: {e}")
+        done_queue.put(("error", str(e)))
+
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("OMR 답안지 채점")
+        self.scan_paths = []
+        self.key_path = None
+        self.log_queue = queue.Queue()
+        self.done_queue = queue.Queue()
+
+        tk.Button(root, text="답안지 폴더 선택", command=self.pick_folder).pack(fill="x", padx=10, pady=5)
+        tk.Button(root, text="답안지 파일 선택(개별)", command=self.pick_files).pack(fill="x", padx=10, pady=5)
+        self.scan_label = tk.Label(root, text="선택된 답안지: 없음")
+        self.scan_label.pack(padx=10, anchor="w")
+
+        tk.Button(root, text="정답표 파일 선택", command=self.pick_key).pack(fill="x", padx=10, pady=5)
+        self.key_label = tk.Label(root, text="정답표: 없음")
+        self.key_label.pack(padx=10, anchor="w")
+
+        tk.Button(root, text="채점 시작", command=self.start).pack(fill="x", padx=10, pady=10)
+
+        self.log_text = tk.Text(root, height=12, width=60)
+        self.log_text.pack(padx=10, pady=5)
+
+        self.root.after(200, self._poll_log_queue)
+
+    def pick_folder(self):
+        folder = filedialog.askdirectory(title="답안지 폴더 선택")
+        if folder:
+            self.scan_paths = [
+                os.path.join(folder, f)
+                for f in os.listdir(folder)
+                if f.lower().endswith((".png", ".jpg", ".jpeg", ".pdf"))
+            ]
+            self.scan_label.config(text=f"선택된 답안지: {len(self.scan_paths)}개 (폴더: {folder})")
+
+    def pick_files(self):
+        files = filedialog.askopenfilenames(
+            title="답안지 파일 선택",
+            filetypes=[("답안지 파일", "*.png *.jpg *.jpeg *.pdf")],
+        )
+        if files:
+            self.scan_paths = list(files)
+            self.scan_label.config(text=f"선택된 답안지: {len(self.scan_paths)}개")
+
+    def pick_key(self):
+        path = filedialog.askopenfilename(
+            title="정답표 파일 선택", filetypes=[("정답표", "*.xlsx *.csv")]
+        )
+        if path:
+            self.key_path = path
+            self.key_label.config(text=f"정답표: {path}")
+
+    def start(self):
+        if not self.scan_paths:
+            messagebox.showerror("오류", "답안지를 먼저 선택하세요")
+            return
+        if not self.key_path:
+            messagebox.showerror("오류", "정답표를 먼저 선택하세요")
+            return
+        output_dir = filedialog.askdirectory(title="결과를 저장할 폴더 선택")
+        if not output_dir:
+            return
+        self.log_text.insert("end", "채점 시작...\n")
+        threading.Thread(
+            target=_run_pipeline_worker,
+            args=(self.scan_paths, self.key_path, output_dir, self.log_queue, self.done_queue),
+            daemon=True,
+        ).start()
+
+    def _poll_log_queue(self):
+        while not self.log_queue.empty():
+            self.log_text.insert("end", self.log_queue.get() + "\n")
+            self.log_text.see("end")
+        while not self.done_queue.empty():
+            status, msg = self.done_queue.get()
+            if status == "ok":
+                messagebox.showinfo("완료", f"채점 결과: {msg}")
+            else:
+                messagebox.showerror("오류", msg)
+        self.root.after(200, self._poll_log_queue)
+
+
+def main():
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
