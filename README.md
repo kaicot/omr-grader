@@ -49,7 +49,7 @@ python -m PyInstaller --onefile --windowed --name omr_grader --splash splash.png
 
 ### Author
 
-조승현 (kaic21@gmail.com)
+Cho, Seung-Hyun (kaic21@gmail.com)
 
 ---
 
