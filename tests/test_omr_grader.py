@@ -260,6 +260,23 @@ def test_write_result_excel():
         assert fail_ws["A2"].value == "broken.png"
 
 
+def test_save_debug_overlay():
+    canonical = _render_template_page()
+    img_bgr = cv2.cvtColor(canonical, cv2.COLOR_RGB2BGR)
+    recognition = {
+        "student_id": "12345678",
+        "id_flagged_cols": [],
+        "answers": {1: 3, 2: og.BLANK_LABEL},
+        "flagged_questions": [2],
+    }
+    with tempfile.TemporaryDirectory() as d:
+        out_path = os.path.join(d, "s1_debug.png")
+        og.save_debug_overlay(img_bgr, recognition, out_path)
+        assert os.path.exists(out_path)
+        saved = cv2.imread(out_path)
+        assert saved.shape == img_bgr.shape
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -282,6 +299,7 @@ ALL_TESTS = [
     test_recognize_sheet_raises_alignment_error_on_blank,
     test_grade_sheet_basic,
     test_write_result_excel,
+    test_save_debug_overlay,
 ]
 
 if __name__ == "__main__":

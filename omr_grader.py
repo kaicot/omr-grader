@@ -321,3 +321,29 @@ def write_result_excel(path, student_records, answer_key, failed_labels):
         fail_ws.append([label])
 
     wb.save(path)
+
+
+def save_debug_overlay(aligned_img_bgr, recognition, out_path):
+    """정렬된 이미지 위에 인식된 마킹 위치를 원으로 표시해 저장.
+    확인필요로 플래그된 문항/학번 자리는 다른 색으로 강조."""
+    overlay = aligned_img_bgr.copy()
+    radius_px = int(BUBBLE_SIZE / 2 * ZOOM)
+
+    for col in range(8):
+        digit_char = recognition["student_id"][col]
+        color = (0, 0, 255) if col in recognition["id_flagged_cols"] else (0, 200, 0)
+        if digit_char == "?":
+            continue
+        cx, cy = id_bubble_center_pt(col, int(digit_char))
+        cv2.circle(overlay, (int(cx * ZOOM), int(cy * ZOOM)), radius_px, color, 2)
+
+    for q, value in recognition["answers"].items():
+        flagged = q in recognition["flagged_questions"]
+        color = (0, 0, 255) if flagged else (0, 200, 0)
+        if isinstance(value, int):
+            cx, cy = answer_bubble_center_pt(q, value)
+            cv2.circle(overlay, (int(cx * ZOOM), int(cy * ZOOM)), radius_px, color, 2)
+        # 미응답/중복은 원으로 표시할 단일 위치가 없으므로 그리지 않음
+        # (엑셀의 확인필요 열 + 이 오버레이의 빨간 원 부재 자체가 "이상함" 신호)
+
+    cv2.imwrite(out_path, overlay)
