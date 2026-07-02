@@ -103,6 +103,32 @@ def test_load_scan_images_image_file():
         assert loaded.shape[:2] == img.shape[:2]
 
 
+def test_sample_fill_ratio_filled_circle():
+    img = np.full((60, 60), 255, dtype=np.uint8)
+    cv2.circle(img, (30, 30), 10, 0, -1)  # 채워진 검은 원
+    ratio = og.sample_fill_ratio(img, 30, 30, 8)
+    assert ratio > 0.9, f"ratio={ratio}"
+
+
+def test_sample_fill_ratio_blank():
+    img = np.full((60, 60), 255, dtype=np.uint8)
+    ratio = og.sample_fill_ratio(img, 30, 30, 8)
+    assert ratio < 0.05, f"ratio={ratio}"
+
+
+def test_detect_marked_index_blank():
+    assert og.detect_marked_index([0.02, 0.03, 0.01, 0.02, 0.02]) is None
+
+
+def test_detect_marked_index_single():
+    assert og.detect_marked_index([0.02, 0.03, 0.85, 0.02, 0.02]) == 2
+
+
+def test_detect_marked_index_multi():
+    result = og.detect_marked_index([0.02, 0.80, 0.03, 0.78, 0.02])
+    assert result == [1, 3], f"result={result}"
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -113,6 +139,11 @@ ALL_TESTS = [
     test_load_answer_key_missing_question_raises,
     test_load_scan_images_single_page_pdf,
     test_load_scan_images_image_file,
+    test_sample_fill_ratio_filled_circle,
+    test_sample_fill_ratio_blank,
+    test_detect_marked_index_blank,
+    test_detect_marked_index_single,
+    test_detect_marked_index_multi,
 ]
 
 if __name__ == "__main__":

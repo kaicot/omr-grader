@@ -25,6 +25,9 @@ ID_ROW_PITCH = 18.7033
 
 TABLE_BORDER_PT = (215.285, 39.579, 797.847, 546.666)
 
+DARK_THRESHOLD = 128
+FILL_RATIO_MARK = 0.35
+
 
 def answer_bubble_center_pt(qnum, option):
     """qnum: 1~100, option: 1~5. 반환: (x, y) pt 좌표."""
@@ -96,3 +99,36 @@ def load_scan_images(paths):
             label = os.path.basename(p)
             results.append((label, img_bgr))
     return results
+
+
+def sample_fill_ratio(gray_img, cx_px, cy_px, radius_px):
+    """(cx_px, cy_px) 중심, radius_px 반지름의 원형 영역에서
+    DARK_THRESHOLD보다 어두운 픽셀의 비율(0~1)을 반환."""
+    x0 = max(int(cx_px - radius_px), 0)
+    x1 = min(int(cx_px + radius_px) + 1, gray_img.shape[1])
+    y0 = max(int(cy_px - radius_px), 0)
+    y1 = min(int(cy_px + radius_px) + 1, gray_img.shape[0])
+    patch = gray_img[y0:y1, x0:x1]
+    if patch.size == 0:
+        return 0.0
+
+    yy, xx = np.ogrid[: patch.shape[0], : patch.shape[1]]
+    local_cx = cx_px - x0
+    local_cy = cy_px - y0
+    mask = (xx - local_cx) ** 2 + (yy - local_cy) ** 2 <= radius_px ** 2
+    pixels = patch[mask]
+    if pixels.size == 0:
+        return 0.0
+    dark = np.count_nonzero(pixels < DARK_THRESHOLD)
+    return dark / pixels.size
+
+
+def detect_marked_index(fill_ratios, threshold=FILL_RATIO_MARK):
+    """채움 비율 리스트에서 마킹된 칸의 0-based 인덱스를 판정.
+    미응답이면 None, 정확히 하나 마킹되면 그 인덱스, 두 개 이상이면 인덱스 리스트."""
+    marked = [i for i, r in enumerate(fill_ratios) if r >= threshold]
+    if len(marked) == 0:
+        return None
+    if len(marked) == 1:
+        return marked[0]
+    return marked
