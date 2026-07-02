@@ -313,7 +313,7 @@ def test_run_pipeline_end_to_end():
         fail_ws = wb["정렬실패"]
         assert fail_ws["A2"].value == "student_broken.png"
 
-        debug_file = os.path.join(out_dir, "debug", "student_good.png")
+        debug_file = os.path.join(out_dir, "debug", "student_good_png.png")
         assert os.path.exists(debug_file)
 
 

@@ -384,7 +384,7 @@ def run_pipeline(scan_paths, answer_key_path, output_dir):
             }
         )
 
-        safe_name = os.path.splitext(label)[0] + ".png"
+        safe_name = label.replace(".", "_") + ".png"
         save_debug_overlay(aligned, recognition, os.path.join(debug_dir, safe_name))
 
     result_path = os.path.join(output_dir, "채점결과.xlsx")
