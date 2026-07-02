@@ -218,6 +218,14 @@ def test_recognize_sheet_raises_alignment_error_on_blank():
         pass
 
 
+def test_grade_sheet_basic():
+    answers = {1: 3, 2: og.BLANK_LABEL, 3: 5, 4: "중복(1,4)"}
+    key = {1: 3, 2: 1, 3: 2, 4: 1}
+    score, wrong = og.grade_sheet(answers, key)
+    assert score == 1
+    assert wrong == [2, 3, 4]
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -238,6 +246,7 @@ ALL_TESTS = [
     test_align_sheet_raises_on_blank_image,
     test_recognize_sheet_end_to_end,
     test_recognize_sheet_raises_alignment_error_on_blank,
+    test_grade_sheet_basic,
 ]
 
 if __name__ == "__main__":

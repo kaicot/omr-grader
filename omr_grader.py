@@ -268,3 +268,17 @@ def recognize_sheet(img_bgr, num_questions):
         "answers": answers,
         "flagged_questions": flagged_questions,
     }
+
+
+def grade_sheet(answers, answer_key):
+    """인식된 답안과 정답표를 비교해 (점수, 오답문항번호 리스트)를 반환.
+    미응답/중복 등 int가 아닌 답은 항상 오답으로 처리한다."""
+    score = 0
+    wrong = []
+    for q, correct in answer_key.items():
+        given = answers.get(q, BLANK_LABEL)
+        if isinstance(given, int) and given == correct:
+            score += 1
+        else:
+            wrong.append(q)
+    return score, wrong
