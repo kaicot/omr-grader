@@ -7,6 +7,8 @@ import cv2
 import fitz
 import numpy as np
 import openpyxl
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
 
 PAGE_W_PT = 841.0
 PAGE_H_PT = 595.0
@@ -282,3 +284,40 @@ def grade_sheet(answers, answer_key):
         else:
             wrong.append(q)
     return score, wrong
+
+
+WRONG_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+
+def write_result_excel(path, student_records, answer_key, failed_labels):
+    """채점 결과를 엑셀로 저장. 시트 '채점결과'(학생별 1행) + '정렬실패'(실패 파일 목록)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "채점결과"
+
+    qnums = sorted(answer_key.keys())
+    header = ["학번"] + [f"Q{q}" for q in qnums] + ["점수", "오답문항", "확인필요"]
+    ws.append(header)
+
+    for rec in student_records:
+        wrong_set = set(rec["wrong"])
+        row = [rec["student_id"]]
+        for q in qnums:
+            row.append(rec["answers"].get(q, BLANK_LABEL))
+        row.append(rec["score"])
+        row.append(",".join(str(q) for q in rec["wrong"]))
+        flagged = sorted(set(rec["flagged_questions"]))
+        row.append(",".join(f"Q{q}" for q in flagged))
+        ws.append(row)
+
+        r = ws.max_row
+        for i, q in enumerate(qnums):
+            if q in wrong_set:
+                ws.cell(row=r, column=2 + i).fill = WRONG_FILL
+
+    fail_ws = wb.create_sheet("정렬실패")
+    fail_ws.append(["파일명"])
+    for label in failed_labels:
+        fail_ws.append([label])
+
+    wb.save(path)

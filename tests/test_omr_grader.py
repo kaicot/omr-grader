@@ -9,6 +9,7 @@ import omr_grader as og
 import fitz
 import numpy as np
 import cv2
+import openpyxl
 
 
 def _render_template_page(zoom=og.ZOOM):
@@ -226,6 +227,39 @@ def test_grade_sheet_basic():
     assert wrong == [2, 3, 4]
 
 
+def test_write_result_excel():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "result.xlsx")
+        key = {1: 3, 2: 1}
+        records = [
+            {
+                "label": "s1.png",
+                "student_id": "12345678",
+                "answers": {1: 3, 2: og.BLANK_LABEL},
+                "score": 1,
+                "wrong": [2],
+                "flagged_questions": [2],
+                "id_flagged_cols": [],
+            }
+        ]
+        og.write_result_excel(path, records, key, failed_labels=["broken.png"])
+
+        wb = openpyxl.load_workbook(path)
+        ws = wb["채점결과"]
+        header = [c.value for c in ws[1]]
+        assert header == ["학번", "Q1", "Q2", "점수", "오답문항", "확인필요"]
+        row2 = [c.value for c in ws[2]]
+        assert row2[0] == "12345678"
+        assert row2[1] == 3
+        assert row2[2] == og.BLANK_LABEL
+        assert row2[3] == 1
+        assert row2[4] == "2"
+        assert row2[5] == "Q2"
+
+        fail_ws = wb["정렬실패"]
+        assert fail_ws["A2"].value == "broken.png"
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -247,6 +281,7 @@ ALL_TESTS = [
     test_recognize_sheet_end_to_end,
     test_recognize_sheet_raises_alignment_error_on_blank,
     test_grade_sheet_basic,
+    test_write_result_excel,
 ]
 
 if __name__ == "__main__":
