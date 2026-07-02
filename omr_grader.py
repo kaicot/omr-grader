@@ -347,3 +347,52 @@ def save_debug_overlay(aligned_img_bgr, recognition, out_path):
         # (엑셀의 확인필요 열 + 이 오버레이의 빨간 원 부재 자체가 "이상함" 신호)
 
     cv2.imwrite(out_path, overlay)
+
+
+def run_pipeline(scan_paths, answer_key_path, output_dir):
+    """스캔 파일 목록 + 정답표 경로를 받아 채점 엑셀을 생성하고 경로를 반환."""
+    os.makedirs(output_dir, exist_ok=True)
+    debug_dir = os.path.join(output_dir, "debug")
+    os.makedirs(debug_dir, exist_ok=True)
+
+    answer_key = load_answer_key(answer_key_path)
+    num_questions = len(answer_key)
+
+    scans = load_scan_images(scan_paths)
+
+    records = []
+    failed_labels = []
+    for label, img_bgr in scans:
+        try:
+            aligned = align_sheet(img_bgr)
+        except AlignmentError:
+            failed_labels.append(label)
+            continue
+
+        recognition = recognize_sheet(img_bgr, num_questions)
+        score, wrong = grade_sheet(recognition["answers"], answer_key)
+
+        records.append(
+            {
+                "label": label,
+                "student_id": recognition["student_id"],
+                "answers": recognition["answers"],
+                "score": score,
+                "wrong": wrong,
+                "flagged_questions": recognition["flagged_questions"],
+                "id_flagged_cols": recognition["id_flagged_cols"],
+            }
+        )
+
+        safe_name = os.path.splitext(label)[0] + ".png"
+        save_debug_overlay(aligned, recognition, os.path.join(debug_dir, safe_name))
+
+    result_path = os.path.join(output_dir, "채점결과.xlsx")
+    write_result_excel(result_path, records, answer_key, failed_labels)
+    return result_path
+
+
+# 참고: align_sheet를 recognize_sheet 내부에서도 다시 호출하므로 파일마다 정렬이 두 번 일어난다.
+# 100장 단위 배치에서도 각 정렬은 수십ms 수준이라 체감 성능 문제는 없음 — ponytail: 중복 호출
+# 제거보다 지금은 이 정도 단순함이 낫다. 느려지면 그때 recognize_sheet가 정렬된 이미지를
+# 받도록 인터페이스를 바꾼다.

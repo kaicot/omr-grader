@@ -277,6 +277,46 @@ def test_save_debug_overlay():
         assert saved.shape == img_bgr.shape
 
 
+def test_run_pipeline_end_to_end():
+    with tempfile.TemporaryDirectory() as d:
+        key_path = os.path.join(d, "key.csv")
+        with open(key_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["문항번호", "정답"])
+            w.writerow([1, 3])
+            w.writerow([2, 1])
+            w.writerow([3, 2])
+
+        canonical = _render_template_page()
+        img_bgr = cv2.cvtColor(canonical, cv2.COLOR_RGB2BGR)
+        for col, ch in enumerate("11112222"):
+            cx, cy = og.id_bubble_center_pt(col, int(ch))
+            _draw_filled_bubble(img_bgr, cx, cy)
+        for q, opt in ((1, 3), (2, 1), (3, 5)):
+            cx, cy = og.answer_bubble_center_pt(q, opt)
+            _draw_filled_bubble(img_bgr, cx, cy)
+        good_path = os.path.join(d, "student_good.png")
+        cv2.imwrite(good_path, img_bgr)
+
+        blank_path = os.path.join(d, "student_broken.png")
+        cv2.imwrite(blank_path, np.full((500, 700, 3), 255, dtype=np.uint8))
+
+        out_dir = os.path.join(d, "out")
+        result_path = og.run_pipeline([good_path, blank_path], key_path, out_dir)
+
+        wb = openpyxl.load_workbook(result_path)
+        ws = wb["채점결과"]
+        assert ws["A2"].value == "11112222"
+        # 열 구성: A=학번, B=Q1, C=Q2, D=Q3, E=점수 (문항 3개 기준)
+        assert ws["E2"].value == 2  # Q1,Q2 정답, Q3 오답 -> 점수 2
+
+        fail_ws = wb["정렬실패"]
+        assert fail_ws["A2"].value == "student_broken.png"
+
+        debug_file = os.path.join(out_dir, "debug", "student_good.png")
+        assert os.path.exists(debug_file)
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -300,6 +340,7 @@ ALL_TESTS = [
     test_grade_sheet_basic,
     test_write_result_excel,
     test_save_debug_overlay,
+    test_run_pipeline_end_to_end,
 ]
 
 if __name__ == "__main__":
