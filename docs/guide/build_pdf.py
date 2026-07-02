@@ -6,7 +6,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -15,9 +15,13 @@ pdfmetrics.registerFont(TTFont("MalgunBold", "C:/Windows/Fonts/malgunbd.ttf"))
 
 styles = getSampleStyleSheet()
 h1 = ParagraphStyle("h1", fontName="MalgunBold", fontSize=20, spaceAfter=14)
-h2 = ParagraphStyle("h2", fontName="MalgunBold", fontSize=14, spaceBefore=18, spaceAfter=8)
+h2 = ParagraphStyle("h2", fontName="MalgunBold", fontSize=14, spaceBefore=0, spaceAfter=8)
 body = ParagraphStyle("body", fontName="Malgun", fontSize=10.5, leading=16, spaceAfter=8)
 caption = ParagraphStyle("caption", fontName="Malgun", fontSize=9, textColor="#555555", spaceAfter=14)
+warning = ParagraphStyle(
+    "warning", fontName="Malgun", fontSize=10.5, leading=16, spaceAfter=8,
+    backColor="#FFF3CD", borderColor="#F0C36D", borderWidth=1, borderPadding=8,
+)
 
 MAX_WIDTH = 160 * mm
 
@@ -35,17 +39,22 @@ def img(name, caption_text=None):
     return elems
 
 
+def section(title):
+    """큰 제목마다 새 페이지에서 시작하도록 페이지 나누기 + 제목을 붙여 반환."""
+    return [PageBreak(), Paragraph(title, h2)]
+
+
 story = []
 story.append(Paragraph("OMR 답안지 채점 프로그램 사용법", h1))
 story.append(Paragraph("omr_grader.exe 파일 하나만 있으면 됩니다. 아래 순서대로 그대로 따라 하시면 됩니다.", body))
 
-story.append(Paragraph("1. 실행하기", h2))
+story += section("1. 실행하기")
 story.append(Paragraph("omr_grader.exe를 더블클릭하면 몇 초간 아래 로딩 화면이 뜹니다.", body))
 story += img("01-splash.png")
 story.append(Paragraph("로딩이 끝나면 이런 창이 뜹니다. 이게 메인 화면입니다.", body))
 story += img("02-main-empty.png")
 
-story.append(Paragraph("2. 정답표 엑셀 만들기", h2))
+story += section("2. 정답표 엑셀 만들기")
 story.append(Paragraph(
     "채점하려면 먼저 정답표를 엑셀 파일로 만들어야 합니다. 빈 엑셀 파일을 새로 열어서 아래처럼 만드세요.",
     body,
@@ -60,7 +69,7 @@ story.append(Paragraph(
 ))
 story += img("03-answer-key-excel.png", "정답표 엑셀 예시")
 
-story.append(Paragraph("3. 답안지 파일 선택", h2))
+story += section("3. 답안지 파일 선택")
 story.append(Paragraph(
     '메인 화면에서 "답안지 파일 선택(PDF, JPG, PNG)" 버튼을 누릅니다. '
     "(여러 장이 스캔된 PDF 하나를 골라도 되고, 사진 파일 여러 개를 한 번에 골라도 됩니다. "
@@ -71,15 +80,21 @@ story += img("04-pick-scan-file.png")
 story.append(Paragraph('선택하면 화면에 "선택된 답안지: N개"라고 뜹니다.', body))
 story += img("05-main-scan-selected.png")
 
-story.append(Paragraph("4. 정답표 파일 선택", h2))
+story += section("4. 정답표 파일 선택")
 story.append(Paragraph(
     '"정답표 파일 선택(XLSX, CSV)" 버튼을 눌러서, 2번에서 만든 정답표 엑셀을 고릅니다.', body
+))
+story.append(Paragraph(
+    "⚠️ 정답표 엑셀 파일은 반드시 닫아둔 상태여야 합니다. 엑셀에서 그 파일을 열어놓은 채로 진행하면 "
+    "<b>[Errno 13] Permission denied</b> 오류가 뜨면서 실패합니다. 정답표를 다 만들었으면 저장 후 "
+    "엑셀 창을 닫고 진행하세요.",
+    warning,
 ))
 story += img("06-pick-answer-key.png")
 story.append(Paragraph("선택하면 화면에 정답표 파일 경로가 뜹니다.", body))
 story += img("07-main-key-selected.png")
 
-story.append(Paragraph("5. 채점 시작", h2))
+story += section("5. 채점 시작")
 story.append(Paragraph(
     '"채점 시작(채점결과 저장 폴더 선택)" 버튼을 누르면, 결과를 저장할 폴더를 고르는 창이 뜹니다. '
     "원하는 폴더를 고르거나, 새 폴더를 만들어서 선택하세요.",
@@ -90,7 +105,7 @@ story += img("09-output-folder-selected.png")
 story.append(Paragraph("채점이 끝나면 이런 완료 팝업이 뜹니다.", body))
 story += img("10-done-popup.png")
 
-story.append(Paragraph("6. 결과 확인하기", h2))
+story += section("6. 결과 확인하기")
 story.append(Paragraph("방금 고른 저장 폴더를 열어보면 이렇게 두 가지가 생겨 있습니다.", body))
 story += img("11-result-folder.png")
 story.append(Paragraph(
@@ -106,7 +121,7 @@ story.append(Paragraph(
     body,
 ))
 
-story.append(Paragraph("7. debug 폴더 활용법", h2))
+story += section("7. debug 폴더 활용법")
 story.append(Paragraph(
     "debug 폴더 안의 이미지를 열어보면, 원본 답안지 위에 프로그램이 인식한 마킹 위치가 원으로 표시되어 있습니다.",
     body,
