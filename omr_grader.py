@@ -27,8 +27,20 @@ ID_ROW_PITCH = 18.7033
 
 TABLE_BORDER_PT = (215.285, 39.579, 797.847, 546.666)
 
+# ponytail: 실측 보정값. 실제 스캔 2건(서로 다른 스캐너)에서 진짜 빈칸은
+# 채움 비율 0.08~0.22, 진짜 마킹은(연하게 찍힌 경우 포함) 0.30 이상으로
+# 나타났다 — 그 사이 어딘가가 안전한 경계선. 원래 0.35였으나 스캐너에 따라
+# 연하게 찍힌 마킹(0.30~0.35)을 미응답으로 잘못 판정하는 문제가 있어 0.25로
+# 낮췄다. 다른 스캐너에서 오판정이 계속되면 이 값을 다시 조정한다.
+#
+# 다만 절대 기준값 하나만으로는 부족하다: 학번 숫자 "0" 위치는 인쇄된 글자
+# 자체의 잉크 때문에 마킹 안 해도 채움 비율이 0.25~0.30까지 올라가는 경우가
+# 실측 확인됐다 (진짜 마킹의 최저값과 거의 겹침). 그래서 FILL_RATIO_MARGIN을
+# 함께 써서, 기준을 넘은 게 하나뿐이어도 다음으로 높은 값과 차이가 근소하면
+# "확신 없음"으로 보고 애매한 것으로 처리한다 (임의로 추측하지 않음).
 DARK_THRESHOLD = 128
-FILL_RATIO_MARK = 0.35
+FILL_RATIO_MARK = 0.25
+FILL_RATIO_MARGIN = 0.08
 
 
 def answer_bubble_center_pt(qnum, option):
@@ -130,15 +142,21 @@ def sample_fill_ratio(gray_img, cx_px, cy_px, radius_px):
     return dark / pixels.size
 
 
-def detect_marked_index(fill_ratios, threshold=FILL_RATIO_MARK):
+def detect_marked_index(fill_ratios, threshold=FILL_RATIO_MARK, margin=FILL_RATIO_MARGIN):
     """채움 비율 리스트에서 마킹된 칸의 0-based 인덱스를 판정.
-    미응답이면 None, 정확히 하나 마킹되면 그 인덱스, 두 개 이상이면 인덱스 리스트."""
-    marked = [i for i, r in enumerate(fill_ratios) if r >= threshold]
-    if len(marked) == 0:
+    미응답이면 None, 가장 높은 값이 나머지를 margin 이상 앞서면 확신 있는
+    단일 마킹으로 그 인덱스를 반환. 그렇지 않으면(비슷하게 높은 값이
+    여럿이면) 애매한 것으로 보고 그 후보들의 인덱스 리스트를 반환한다.
+    threshold를 여럿이 넘더라도 그중 하나가 확실히 우세하면 애매하다고
+    보지 않는다 — 학번 "0" 자리처럼 인쇄된 글자 자체의 잉크로 threshold를
+    넘는 배경 잡음이 있을 수 있기 때문."""
+    top = max(fill_ratios)
+    if top < threshold:
         return None
-    if len(marked) == 1:
-        return marked[0]
-    return marked
+    second = sorted(fill_ratios, reverse=True)[1]
+    if top - second >= margin:
+        return fill_ratios.index(top)
+    return sorted(i for i, r in enumerate(fill_ratios) if top - r < margin)
 
 
 class AlignmentError(Exception):
