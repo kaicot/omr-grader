@@ -193,20 +193,25 @@ def find_table_border(gray_img):
 def align_sheet(img_bgr):
     """스캔 이미지를 답안표 테두리 기준으로 투시 보정해
     (PAGE_H_PT*ZOOM, PAGE_W_PT*ZOOM) 크기의 정렬된 이미지로 반환."""
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    corners = find_table_border(gray)
-    if corners is None:
-        raise AlignmentError("답안표 테두리를 찾지 못했습니다")
+    try:
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        corners = find_table_border(gray)
+        if corners is None:
+            raise AlignmentError("답안표 테두리를 찾지 못했습니다")
 
-    dst = np.array(
-        [
-            [TABLE_BORDER_PT[0] * ZOOM, TABLE_BORDER_PT[1] * ZOOM],
-            [TABLE_BORDER_PT[2] * ZOOM, TABLE_BORDER_PT[1] * ZOOM],
-            [TABLE_BORDER_PT[2] * ZOOM, TABLE_BORDER_PT[3] * ZOOM],
-            [TABLE_BORDER_PT[0] * ZOOM, TABLE_BORDER_PT[3] * ZOOM],
-        ],
-        dtype=np.float32,
-    )
-    M = cv2.getPerspectiveTransform(corners, dst)
-    out_size = (int(PAGE_W_PT * ZOOM), int(PAGE_H_PT * ZOOM))
-    return cv2.warpPerspective(img_bgr, M, out_size, borderValue=(255, 255, 255))
+        dst = np.array(
+            [
+                [TABLE_BORDER_PT[0] * ZOOM, TABLE_BORDER_PT[1] * ZOOM],
+                [TABLE_BORDER_PT[2] * ZOOM, TABLE_BORDER_PT[1] * ZOOM],
+                [TABLE_BORDER_PT[2] * ZOOM, TABLE_BORDER_PT[3] * ZOOM],
+                [TABLE_BORDER_PT[0] * ZOOM, TABLE_BORDER_PT[3] * ZOOM],
+            ],
+            dtype=np.float32,
+        )
+        M = cv2.getPerspectiveTransform(corners, dst)
+        out_size = (int(PAGE_W_PT * ZOOM), int(PAGE_H_PT * ZOOM))
+        return cv2.warpPerspective(img_bgr, M, out_size, borderValue=(255, 255, 255))
+    except AlignmentError:
+        raise
+    except Exception as e:
+        raise AlignmentError(f"답안지 정렬 중 오류가 발생했습니다: {e}") from e
