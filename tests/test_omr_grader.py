@@ -175,6 +175,49 @@ def test_align_sheet_raises_on_blank_image():
         pass
 
 
+def _draw_filled_bubble(img_bgr, cx_pt, cy_pt, zoom=og.ZOOM, radius_pt=og.BUBBLE_SIZE / 2 * 0.6):
+    cx_px = int(cx_pt * zoom)
+    cy_px = int(cy_pt * zoom)
+    r_px = int(radius_pt * zoom)
+    cv2.circle(img_bgr, (cx_px, cy_px), r_px, (0, 0, 0), -1)
+
+
+def test_recognize_sheet_end_to_end():
+    canonical = _render_template_page()
+    img_bgr = cv2.cvtColor(canonical, cv2.COLOR_RGB2BGR)
+
+    # 학번 12345678 마킹
+    student_id = "12345678"
+    for col, ch in enumerate(student_id):
+        cx, cy = og.id_bubble_center_pt(col, int(ch))
+        _draw_filled_bubble(img_bgr, cx, cy)
+
+    # Q1=3, Q2=미응답, Q3=1과4 중복 마킹
+    cx, cy = og.answer_bubble_center_pt(1, 3)
+    _draw_filled_bubble(img_bgr, cx, cy)
+    for opt in (1, 4):
+        cx, cy = og.answer_bubble_center_pt(3, opt)
+        _draw_filled_bubble(img_bgr, cx, cy)
+
+    result = og.recognize_sheet(img_bgr, num_questions=3)
+
+    assert result["student_id"] == "12345678", result["student_id"]
+    assert result["id_flagged_cols"] == []
+    assert result["answers"][1] == 3
+    assert result["answers"][2] == og.BLANK_LABEL
+    assert result["answers"][3] == "중복(1,4)"
+    assert set(result["flagged_questions"]) == {2, 3}
+
+
+def test_recognize_sheet_raises_alignment_error_on_blank():
+    blank = np.full((500, 700, 3), 255, dtype=np.uint8)
+    try:
+        og.recognize_sheet(blank, num_questions=10)
+        assert False, "AlignmentError가 발생해야 함"
+    except og.AlignmentError:
+        pass
+
+
 ALL_TESTS = [
     test_answer_bubble_center_q1_option1,
     test_answer_bubble_center_q21_option1,
@@ -193,6 +236,8 @@ ALL_TESTS = [
     test_find_table_border_on_clean_render,
     test_align_sheet_recovers_rotated_scan,
     test_align_sheet_raises_on_blank_image,
+    test_recognize_sheet_end_to_end,
+    test_recognize_sheet_raises_alignment_error_on_blank,
 ]
 
 if __name__ == "__main__":

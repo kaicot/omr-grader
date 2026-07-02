@@ -215,3 +215,56 @@ def align_sheet(img_bgr):
         raise
     except Exception as e:
         raise AlignmentError(f"답안지 정렬 중 오류가 발생했습니다: {e}") from e
+
+
+BLANK_LABEL = "미응답"
+
+
+def multi_label(options):
+    return "중복(" + ",".join(str(o) for o in sorted(options)) + ")"
+
+
+def recognize_sheet(img_bgr, num_questions):
+    """답안지 스캔 이미지 1장을 인식해 학번과 num_questions개 문항의 답을 반환."""
+    aligned = align_sheet(img_bgr)
+    gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+    radius_px = (BUBBLE_SIZE / 2 * 0.75) * ZOOM
+
+    digits = []
+    id_flagged_cols = []
+    for col in range(8):
+        ratios = []
+        for digit in range(10):
+            cx, cy = id_bubble_center_pt(col, digit)
+            ratios.append(sample_fill_ratio(gray, cx * ZOOM, cy * ZOOM, radius_px))
+        idx = detect_marked_index(ratios)
+        if idx is None or isinstance(idx, list):
+            digits.append("?")
+            id_flagged_cols.append(col)
+        else:
+            digits.append(str(idx))
+    student_id = "".join(digits)
+
+    answers = {}
+    flagged_questions = []
+    for q in range(1, num_questions + 1):
+        ratios = []
+        for option in range(1, 6):
+            cx, cy = answer_bubble_center_pt(q, option)
+            ratios.append(sample_fill_ratio(gray, cx * ZOOM, cy * ZOOM, radius_px))
+        idx = detect_marked_index(ratios)
+        if idx is None:
+            answers[q] = BLANK_LABEL
+            flagged_questions.append(q)
+        elif isinstance(idx, list):
+            answers[q] = multi_label([i + 1 for i in idx])
+            flagged_questions.append(q)
+        else:
+            answers[q] = idx + 1
+
+    return {
+        "student_id": student_id,
+        "id_flagged_cols": id_flagged_cols,
+        "answers": answers,
+        "flagged_questions": flagged_questions,
+    }
