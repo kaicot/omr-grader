@@ -1,6 +1,7 @@
 """사용법-가이드.md 내용을 사용법-가이드.pdf로 렌더링하는 일회성 스크립트."""
 import os
 
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -14,16 +15,17 @@ pdfmetrics.registerFont(TTFont("Malgun", "C:/Windows/Fonts/malgun.ttf"))
 pdfmetrics.registerFont(TTFont("MalgunBold", "C:/Windows/Fonts/malgunbd.ttf"))
 
 styles = getSampleStyleSheet()
-h1 = ParagraphStyle("h1", fontName="MalgunBold", fontSize=20, spaceAfter=14)
+title_style = ParagraphStyle("title", fontName="MalgunBold", fontSize=26, alignment=TA_CENTER, spaceAfter=16)
+subtitle_style = ParagraphStyle("subtitle", fontName="Malgun", fontSize=12, alignment=TA_CENTER, textColor="#555555")
 h2 = ParagraphStyle("h2", fontName="MalgunBold", fontSize=14, spaceBefore=0, spaceAfter=8)
-body = ParagraphStyle("body", fontName="Malgun", fontSize=10.5, leading=16, spaceAfter=8)
+body = ParagraphStyle("body", fontName="Malgun", fontSize=10.5, leading=17, spaceAfter=8, alignment=TA_JUSTIFY)
 caption = ParagraphStyle("caption", fontName="Malgun", fontSize=9, textColor="#555555", spaceAfter=14)
 warning = ParagraphStyle(
-    "warning", fontName="Malgun", fontSize=10.5, leading=16, spaceAfter=8,
+    "warning", fontName="Malgun", fontSize=10.5, leading=16, spaceAfter=8, alignment=TA_JUSTIFY,
     backColor="#FFF3CD", borderColor="#F0C36D", borderWidth=1, borderPadding=8,
 )
 
-MAX_WIDTH = 160 * mm
+MAX_WIDTH = 155 * mm
 
 
 def img(name, caption_text=None):
@@ -45,8 +47,9 @@ def section(title):
 
 
 story = []
-story.append(Paragraph("OMR 답안지 채점 프로그램 사용법", h1))
-story.append(Paragraph("omr_grader.exe 파일 하나만 있으면 됩니다. 아래 순서대로 그대로 따라 하시면 됩니다.", body))
+story.append(Spacer(1, 110 * mm))
+story.append(Paragraph("OMR 답안지 채점 프로그램 사용법", title_style))
+story.append(Paragraph("omr_grader.exe 파일 하나만 있으면 됩니다. 아래 순서대로 그대로 따라 하시면 됩니다.", subtitle_style))
 
 story += section("1. 실행하기")
 story.append(Paragraph("omr_grader.exe를 더블클릭하면 몇 초간 아래 로딩 화면이 뜹니다.", body))
@@ -121,7 +124,7 @@ story.append(Paragraph(
     body,
 ))
 
-story += section("7. debug 폴더 활용법")
+story += section("7. (필요시) debug 폴더 활용법")
 story.append(Paragraph(
     "debug 폴더 안의 이미지를 열어보면, 원본 답안지 위에 프로그램이 인식한 마킹 위치가 원으로 표시되어 있습니다.",
     body,
