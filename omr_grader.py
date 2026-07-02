@@ -362,7 +362,7 @@ def run_pipeline(scan_paths, answer_key_path, output_dir):
 
     records = []
     failed_labels = []
-    for label, img_bgr in scans:
+    for i, (label, img_bgr) in enumerate(scans):
         try:
             aligned = align_sheet(img_bgr)
         except AlignmentError:
@@ -384,7 +384,7 @@ def run_pipeline(scan_paths, answer_key_path, output_dir):
             }
         )
 
-        safe_name = label.replace(".", "_") + ".png"
+        safe_name = f"{i:04d}_{label.replace('.', '_')}.png"
         save_debug_overlay(aligned, recognition, os.path.join(debug_dir, safe_name))
 
     result_path = os.path.join(output_dir, "채점결과.xlsx")
