@@ -2,6 +2,8 @@
 
 A simple Windows tool that grades scanned 5-choice OMR (bubble sheet) answer sheets and outputs an Excel result. Built for a fixed 100-question / 8-digit student ID answer form (`OCR100.pdf`).
 
+Current release: **0.2.0**. It adds local grading history, preserved originals, re-analysis/re-grading, manual review, item analysis, and diagnostic recovery. See the [changelog](CHANGELOG.md).
+
 ---
 
 ## English
@@ -40,6 +42,10 @@ A 2-column file, question number then correct answer (1–5):
 - `채점결과.xlsx` — one row per student: student ID, per-question answer, score, wrong-question list, and a "확인필요" (needs review) column for blank/ambiguous marks.
 - `debug/` — one image per sheet with recognized marks circled (red = flagged for review), so you can eyeball anything uncertain against the original scan.
 
+### Low-quality scan support
+
+The recognizer corrects uneven lighting and scanner noise with local background normalization, then samples each bubble with a sensitivity profile instead of one fixed global threshold. In the GUI, use **인식 민감도** from 1 to 10: start at 6, raise it for faint pencil marks, and lower it when printed artifacts are being treated as marks. Ambiguous bubbles remain flagged for review rather than being guessed.
+
 ### Building from source
 
 Requires Python 3.13 with `numpy`, `opencv-python-headless`, `openpyxl`, `Pillow`, `PyMuPDF`, `pyinstaller` (tkinter is stdlib).
@@ -56,6 +62,8 @@ Cho, Seung-Hyun (kaic21@gmail.com)
 ---
 
 ## 한국어
+
+현재 버전은 **0.2.0**입니다. 로컬 채점 이력·원본 보존·재분석/재채점·수동 검토·문항 분석·진단 복구를 추가했습니다. 자세한 내용은 [변경 이력](CHANGELOG.md)을 확인하세요.
 
 ### 무엇을 하는 프로그램인가요
 
@@ -90,6 +98,8 @@ Cho, Seung-Hyun (kaic21@gmail.com)
 
 - `채점결과.xlsx` — 학생별 1행(학번, 문항별 답안, 점수, 오답문항, 확인필요 열 포함).
 - `debug/` — 답안지별로 인식된 마킹을 원으로 표시한 이미지(빨간 원 = 확인 필요) — 원본 스캔본과 눈으로 바로 대조 가능.
+
+인식 민감도는 1~10으로 조절할 수 있습니다. 흐린 마킹은 값을 높이고, 인쇄 잡음이 마킹으로 잡히면 값을 낮추세요. 조명 편차 보정과 다중 테두리 검출을 함께 적용하지만, 애매한 표시는 자동 추측하지 않고 `확인필요`로 남깁니다.
 
 ### 소스에서 빌드하기
 
