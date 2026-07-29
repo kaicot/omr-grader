@@ -1,0 +1,15 @@
+# Python 3.12 Windows x64 direct requirements. Hashes are intentionally absent until
+# the attested offline wheelhouse is produced; release installation must use its
+# separately generated --require-hashes lock file.
+PySide6==6.9.1
+opencv-python==4.11.0.86
+numpy==2.2.6
+PyMuPDF==1.26.1
+openpyxl==3.1.5
+pytest==8.4.1
+pytest-qt==4.4.0
+pytest-cov==6.2.1
+hypothesis==6.131.15
+ruff==0.11.13
+mypy==1.16.1
+pyinstaller==6.14.1

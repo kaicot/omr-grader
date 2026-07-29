@@ -1,93 +1,89 @@
-# OMR Grader
+# OMR Grader 2.0
 
-5지선다 OMR 답안지 스캔본을 채점해 Excel 결과를 만드는 Windows 프로그램입니다. 고정 100문항·8자리 학번 양식(`OCR100.pdf`)을 기본으로 하지만, 정답표 행 수에 맞춰 문항 수를 자동으로 처리합니다.
+Windows에서 스캔한 OMR 답안지를 인식하고 검토·채점·보관하는 데스크톱 애플리케이션입니다. 2.0은 기존 단일 파일 애플리케이션을 PySide6 기반 패키지 구조로 전면 재작성한 메이저 버전입니다.
 
-현재 정식 버전은 **v1.0.0**입니다. 채점 이력, 원본 보존, 재분석·재채점, 수동 검토, 문항 분석, 진단 복구를 제공합니다.
+## 주요 기능
 
-## 한국어
+- 이미지 및 다중 페이지 PDF 답안지 가져오기
+- 방향 보정, 정규화, 마킹 판독 및 진단 오버레이
+- `.omrtemplate` 프로필 가져오기와 기본 프로필 관리
+- XLSX/XLSM 정답표와 명단 가져오기
+- 자동 채점, 수동 답안 수정 및 재채점
+- 시험 대시보드, 학생별 상세 결과 및 문항 분석
+- 응답·점수·통합 Excel 결과 생성
+- 세션 보존, 휴지통, 백업 및 복원
+- 취소·장애 복구와 원자적 파일 저장
 
-### 주요 기능
+> OMR 프로필과 실제 시험 자료는 저장소에 포함하지 않습니다. 사용자가 적법하게 보유한 파일을 직접 가져와야 합니다.
 
-1. 이미지 파일 또는 여러 페이지 PDF로 스캔한 답안지를 불러옵니다.
-2. xlsx/csv 정답표(문항번호, 정답)를 적용해 채점합니다.
-3. `채점결과.xlsx`와 답안지별 `debug/` 오버레이를 생성합니다.
-4. 채점 실행 이력과 원본 답안지를 로컬에 보존해 나중에 다시 확인할 수 있습니다.
-5. 새 민감도로 재분석하거나 새 정답표로 재채점하기 전에 변경 결과를 미리 봅니다.
-6. 학생별 답안을 수동으로 수정하고, 수정 사유와 결과를 기록합니다.
-7. 학생 결과와 문항별 정답률·선택지 분포를 확인합니다.
+## 요구 사항
 
-### 실행 방법
+- Windows 11
+- 소스 실행 시 Python `3.12.x` (3.13 이상 미지원)
+- 최종 사용자는 단일 EXE 배포본 사용 시 Python이 필요하지 않습니다.
 
-`dist/omr_grader.exe`를 더블클릭하면 됩니다. Python 설치 없이 실행할 수 있습니다.
+## 소스에서 실행
 
-- **답안지 파일 선택(PDF, JPG, PNG)**: 스캔한 답안지 선택
-- **정답표 파일 선택(XLSX, CSV)**: 정답표 선택
-- **채점 시작(채점결과 저장 폴더 선택)**: 결과 저장 위치 선택
+PowerShell에서 다음 명령을 실행합니다.
 
-스크린샷 기반 사용법은 [사용법 가이드](docs/guide/사용법-가이드.md) ([PDF](docs/guide/사용법-가이드.pdf))를 참고하세요.
-
-### 정답표 형식
-
-| 문항번호 | 정답 |
-|---|---|
-| 1 | 3 |
-| 2 | 1 |
-| ... | ... |
-
-정답은 1~5를 사용하며, 행 수가 채점 문항 수가 됩니다.
-
-### 결과물과 저장 위치
-
-- `채점결과.xlsx`: 학번, 문항별 답안, 점수, 오답 문항, 확인 필요 여부
-- `debug/`: 인식된 마킹을 표시한 검토용 이미지
-- `%LOCALAPPDATA%\OMRGrader`: 채점 이력, 보존 원본, 진단 로그, 복구 가능한 삭제 보관함
-
-인식 민감도는 1~10으로 조절합니다. 흐린 마킹은 값을 높이고, 인쇄 잡음이 마킹으로 잡히면 값을 낮추세요. 애매한 표시는 자동 추측하지 않고 `확인필요`로 남깁니다.
-
-### 소스에서 빌드하기
-
-Python 3.13과 `numpy`, `opencv-python-headless`, `openpyxl`, `Pillow`, `PyMuPDF`, `pyinstaller`가 필요합니다.
-
-```bash
-python omr_grader.py
-python -m PyInstaller --onefile --windowed --name omr_grader --splash splash.png omr_grader.py
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install --require-hashes -r constraints\windows-py312.lock
+.venv\Scripts\python -m pip install --no-deps -e .
+.venv\Scripts\python main.py
 ```
 
-## English
+잠금 파일 대신 개발 의존성을 설치해야 할 때는 다음 명령을 사용할 수 있습니다.
 
-OMR Grader is a Windows application for grading scanned 5-choice OMR sheets and producing Excel results. It supports image files and multi-page PDFs, aligns rotated sheets, detects student IDs and marked answers, and creates debug overlays for uncertain marks.
-
-Version **v1.0.0** adds local grading history, preserved originals, re-analysis and re-grading previews, manual review, item analysis, and diagnostic recovery.
-
-### Run
-
-Double-click `dist/omr_grader.exe`; Python is not required for end users. Select the answer sheets, an xlsx/csv answer key, and an output folder. The result is written as `채점결과.xlsx` with a `debug/` folder.
-
-### Build from source
-
-```bash
-python omr_grader.py
-python -m PyInstaller --onefile --windowed --name omr_grader --splash splash.png omr_grader.py
+```powershell
+.venv\Scripts\python -m pip install -e ".[dev]"
 ```
 
-## 버전 규칙
+## 검증
 
-이 저장소는 Semantic Versioning(semver)을 단순하게 사용합니다.
+```powershell
+.venv\Scripts\python -m pytest
+.venv\Scripts\python -m ruff check src tests packaging tools
+.venv\Scripts\python -m mypy
+```
 
-- **MAJOR** `X.0.0`: 채점·검토의 핵심 작업 흐름, 보존 데이터 모델, 결과 형식이 크게 바뀌는 경우입니다. 예: 채점 이력·원본 보존·재검토 체계의 도입처럼 기존 사용 방식을 대대적으로 확장하는 변경입니다.
-- **MINOR** `0.X.0` 또는 `X.Y.0`: 인식·검토 규칙, 보고서·비교 항목, GUI 작업 흐름이 의미 있게 늘어나는 경우입니다. 예: 새 인식 규칙, 새 분석 필드, 새 검토 화면입니다.
-- **PATCH** `X.Y.Z`: 문구 보정, 오타 수정, 설명 정리, 작은 기준 보완 또는 호환 가능한 버그 수정입니다.
+현재 2.0 소스 후보는 전체 테스트 1,012개 통과, 13개 건너뜀 상태에서 Ruff와 strict mypy 검사를 통과했습니다.
 
-예: `v1.0.0` 정식 운영판, `v1.1.0` 새 검토·분석 규칙, `v1.1.1` 문서·표시 보정.
+## Windows 실행 파일 빌드
 
-## 버전 이력
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-onefile.ps1
+powershell -ExecutionPolicy Bypass -File tools\run-packaged-tests.ps1
+```
 
-전체 변경 목록은 [CHANGELOG.md](CHANGELOG.md)를 확인하세요.
+재현 가능한 애플리케이션 wheel, 공급망 manifest 및 릴리스 번들 검증 도구는 `tools/`와 `packaging/`에 있습니다. `build/`, `dist/`, EXE 및 로컬 검증 증빙은 Git에 포함하지 않습니다.
 
-| 버전 | 의미 |
-|---|---|
-| `v1.0.0` | 채점 이력·원본 보존·재분석·재채점·수동 검토·문항 분석·진단 복구를 포함한 정식 운영판 |
-| `v0.2.0` | 기본 Windows GUI를 도입한 초기 사용판 |
-| `v0.1.0` | OMR 인식, 채점, Excel 출력, 디버그 오버레이를 갖춘 최초 작업판 |
+## 데이터와 보안
 
-제작: 조승현 (kaic21@gmail.com)
+- 실제 답안지, 학생 명단, 채점 결과, 세션, 백업 및 내보내기 파일을 커밋하지 마십시오.
+- 인증서, 코드서명 키, 환경 파일과 자격 증명은 저장소 밖에서 관리하십시오.
+- `.omrtemplate`과 `OCR100.pdf`는 권리 및 개인정보 보호를 위해 저장소에서 제외합니다.
+- 로컬 에이전트 상태, 빌드 결과와 내부 검증 증빙도 `.gitignore`로 제외합니다.
+
+## 2.0 출시 상태
+
+소프트웨어 개발과 자동 검증은 완료됐지만 다음 외부 검증은 아직 남아 있습니다.
+
+- 실제 스캔 OMR 100장 이상의 정확도 검증
+- 외부 참고 자료의 사용·재배포 권리 확인
+- Windows 실행 파일 코드 서명
+- 독립 Windows 11 환경에서의 오프라인·Defender·SmartScreen 검사
+- 최종 배포 승인
+
+따라서 현재 소스는 2.0 개발 완료 후보이며, 서명된 정식 배포본으로 간주해서는 안 됩니다.
+
+## 저장소 구성
+
+- `src/omr_grader/`: 제품 소스
+- `tests/`: 단위·통합·GUI·장애·보안·성능·패키지 테스트
+- `packaging/`: PyInstaller와 릴리스 검증 코드
+- `tools/`: 빌드, 공급망 및 검증 명령
+- `constraints/`: Windows Python 3.12 잠금 의존성
+- `requirements/`: 직접 의존성 목록
+
+변경 내역은 [CHANGELOG.md](CHANGELOG.md), 내부 구조는 [DESIGN.md](DESIGN.md)를 참고하십시오.

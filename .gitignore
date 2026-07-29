@@ -1,26 +1,105 @@
-.worktrees/
-dist/
-build/
-*.spec
+# Python bytecode and caches
 __pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
 
-# 개인 테스트/실제 시험 데이터 (소스 코드 아님)
-Scan_0001.pdf
-생리학정답.xlsx
-정답양식.xlsx
-작은프린터.pdf
-해부학정답.xlsx
-큰프린터.pdf
-omr_grader.zip
+# Virtual environments and local package metadata
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
 
-# 도구/하네스 내부 파일
+# Build, packaging, and executable outputs
+build/
+dist/
+wheelhouse/
+*.whl
+*.exe
+*.msi
+*.msix
+*.appx
+*.spec.bak
+
+# IDE, editor, and operating-system files
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Local agent and automation state
+.gjc/
+.senpi/
+.omo/
 .claude/
+.agents/
 
-# 프로그램 실행 결과물 (어디서 실행하든 생기는 출력 파일)
+# Secrets, credentials, signing material, and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.cer
+*.crt
+*.csr
+*.pub
+*.sig
+credentials*.json
+secrets*.json
+
+# Application runtime data and user-derived outputs
+sessions/
+backups/
+exports/
 debug/
-채점결과.xlsx
+logs/
+*.log
+*.tmp
+*.temp
+*.bak
+*.lock
+!constraints/*.lock
+~$*
 
-# 저장소에는 올리지 않는 내부 문서/테스트/참고 파일 (로컬에는 그대로 둠)
-docs/superpowers/
-tests/
-답안양식100.hwpx
+# Potentially sensitive exam inputs and generated office documents
+*.pdf
+*.xlsx
+*.xlsm
+*.csv
+*.tsv
+scans/
+input/
+results/
+
+# Local release evidence and internal handoff material
+artifacts/
+handoff.md
+OMR_Grader_Integrated_Spec.md
+OMR_Grader_GUI_Sample.webp
+구 명세/
+
+# External or rights-restricted OMR reference material
+*.omrtemplate
+OCR100.pdf
+
+# Generated/local artwork not selected as a documented project asset
+Gemini_Generated_Image_*

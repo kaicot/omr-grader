@@ -1,88 +1,45 @@
-# OMR Grader Design System
+# OMR Grader 2.0 설계
 
-## 1. Atmosphere & Identity
+## 목표
 
-OMR Grader is a calm inspection desk: confident enough for batch grading, quiet enough that a teacher can spot uncertainty without hunting through the screen. The signature is a warm paper workspace framed by deep ink surfaces and a single mint signal color for progress, selection, and success.
+OMR Grader 2.0은 Windows 데스크톱에서 답안지 수집, 판독, 검토, 채점, 결과 생성과 복구를 하나의 명시적인 작업 흐름으로 제공합니다. 도메인 규칙을 GUI와 파일 시스템에서 분리하고, 사용자 데이터 손상이나 조용한 부분 성공을 허용하지 않는 것을 우선합니다.
 
-## 2. Color
+## 계층
 
-### Palette
+- `domain`: 세션, 프로필, 채점, 수정 및 오류 모델. UI나 저장소 구현에 의존하지 않습니다.
+- `application`: 유스케이스, DTO, presenter와 port. 작업 순서와 입력 검증을 담당합니다.
+- `infrastructure`: 세션·설정·프로필 저장소, 스캔·채점 runtime, 백업과 원자적 I/O 구현입니다.
+- `recognition`: 방향 탐지, 정규화, 격자 판독, 임계값과 진단 오버레이입니다.
+- `ingestion`: 이미지, PDF와 명단 입력을 정규화합니다.
+- `workbooks`: 정답표, 응답표, 점수표와 통합 Excel 문서를 읽고 생성합니다.
+- `ui`: PySide6 화면, model, worker와 controller입니다.
+- `accuracy`: 실제 판독 결과를 잠금 라벨 및 승인 자료와 비교하는 독립 평가 경로입니다.
 
-| Role | Token | Value | Usage |
-|------|-------|-------|-------|
-| Window | `COLOR_WINDOW` | `#F4F7F5` | Main app background |
-| Surface | `COLOR_SURFACE` | `#FFFFFF` | Cards and panels |
-| Surface muted | `COLOR_SURFACE_MUTED` | `#EAF0ED` | Secondary information blocks |
-| Ink | `COLOR_INK` | `#17332D` | Titles and primary text |
-| Ink muted | `COLOR_INK_MUTED` | `#58706A` | Supporting text |
-| Border | `COLOR_BORDER` | `#D7E2DE` | Card and input outlines |
-| Accent | `COLOR_ACCENT` | `#1E8E78` | Primary actions and focus |
-| Accent dark | `COLOR_ACCENT_DARK` | `#146653` | Hover and pressed state |
-| Accent pale | `COLOR_ACCENT_PALE` | `#DDF3EC` | Selection and success background |
-| Warning | `COLOR_WARNING` | `#B46A1B` | Review-needed state |
-| Error | `COLOR_ERROR` | `#B64242` | Validation and failure |
-| Dark panel | `COLOR_DARK_PANEL` | `#17332D` | Activity rail and progress |
-| Dark panel deep | `COLOR_DARK_PANEL_DEEP` | `#102A25` | Activity log surface |
-| Dark panel muted | `COLOR_DARK_MUTED` | `#A9C5BD` | Text on dark panel |
+의존성은 바깥 계층에서 안쪽 계층으로 향합니다. UI와 infrastructure는 application port를 통해 연결되며, 도메인 객체가 Qt 또는 파일 시스템 객체를 노출하지 않습니다.
 
-Rules: one accent family only; warning and error are semantic statuses, never decoration. Primary buttons use `COLOR_ACCENT_DARK` with light text to preserve contrast; `COLOR_ACCENT` is reserved for non-text emphasis and focus. All code colors must come from this table.
+## 주요 흐름
 
-## 3. Typography
+1. 사용자가 OMR 프로필, 답안지, 정답표와 선택적 명단을 가져옵니다.
+2. application 계층이 입력과 기능 지원 여부를 검증하고 작업 명령을 생성합니다.
+3. scan runtime이 페이지를 수집·정규화하고 recognition pipeline을 실행합니다.
+4. 판독 결과와 진단 자료를 세션 저장소에 원자적으로 기록합니다.
+5. 사용자가 불확실한 마킹을 검토하고 수정 내역을 별도 도메인 기록으로 남깁니다.
+6. grading runtime이 정답과 수정된 응답을 결합해 결과 문서를 생성합니다.
+7. 대시보드와 상세 화면은 저장된 인덱스와 결과를 통해 재시작 후에도 상태를 복원합니다.
 
-- Primary: `맑은 고딕` with `Segoe UI` fallback (available on supported Windows systems).
-- Numeric/status labels: `Consolas` with `Cascadia Mono` fallback.
-- Display: 20 px semibold, line-height 26 px.
-- Section: 14 px semibold, line-height 20 px.
-- Body: 10–11 px regular, line-height 16 px.
-- Caption: 9 px regular, line-height 14 px.
+## 데이터 안전성
 
-Body text never falls below 9 px in the desktop-only app. Long paths wrap in the visible label so the selected source remains auditable.
+- 관리 경로와 외부 파일명을 검증하고 경로 이탈을 거부합니다.
+- 파일 교체는 임시 파일과 원자적 rename을 사용합니다.
+- 세션 lease와 revision 검사를 통해 동시 갱신 충돌을 탐지합니다.
+- 백업 archive는 경로, 크기, 개수와 구조를 검증한 후 복원합니다.
+- 취소 또는 실패 시 완료되지 않은 결과를 성공으로 노출하지 않습니다.
+- 사용자 원본, 세션, 백업, 결과와 검증 증빙은 Git 추적 대상이 아닙니다.
 
-## 4. Spacing & Layout
+## 배포
 
-Base unit: 4 px. Use the following Tkinter equivalents: 4, 8, 12, 16, 20, 24, 32.
+`pyproject.toml`이 애플리케이션과 개발 의존성을 정의하고, `constraints/windows-py312.lock`이 Windows Python 3.12 환경을 고정합니다. PyInstaller 설정과 빌드·검증 오케스트레이션은 `packaging/` 및 `tools/`에 있습니다. 생성된 wheel, EXE, 릴리스 번들과 코드서명 자료는 저장소에 커밋하지 않습니다.
 
-- Window minimum: 820 × 720 px.
-- Header: 24 px horizontal / 20 px vertical padding.
-- Main content: two-column shell; left task rail 220 px, right workspace expands.
-- Card radius: 12 px where ttk supports it; otherwise use tonal separation and 1 px borders.
-- Primary controls: 36 px high; compact controls: 30 px high.
+## 검증 전략
 
-## 5. Components
-
-### App shell
-- Structure: dark header + two-column body + activity footer.
-- States: idle, ready, running, complete, error.
-- Accessibility: every action is keyboard reachable; focus uses accent ring.
-
-### File step card
-- Structure: numbered marker, title, supporting path/count, action button.
-- Variants: scan source, answer key, output folder.
-- States: empty, selected, invalid, disabled while running.
-- Spacing: 16 px internal, 12 px between cards.
-
-### Primary action
-- States: default, hover, pressed, disabled, running.
-- Motion: 120 ms color/relief transition where native ttk permits; no decorative motion.
-- Accessibility: text label remains visible; disabled state is conveyed by contrast and state text.
-
-### Activity panel
-- Structure: dark tonal panel with status dot, progress label, and scrollable log.
-- States: idle, processing, success, failure.
-- Accessibility: status is also written to the log text and remains selectable/copyable.
-
-## 6. Motion & Interaction
-
-Tkinter has no compositor-backed animation contract, so motion is intentionally limited to native button press/hover feedback. Long-running recognition runs off the UI thread; status changes are event-driven through the queue poller.
-
-## 7. Depth & Surface
-
-Strategy: tonal-shift + restrained borders. Use the dark header/activity panel for depth, white cards for work surfaces, and pale mint for selected/success states. Avoid heavy shadows that make dense desktop text blurry.
-
-## 8. Accessibility Constraints & Accepted Debt
-
-- Target: practical WCAG 2.1 AA contrast for text and controls.
-- Keyboard: tab traversal covers all buttons and the log; Enter activates the focused button.
-- Feedback: errors are shown in a dialog and written to the activity panel.
-- Accepted debt: native Tk file dialogs cannot be restyled; they remain platform-native for reliability.
-- Accepted debt: no automated screen-reader snapshot exists for Tkinter; labels and state text are kept explicit and testable.
+테스트는 도메인 단위 테스트, 저장소·workbook 통합 테스트, Qt GUI 테스트, fault injection, 보안 경계, 성능 workload와 실제 패키지 실행 검증으로 구분합니다. Ruff와 strict mypy를 함께 사용하며 릴리스 후보는 소스, wheel, EXE와 검증 영수증의 해시 결합을 확인합니다.
