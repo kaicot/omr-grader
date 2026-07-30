@@ -235,7 +235,12 @@ def assert_exact_release_payload(release_dir: Path) -> None:
 
 
 def source_hashes() -> dict[str, str]:
-    paths = [PROJECT_ROOT / "main.py", PROJECT_ROOT / "pyproject.toml", SPEC_PATH]
+    paths = [
+        PROJECT_ROOT / "main.py",
+        PROJECT_ROOT / "pyproject.toml",
+        SPEC_PATH,
+        PROJECT_ROOT / "packaging" / "startup_splash.svg",
+    ]
     paths.extend(sorted((PROJECT_ROOT / "src").rglob("*.py")))
     return {
         str(path.relative_to(PROJECT_ROOT)).replace("\\", "/"): sha256_file(path) for path in paths
@@ -426,6 +431,9 @@ def build_release(manifest_path: Path, wheelhouse: Path, output: Path) -> Path:
             "source_hashes": source_hashes(),
             "config_hashes": {
                 "packaging/OMR_Grader.spec": sha256_file(SPEC_PATH),
+                "packaging/startup_splash.svg": sha256_file(
+                    PROJECT_ROOT / "packaging" / "startup_splash.svg"
+                ),
                 "packaging/build_release.py": sha256_file(Path(__file__).resolve()),
                 "packaging/verify_release.py": sha256_file(
                     PROJECT_ROOT / "packaging" / "verify_release.py"

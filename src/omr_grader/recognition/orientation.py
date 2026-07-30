@@ -65,6 +65,7 @@ def select_orientation(
     *,
     minimum_confidence: float = 0.60,
     tie_margin: float = 0.05,
+    preferred_rotation: int | None = None,
 ) -> Result[OrientationDecision]:
     """Score all rotations and return a decision only when it is unambiguous.
 
@@ -76,6 +77,8 @@ def select_orientation(
         return Err((_error("ORIENTATION_UNCERTAIN", "image must be an 8-bit grayscale raster"),))
     if not 0.0 <= minimum_confidence <= 1.0 or not 0.0 <= tie_margin <= 1.0:
         raise ValueError("confidence thresholds must be in [0, 1]")
+    if preferred_rotation is not None and preferred_rotation not in _ROTATIONS:
+        raise ValueError("preferred_rotation must be one of 0, 90, 180, 270 or None")
 
     scores: list[OrientationScore] = []
     for rotation in _ROTATIONS:
@@ -90,6 +93,29 @@ def select_orientation(
     confidence = winner.score
     winner_margin = winner.score - runner_up.score
     if confidence < minimum_confidence or winner_margin <= tie_margin:
+        if preferred_rotation is not None and confidence >= minimum_confidence:
+            by_rotation = {item.rotation_degrees: item for item in scores}
+            preferred = by_rotation[preferred_rotation]
+            opposite = by_rotation[(preferred_rotation + 180) % 360]
+            perpendicular = (
+                by_rotation[(preferred_rotation + 90) % 360],
+                by_rotation[(preferred_rotation + 270) % 360],
+            )
+            axis_score = max(preferred.score, opposite.score)
+            cross_axis_score = max(item.score for item in perpendicular)
+            if (
+                preferred.score >= minimum_confidence
+                and abs(preferred.score - opposite.score) > 1e-6
+                and axis_score - preferred.score <= tie_margin
+                and axis_score - cross_axis_score > tie_margin
+            ):
+                return Ok(
+                    OrientationDecision(
+                        preferred_rotation,
+                        preferred.score,
+                        (scores[0], scores[1], scores[2], scores[3]),
+                    )
+                )
         return Err(
             (
                 _error(

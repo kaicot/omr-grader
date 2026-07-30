@@ -62,7 +62,7 @@ def _snapshot(config: AppConfig) -> ConfigSnapshot:
 
 
 def default_config() -> AppConfig:
-    return AppConfig(default_profile="", default_sensitivity=3, use_multiprocessing=True)
+    return AppConfig(default_profile="", default_sensitivity=5, use_multiprocessing=True)
 
 
 def _issue(

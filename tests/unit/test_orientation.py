@@ -39,3 +39,27 @@ def test_low_orientation_confidence_requires_manual_review() -> None:
 
     assert isinstance(result, Err)
     assert result.errors[0].code == "ORIENTATION_UNCERTAIN"
+
+
+def test_preferred_upright_rotation_resolves_only_same_axis_ambiguity() -> None:
+    image = np.zeros((20, 30), dtype=np.uint8)
+    image[0, 0] = 2
+    image[-1, -1] = 1
+
+    def scorer(candidate):
+        height, width = candidate.shape
+        if width > height:
+            return 0.69 if candidate[0, 0] == 2 else 0.68
+        return 0.50
+
+    result = select_orientation(image, scorer, preferred_rotation=0)
+
+    assert isinstance(result, Ok)
+    assert result.value.rotation_degrees == 0
+
+    unresolved = select_orientation(
+        image,
+        lambda _: 0.9,
+        preferred_rotation=0,
+    )
+    assert isinstance(unresolved, Err)

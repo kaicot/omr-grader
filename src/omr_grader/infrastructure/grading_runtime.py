@@ -458,7 +458,15 @@ class CommittedGradingSnapshotReader:
             or document.get("schema_version") != 1
         ):
             raise ValueError("projection envelope is invalid")
-        if tuple(_array(document["base_response_ids"])) != ids:
+        if (
+            tuple(
+                sorted(
+                    _array(document["base_response_ids"]),
+                    key=lambda item: str(item).encode(),
+                )
+            )
+            != ids
+        ):
             raise ValueError("projection response IDs do not match canonical responses")
         payload = _mapping(document["projection"])
         if set(payload) != {"automatic_pages", "imported_responses", "corrections"}:

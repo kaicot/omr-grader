@@ -25,6 +25,8 @@ _LIGHT = {
     "muted": "#667085",
     "border": "#D9E2EC",
     "primary": "#2563EB",
+    "primary_hover": "#1D4ED8",
+    "link": "#1D4ED8",
     "success": "#15803D",
     "error": "#B42318",
     "disabled": "#98A2B3",
@@ -40,6 +42,8 @@ _DARK = {
     "muted": "#B2C2D1",
     "border": "#405467",
     "primary": "#7DB5FF",
+    "primary_hover": "#5B9CF5",
+    "link": "#93C5FD",
     "success": "#6EE7A0",
     "error": "#FF9B8F",
     "disabled": "#8796A5",
@@ -59,6 +63,8 @@ def palette_for(theme: Theme | str) -> QPalette:
     palette.setColor(QPalette.ColorRole.ButtonText, QColor(values["text"]))
     palette.setColor(QPalette.ColorRole.Highlight, QColor(values["primary"]))
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+    palette.setColor(QPalette.ColorRole.Link, QColor(values["link"]))
+    palette.setColor(QPalette.ColorRole.LinkVisited, QColor(values["link"]))
     palette.setColor(
         QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(values["disabled"])
     )
@@ -76,10 +82,25 @@ def stylesheet_for(theme: Theme | str) -> str:
             background: {values["window"]}; color: {values["text"]};
             font-family: "Malgun Gothic", "Segoe UI", sans-serif; font-size: 14px;
         }}
+        QLabel {{ background: transparent; }}
         QMainWindow, QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {{
             background: {values["window"]};
         }}
-        QFrame#sidebar {{ background: {values["sidebar"]}; border: none; }}
+        QLineEdit, QComboBox, QTextBrowser, QAbstractItemView {{
+            background: {values["surface"]}; color: {values["text"]};
+            selection-background-color: {values["primary"]};
+            selection-color: #FFFFFF;
+        }}
+        QTextBrowser#helpBrowser {{
+            border: 1px solid {values["border"]}; border-radius: 8px;
+        }}
+        QFrame#sidebar {{
+            background: {values["sidebar"]}; border: none;
+        }}
+        QFrame#sidebar QLabel {{ background: transparent; }}
+        QLabel#brandMark {{
+            background: transparent; color: #61C3E8; font-size: 34px; font-weight: 700;
+        }}
         QLabel#brandTitle {{
             background: transparent; color: #FFFFFF; font-size: 22px; font-weight: 700;
         }}
@@ -104,10 +125,14 @@ def stylesheet_for(theme: Theme | str) -> str:
             background: transparent; color: #C9E2F3; font-size: 11px; font-weight: 700;
         }}
         QLabel#sessionName {{ background: transparent; color: #FFFFFF; font-weight: 700; }}
+        QLabel#sessionProgress {{
+            background: transparent; color: #D9EAF7; font-size: 12px;
+        }}
         QFrame#topBar {{
             background: {values["surface"]};
             border-bottom: 1px solid {values["border"]};
         }}
+        QFrame#topBar QLabel {{ background: transparent; }}
         QLabel#pageTitle {{ font-size: 20px; font-weight: 700; }}
         QPushButton#helpButton, QPushButton#themeButton {{
             background: transparent; border: 1px solid {values["border"]}; border-radius: 6px;
@@ -126,12 +151,70 @@ def stylesheet_for(theme: Theme | str) -> str:
             background: {values["surface"]}; border: 1px solid {values["border"]};
             border-radius: 12px;
         }}
-        QFrame#rosterImportWidget, QFrame#scanSourceImportWidget {{
+        QFrame#importDropWidget, QFrame#rosterImportWidget, QFrame#scanSourceImportWidget,
+        QFrame#profileImportWidget {{
             background: {values["window"]}; border: 2px dashed {values["border"]};
             border-radius: 10px;
         }}
-        QFrame#rosterImportWidget:hover, QFrame#scanSourceImportWidget:hover {{
+        QFrame#importDropWidget:hover, QFrame#rosterImportWidget:hover,
+        QFrame#scanSourceImportWidget:hover,
+        QFrame#profileImportWidget:hover,
+        QFrame#importDropWidget[dragActive="true"],
+        QFrame#rosterImportWidget[dragActive="true"],
+        QFrame#scanSourceImportWidget[dragActive="true"],
+        QFrame#profileImportWidget[dragActive="true"] {{
             border-color: {values["primary"]};
+            background: {values["surface"]};
+        }}
+        QPushButton#freshResponseButton, QPushButton#scanResetButton, QPushButton#scanCancelButton,
+        QPushButton#scanRunButton, QPushButton#primaryActionButton,
+        QPushButton#profileImportButton,
+        QPushButton#sampleRosterButton, QPushButton#sourceFolderButton,
+        QPushButton#sourcePdfButton, QPushButton#sampleAnswerKeyButton,
+        QPushButton#answerKeyUploadButton, QPushButton#cancelGradingButton {{
+            background: {values["surface"]}; border: 1px solid {values["border"]};
+            border-radius: 7px; min-height: 34px; padding: 5px 13px;
+            font-weight: 600;
+        }}
+        QPushButton#freshResponseButton:hover, QPushButton#scanResetButton:hover,
+        QPushButton#scanCancelButton:hover,
+        QPushButton#profileImportButton:hover, QPushButton#sampleRosterButton:hover,
+        QPushButton#sourceFolderButton:hover, QPushButton#sourcePdfButton:hover,
+        QPushButton#sampleAnswerKeyButton:hover, QPushButton#answerKeyUploadButton:hover,
+        QPushButton#cancelGradingButton:hover {{
+            border-color: {values["primary"]}; background: {values["window"]};
+        }}
+        QPushButton#freshResponseButton, QPushButton#scanRunButton,
+        QPushButton#primaryActionButton {{
+            background: {values["primary"]}; color: #FFFFFF;
+            border-color: {values["primary"]};
+        }}
+        QPushButton#freshResponseButton:hover:enabled,
+        QPushButton#scanRunButton:hover:enabled,
+        QPushButton#primaryActionButton:hover:enabled {{
+            background: {values["primary_hover"]}; color: #FFFFFF;
+            border-color: {values["primary_hover"]};
+        }}
+        QPushButton#scanCancelButton {{ color: {values["error"]}; }}
+        QPushButton#freshResponseButton:pressed, QPushButton#scanResetButton:pressed,
+        QPushButton#scanCancelButton:pressed,
+        QPushButton#scanRunButton:pressed, QPushButton#primaryActionButton:pressed,
+        QPushButton#profileImportButton:pressed,
+        QPushButton#sampleRosterButton:pressed, QPushButton#sourceFolderButton:pressed,
+        QPushButton#sourcePdfButton:pressed, QPushButton#sampleAnswerKeyButton:pressed,
+        QPushButton#answerKeyUploadButton:pressed, QPushButton#cancelGradingButton:pressed {{
+            padding-top: 7px; padding-bottom: 3px;
+            border: 2px solid {values["text"]};
+        }}
+        QPushButton#freshResponseButton:disabled, QPushButton#scanResetButton:disabled,
+        QPushButton#scanCancelButton:disabled,
+        QPushButton#scanRunButton:disabled, QPushButton#primaryActionButton:disabled,
+        QPushButton#profileImportButton:disabled,
+        QPushButton#sampleRosterButton:disabled, QPushButton#sourceFolderButton:disabled,
+        QPushButton#sourcePdfButton:disabled, QPushButton#sampleAnswerKeyButton:disabled,
+        QPushButton#answerKeyUploadButton:disabled, QPushButton#cancelGradingButton:disabled {{
+            background: {values["window"]}; color: {values["disabled"]};
+            border-color: {values["border"]};
         }}
         QLabel#placeholderHeading, QLabel#scanPageTitle, QLabel#gradingTitle,
         QLabel#dashboardTitle, QLabel#trashDialogTitle {{
@@ -140,6 +223,9 @@ def stylesheet_for(theme: Theme | str) -> str:
         QLabel#placeholderBody, QLabel#scanPageSubtitle, QLabel#rosterStatus,
         QLabel#connectedSessionLabel {{
             color: {values["muted"]};
+        }}
+        QLabel#scanFormLabel, QLabel#scanSectionLabel {{
+            color: {values["text"]}; font-weight: 600; background: transparent;
         }}
         QLabel#statusLabel, QLabel#sessionStatusLabel {{
             background: transparent; color: {values["muted"]};
@@ -155,7 +241,7 @@ def stylesheet_for(theme: Theme | str) -> str:
         QDialog#trashDialog {{
             background: {values["window"]}; color: {values["text"]};
         }}
-        QLineEdit#dashboardSearch, QComboBox#dashboardYearFilter, QComboBox#dashboardTermFilter {{
+        QLineEdit#dashboardSearch, QComboBox#dashboardYearFilter {{
             background: {values["surface"]}; border: 1px solid {values["border"]};
             border-radius: 6px; padding: 6px;
         }}
@@ -178,9 +264,11 @@ def stylesheet_for(theme: Theme | str) -> str:
         }}
         QPushButton#dashboardBackupButton:hover, QPushButton#dashboardRestoreButton:hover,
         QPushButton#dashboardCombinedButton:hover, QPushButton#dashboardTrashButton:hover,
-        QPushButton#dashboardDetailButton:hover, QPushButton#trashRestoreButton:hover {{
+        QPushButton#dashboardDetailButton:hover, QPushButton#dashboardDeleteButton:hover,
+        QPushButton#trashRestoreButton:hover {{
             border-color: {values["primary"]}; background: {values["window"]};
         }}
+        QWidget#dashboardActionCell {{ background: transparent; }}
         QPushButton#dashboardDeleteButton, QPushButton#trashPermanentDeleteButton,
         QPushButton#trashEmptyButton {{ color: {values["error"]}; }}
     """

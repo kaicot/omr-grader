@@ -10,12 +10,14 @@ from numpy.typing import NDArray
 
 from omr_grader.domain.enums import CellStatus
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
-from omr_grader.domain.models import CellEvidence
+from omr_grader.domain.models import AnswerKeyEntry, AnswerRecognition, CellEvidence
 
 # BGR values are intentionally distinct for exported OpenCV images.
 NORMAL_COLOR: Final = (0, 170, 0)
 BLANK_COLOR: Final = (120, 120, 120)
 REVIEW_COLOR: Final = (0, 140, 255)
+CORRECT_COLOR: Final = (255, 0, 0)
+INCORRECT_COLOR: Final = (0, 0, 255)
 MAX_OVERLAY_CELLS: Final = 580
 MAX_OVERLAY_IMAGE_PIXELS: Final = 100_000_000
 
@@ -90,6 +92,45 @@ def render_overlay(
             1,
             cv2.LINE_AA,
         )
+    return Ok(output)
+
+
+def render_scored_overlay(
+    image: NDArray[np.generic],
+    evidence: tuple[CellEvidence, ...],
+    answers: tuple[AnswerRecognition, ...],
+    key_entries: tuple[AnswerKeyEntry, ...],
+) -> Result[NDArray[np.uint8]]:
+    """Draw recognized IDs plus blue correct and red incorrect answer circles."""
+    base = render_overlay(image, evidence)
+    if isinstance(base, Err):
+        return base
+    if (
+        type(answers) is not tuple
+        or type(key_entries) is not tuple
+        or not all(isinstance(item, AnswerRecognition) for item in answers)
+        or not all(isinstance(item, AnswerKeyEntry) for item in key_entries)
+    ):
+        return _error("INVALID_OVERLAY_EVIDENCE", "answers")
+    output = base.value
+    keys = {entry.question: set(entry.answer.choices) for entry in key_entries}
+    for answer in answers:
+        correct = keys.get(answer.question, set())
+        selected = set(answer.value.choices)
+        for cell in answer.cells:
+            rect = cell.pixel_rect
+            if rect is None or cell.choice is None:
+                continue
+            color: tuple[int, int, int] | None = None
+            if cell.choice in selected and cell.choice not in correct:
+                color = INCORRECT_COLOR
+            elif cell.choice in correct:
+                color = CORRECT_COLOR
+            if color is None:
+                continue
+            center = (rect.x + rect.w // 2, rect.y + rect.h // 2)
+            axes = (max(2, rect.w // 2), max(2, rect.h // 2))
+            cv2.ellipse(output, center, axes, 0, 0, 360, color, max(2, min(axes) // 5))
     return Ok(output)
 
 

@@ -15,6 +15,7 @@ from omr_grader.recognition.pipeline import (
     PipelineFailure,
     PipelineInput,
     PipelineSuccess,
+    _page_contour,
     recognize_page,
 )
 from omr_grader.recognition.thresholds import (
@@ -105,8 +106,23 @@ def _big_tiff(width: int, height: int) -> bytes:
 
 def _thresholds():
     return thresholds_for_sensitivity(
-        50, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
+        5, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
     ).value
+
+
+def test_pdf_page_normalization_uses_the_full_rendered_page() -> None:
+    image = np.full((200, 300, 3), 255, dtype=np.uint8)
+    cv2.rectangle(image, (80, 20), (280, 180), (0, 0, 0), 3)
+    page_ref = replace(_page_ref(), source_kind=SourceKind.PDF)
+
+    contour = _page_contour(image, page_ref, _profile())
+
+    assert tuple(map(tuple, contour.value.corners)) == (
+        (0.0, 0.0),
+        (299.0, 0.0),
+        (299.0, 199.0),
+        (0.0, 199.0),
+    )
 
 
 def _outlined_image() -> np.ndarray:
@@ -197,7 +213,7 @@ def test_pipeline_emits_canonical_unpublished_artifacts() -> None:
     ok, encoded = cv2.imencode(".png", image)
     assert ok
     thresholds = thresholds_for_sensitivity(
-        50, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
+        5, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
     ).value
     result = recognize_page(PipelineInput(_page_ref(), encoded.tobytes(), _profile(), thresholds))
     assert isinstance(result, PipelineSuccess)
@@ -224,7 +240,7 @@ def test_pipeline_is_deterministic_and_artifacts_remain_associated_with_the_page
         encoded.tobytes(),
         _profile(),
         thresholds_for_sensitivity(
-            50, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
+            5, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
         ).value,
     )
 
@@ -260,7 +276,7 @@ def test_pipeline_routes_ambiguous_orientation_to_the_matching_page_failure() ->
             encoded.tobytes(),
             _profile(),
             thresholds_for_sensitivity(
-                50, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
+                5, calibrated=True, calibration_provenance=CALIBRATION_PROVENANCE
             ).value,
         )
     )

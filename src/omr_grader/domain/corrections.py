@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from omr_grader.application.dto import EffectiveResponseProjection
 
 type Correction = CorrectionDraft | CorrectionEvent
-_DIGITS = re.compile(r"^[0-9]{8}$")
+_DIGITS = re.compile(r"^[0-9]{1,8}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -560,7 +560,12 @@ def _apply_states(
 
 def _response_id_cells(response: EffectiveResponse) -> list[IdCorrectionValue]:
     if response.student_id is not None:
-        return [IdCorrectionValue(digit, FieldStatus.NORMAL) for digit in response.student_id]
+        values = [
+            IdCorrectionValue(digit, FieldStatus.NORMAL) for digit in response.student_id
+        ]
+        return values + [
+            IdCorrectionValue(None, FieldStatus.BLANK) for _ in range(8 - len(values))
+        ]
     status = (
         FieldStatus.UNCERTAIN
         if response.student_id_status is StudentIdStatus.UNREADABLE
@@ -572,8 +577,18 @@ def _response_id_cells(response: EffectiveResponse) -> list[IdCorrectionValue]:
 def _id_state(
     values: tuple[IdCorrectionValue, ...], original_status: StudentIdStatus
 ) -> tuple[str | None, StudentIdStatus]:
-    if all(value.status is FieldStatus.NORMAL for value in values):
-        return "".join(value.digit or "" for value in values), StudentIdStatus.NORMAL
+    normal_count = 0
+    for value in values:
+        if value.status is not FieldStatus.NORMAL:
+            break
+        normal_count += 1
+    if normal_count and all(
+        value.status is FieldStatus.BLANK for value in values[normal_count:]
+    ):
+        return (
+            "".join(value.digit or "" for value in values[:normal_count]),
+            StudentIdStatus.NORMAL,
+        )
     if original_status is StudentIdStatus.UNREADABLE:
         return None, StudentIdStatus.UNREADABLE
     return None, StudentIdStatus.INVALID

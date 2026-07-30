@@ -10,7 +10,7 @@ from threading import Event, Lock
 from time import monotonic
 from typing import Protocol
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 
@@ -181,6 +181,9 @@ class WorkerBridge(QObject):
         self._progress_interval = progress_interval_ms / 1000
         self._last_progress = 0.0
         self._pending_progress: object | None = None
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setSingleShot(True)
+        self._progress_timer.timeout.connect(self._flush_pending_progress)
         self._cancelled = Event()
         self._cancel_hook: CancelHook | None = None
         self._thread: QThread | None = None
@@ -271,8 +274,28 @@ class WorkerBridge(QObject):
         now = monotonic()
         if now - self._last_progress < self._progress_interval:
             self._pending_progress = value
+            remaining_ms = max(
+                1,
+                round(
+                    (self._progress_interval - (now - self._last_progress))
+                    * 1000
+                ),
+            )
+            if not self._progress_timer.isActive():
+                self._progress_timer.start(remaining_ms)
             return
+        self._progress_timer.stop()
+        self._pending_progress = None
         self._last_progress = now
+        self.progress.emit(value)
+
+    @Slot()
+    def _flush_pending_progress(self) -> None:
+        value = self._pending_progress
+        self._pending_progress = None
+        if value is None or self._terminal_emitted or self._cancelled.is_set():
+            return
+        self._last_progress = monotonic()
         self.progress.emit(value)
 
     @Slot(object)
@@ -321,6 +344,12 @@ class WorkerBridge(QObject):
             return
 
     def _emit_terminal(self, signal: _TerminalEmitter, value: object | None = None) -> None:
+        try:
+            self._progress_timer.stop()
+        except RuntimeError:
+            # The bridge may outlive its native QObject briefly during Qt teardown.
+            pass
+        self._flush_pending_progress()
         with self._lock:
             if self._terminal_emitted:
                 return

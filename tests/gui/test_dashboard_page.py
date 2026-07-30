@@ -3,11 +3,15 @@ from __future__ import annotations
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QHeaderView, QMessageBox, QPushButton
 
 from omr_grader.domain.enums import ExamTerm, SessionState
 from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.ui.dashboard_model import (
+    COLUMN_EXAM_NAME,
+    COLUMN_GRADED_AT,
+    COLUMN_MANAGEMENT,
+    COLUMN_SELECTION,
     HEADERS,
     DashboardSelection,
     DashboardTableModel,
@@ -169,3 +173,93 @@ def test_trash_requires_confirmation_for_permanent_delete_and_respects_read_only
     assert not emitted
     dialog.set_write_enabled(False)
     assert not dialog.restore_button.isEnabled() and not dialog.delete_button.isEnabled()
+
+
+def test_dashboard_row_selection_enables_single_session_backup(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.show()
+    page.set_entries((_entry("session-a", "시험 A"),))
+
+    page.table.selectRow(0)
+
+    assert page.backup_button.isEnabled()
+    selection = page._selection()
+    assert selection is not None
+    assert selection.session_ids == ("session-a",)
+
+
+def test_dashboard_row_click_toggles_checkbox_and_active_row(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.resize(1000, 500)
+    page.set_entries((_entry("session-a", "긴 시험 이름 전체 표시"),))
+    page.show()
+
+    exam_index = page.model.index(0, COLUMN_EXAM_NAME)
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=page.table.visualRect(exam_index).center(),
+    )
+
+    assert (
+        page.model.data(
+            page.model.index(0, COLUMN_SELECTION),
+            Qt.ItemDataRole.CheckStateRole,
+        )
+        == Qt.CheckState.Checked
+    )
+    assert page.table.currentIndex().row() == 0
+    assert page.backup_button.isEnabled()
+
+
+def test_dashboard_columns_are_flexible_and_row_actions_are_buttons(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.set_entries((_entry("session-a", "아주 긴 시험 이름과 전체 정보"),))
+    header = page.table.horizontalHeader()
+
+    assert header.sectionResizeMode(COLUMN_SELECTION) == QHeaderView.ResizeMode.ResizeToContents
+    assert header.sectionResizeMode(COLUMN_EXAM_NAME) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(COLUMN_GRADED_AT) == QHeaderView.ResizeMode.Interactive
+    assert "아주 긴 시험 이름과 전체 정보" in str(
+        page.model.data(page.model.index(0, COLUMN_EXAM_NAME), Qt.ItemDataRole.ToolTipRole)
+    )
+    action_cell = page.table.indexWidget(page.model.index(0, COLUMN_MANAGEMENT))
+    assert action_cell is not None
+    assert {button.text() for button in action_cell.findChildren(QPushButton)} == {
+        "상세 보기",
+        "삭제",
+    }
+
+
+def test_dashboard_omits_term_filter(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+
+    assert not hasattr(page, "term_combo")
+
+
+def test_dashboard_year_filter_uses_grading_timestamp(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.set_entries((_entry("session-a", "시험 A", 2025),))
+
+    assert page.year_combo.itemData(1) == 2026
+
+
+def test_dashboard_search_updates_visible_rows_immediately(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.set_entries(
+        (
+            _entry("session-a", "26-2 생리학 중간고사"),
+            _entry("session-b", "26-2 약리학 중간고사"),
+        )
+    )
+
+    page.search_edit.setText("생 리 학")
+
+    assert page.model.rowCount() == 1
+    assert page.model.entry_at(0).session_id == "session-a"

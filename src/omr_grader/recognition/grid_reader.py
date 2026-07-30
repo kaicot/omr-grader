@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final, cast
 
@@ -109,7 +109,7 @@ def read_grid(
         return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
 
     id_result = _student_id(id_cells, thresholds)
-    all_evidence = tuple(cell for item in id_cells for cell in item.candidates) + tuple(
+    all_evidence = tuple(cell for item in id_result.cells for cell in item.candidates) + tuple(
         cell for item in answers for cell in item.cells
     )
     manual = (
@@ -297,7 +297,7 @@ def _otsu_threshold(values: NDArray[np.uint8]) -> float | None:
 
 
 def _id_cell(candidates: list[CellEvidence], thresholds: RecognitionThresholds) -> IdCell:
-    selected, status = _classify(candidates, thresholds)
+    selected, status = _classify(candidates, thresholds, clear_boundary_winner=True)
     updated = _evidence_with_status(candidates, selected, status)
     digit = str(updated[selected[0]].digit) if status is FieldStatus.NORMAL else None
     return IdCell(digit, status, updated)
@@ -314,11 +314,21 @@ def _answer(
 
 
 def _classify(
-    candidates: list[CellEvidence], thresholds: RecognitionThresholds
+    candidates: list[CellEvidence],
+    thresholds: RecognitionThresholds,
+    *,
+    clear_boundary_winner: bool = False,
 ) -> tuple[tuple[int, ...], FieldStatus]:
     scores = tuple(float(cast(str, item.fill_score)) for item in candidates)
+    strongest = max(scores)
     selected = tuple(
-        index for index, score in enumerate(scores) if score >= thresholds.mark_threshold
+        index
+        for index, score in enumerate(scores)
+        if score >= thresholds.mark_threshold
+        and (
+            score == strongest
+            or score >= thresholds.mark_threshold + thresholds.ambiguity_margin
+        )
     )
     ordered = sorted(scores, reverse=True)
     close = (
@@ -326,9 +336,9 @@ def _classify(
         and ordered[0] >= thresholds.mark_threshold
         and (ordered[0] - ordered[1] <= thresholds.ambiguity_margin)
     )
-    boundary = any(
-        abs(score - thresholds.mark_threshold) <= thresholds.ambiguity_margin for score in scores
-    )
+    boundary = abs(ordered[0] - thresholds.mark_threshold) <= thresholds.ambiguity_margin
+    if clear_boundary_winner and ordered[0] - ordered[1] > thresholds.ambiguity_margin:
+        boundary = False
     if not thresholds.has_valid_calibration_provenance or close or boundary:
         # Preserve potential selections as evidence while refusing automation.
         return selected, FieldStatus.UNCERTAIN
@@ -362,16 +372,37 @@ def _evidence_with_status(
 
 
 def _student_id(cells: list[IdCell], thresholds: RecognitionThresholds) -> StudentIdRecognition:
-    complete = thresholds.has_valid_calibration_provenance and all(
-        cell.status is FieldStatus.NORMAL for cell in cells
+    active_cells = list(cells)
+    normalized_cells = list(cells)
+    strong_threshold = thresholds.mark_threshold + thresholds.ambiguity_margin
+    while active_cells:
+        trailing = active_cells[-1]
+        strongest = max(float(cast(str, item.fill_score)) for item in trailing.candidates)
+        if trailing.status is FieldStatus.BLANK or strongest < strong_threshold:
+            active_cells.pop()
+            if trailing.status is not FieldStatus.BLANK:
+                normalized_cells[len(active_cells)] = IdCell(
+                    None,
+                    FieldStatus.BLANK,
+                    tuple(
+                        replace(item, selected=False, status=CellStatus.BLANK)
+                        for item in trailing.candidates
+                    ),
+                )
+            continue
+        break
+    complete = (
+        thresholds.has_valid_calibration_provenance
+        and bool(active_cells)
+        and all(cell.status is FieldStatus.NORMAL for cell in active_cells)
     )
     if complete:
         return StudentIdRecognition(
-            "".join(cell.selected_digit or "" for cell in cells),
+            "".join(cell.selected_digit or "" for cell in active_cells),
             StudentIdStatus.NORMAL,
-            tuple(cells),
+            tuple(normalized_cells),
         )
-    return StudentIdRecognition(None, StudentIdStatus.INVALID, tuple(cells))
+    return StudentIdRecognition(None, StudentIdStatus.INVALID, tuple(normalized_cells))
 
 
 def canonical_fraction(value: Decimal | float | int) -> str:

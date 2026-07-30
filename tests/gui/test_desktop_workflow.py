@@ -122,7 +122,6 @@ class _DesktopAnswerKeyService:
 def test_native_scan_to_grade_progress_import_and_write_denial(qtbot):
     """Drive the controller's real native controls through a complete typed workflow."""
     window = MainWindow()
-    other_sessions: list[str] = []
     scan_sessions: list[str] = []
     result_navigation: list[tuple[str, int]] = []
 
@@ -167,10 +166,6 @@ def test_native_scan_to_grade_progress_import_and_write_denial(qtbot):
             )
         )
 
-    def import_other(_request, selection):
-        other_sessions.append(selection[0])
-        return Ok(ConnectedSessionDisplay("other", 1, "다른 응답 시험", selection[0]))
-
     controller = AppController(
         window,
         window.scan_page,
@@ -180,8 +175,6 @@ def test_native_scan_to_grade_progress_import_and_write_denial(qtbot):
             grading_context=grading_context,
             answer_key=_DesktopAnswerKeyService(),
             answer_key_picker=lambda _request: ("answers.xlsx", "Sheet1"),
-            other_response_picker=lambda _request: ("other-responses.xlsx", "Responses"),
-            import_response_selection=import_other,
             session_display=session_display,
             settings_load=lambda: Ok(SettingsState(Settings("", 3, False), 1)),
             result_navigation=lambda request: result_navigation.append(
@@ -230,15 +223,11 @@ def test_native_scan_to_grade_progress_import_and_write_denial(qtbot):
 
     QTest.mouseClick(window.grading_page.grade_button, Qt.MouseButton.LeftButton)
     qtbot.waitUntil(lambda: controller._active_bridge is None)
+    assert window.session_progress_label.text() == "정답/채점 완료"
     assert not window.grading_page.result_button.isHidden()
     assert window.grading_page._operation_id is not None
     QTest.mouseClick(window.grading_page.result_button, Qt.MouseButton.LeftButton)
     assert result_navigation == [(scan_sessions[0], 2)]
-
-    QTest.mouseClick(window.grading_page.other_response_button, Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: controller._active_bridge is None)
-    assert other_sessions == ["other-responses.xlsx"]
-    assert "다른 응답 시험" in window.grading_page.session_label.text()
 
     controller.set_write_authority(False)
     assert not window.scan_page.run_button.isEnabled()

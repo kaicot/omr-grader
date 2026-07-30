@@ -34,6 +34,8 @@ MESSAGE_CATALOG: dict[str, str] = {
     "error.portable_root_invalid": "포터블 실행 경로가 폴더가 아닙니다.",
     "error.portable_root_unavailable": "포터블 실행 폴더를 확인할 수 없습니다.",
     "error.root_write_denied": "실행 폴더에 쓸 권한이 없습니다.",
+    "error.orientation_uncertain": "OMR 시험지의 위아래 방향을 확정할 수 없습니다.",
+    "error.scan_no_processable_result": "판독 가능한 OMR 페이지가 없습니다.",
     "error.xlsx_source_changed": "엑셀 원본 파일이 검증 후 변경되었거나 사용할 수 없습니다.",
     "error.xlsx_validation_token_closed": "엑셀 파일 검증 연결이 이미 닫혔습니다.",
     "warning.atomic_write_failed": "파일을 안전하게 저장하지 못했습니다.",

@@ -77,19 +77,19 @@ def test_mutating_actions_require_write_access_idle_session_and_operation_id(qtb
     assert page.upload_button.isEnabled()
     page.set_write_enabled(False)
     assert not page.upload_button.isEnabled()
-    assert not page.other_response_button.isEnabled()
     assert not page.sample_button.isEnabled()
 
 
 def test_browse_and_drop_requests_preserve_selection_for_validation_and_retry(qtbot) -> None:
     page = _ready_page(qtbot)
+    assert page.answer_key_drop_widget.acceptDrops()
     with qtbot.waitSignal(page.answer_key_browse_requested) as browse:
         QTest.mouseClick(page.upload_button, Qt.MouseButton.LeftButton)
     assert browse.args[0].intent == "answer_key_browse"
     with qtbot.waitSignal(page.answer_key_dropped) as drop:
-        page.drop_answer_key("C:/새_정답표.xlsx", "Sheet1")
+        assert page.answer_key_drop_widget.set_selection(("C:/새_정답표.xlsx",))
     assert drop.args[0].answer_key_path == "C:/새_정답표.xlsx"
-    assert drop.args[0].answer_key_sheet == "Sheet1"
+    assert drop.args[0].answer_key_sheet == "정답표"
     page.set_error("Sheet1: 정답은 1~5만 입력할 수 있습니다.")
     assert "정답은" in page.error_label.text()
     assert not page.grade_button.isEnabled()
@@ -136,6 +136,10 @@ def test_validation_errors_are_visible_and_block_grading(qtbot) -> None:
 
 def test_progress_cancel_cleanup_and_state_preservation(qtbot) -> None:
     page = _ready_page(qtbot)
+    page.set_busy(True)
+    assert page.progress_frame.isVisible()
+    assert page.progress_bar.minimum() == 0
+    assert page.progress_bar.maximum() == 0
     page.set_grading_progress(GradingProgressDisplay(4, 10, 65, 90))
     assert page.progress_frame.isVisible()
     assert page.progress_bar.value() == 4
@@ -150,7 +154,17 @@ def test_progress_cancel_cleanup_and_state_preservation(qtbot) -> None:
     assert page.grade_button.isEnabled()
 
 
-def test_sample_other_response_result_and_regrade_history_requests(qtbot) -> None:
+def test_grading_actions_are_visually_explicit_and_dropzone_matches_scan(qtbot) -> None:
+    page = _ready_page(qtbot)
+
+    assert page.answer_key_drop_widget.objectName() == "importDropWidget"
+    assert page.grade_button.text() == "채점 실행"
+    assert page.grade_button.objectName() == "primaryActionButton"
+    assert page.result_button.text() == "채점 결과보기"
+    assert page.result_button.objectName() == "primaryActionButton"
+
+
+def test_sample_result_and_regrade_history_requests(qtbot) -> None:
     page = _ready_page(qtbot)
     page.set_connected_session(
         ConnectedSessionDisplay("session-1", 3, "시험", "C:/응답.xlsx", True)
@@ -160,31 +174,17 @@ def test_sample_other_response_result_and_regrade_history_requests(qtbot) -> Non
     assert "이전 채점" in page.regrade_label.text()
     with qtbot.waitSignal(page.sample_download_requested) as sample:
         QTest.mouseClick(page.sample_button, Qt.MouseButton.LeftButton)
-    with qtbot.waitSignal(page.other_response_requested) as response:
-        QTest.mouseClick(page.other_response_button, Qt.MouseButton.LeftButton)
     assert sample.args[0].intent == "sample_download"
-    assert response.args[0].intent == "other_response"
     page.set_result_available("session-1", 3)
     with qtbot.waitSignal(page.result_navigation_requested) as result:
         QTest.mouseClick(page.result_button, Qt.MouseButton.LeftButton)
     assert result.args[0].intent == "result_navigation"
 
 
-def test_other_response_import_intent_can_be_retried_with_immutable_values(qtbot) -> None:
+def test_grading_page_omits_redundant_response_import_action(qtbot) -> None:
     page = _ready_page(qtbot)
-    requests = []
-    page.other_response_requested.connect(requests.append)
 
-    QTest.mouseClick(page.other_response_button, Qt.MouseButton.LeftButton)
-    QTest.mouseClick(page.other_response_button, Qt.MouseButton.LeftButton)
-
-    assert len(requests) == 2
-    assert requests[0] == requests[1]
-    assert requests[0].intent == "other_response"
-    assert requests[0].session_id == "session-1"
-    assert requests[0].revision == 3
-    assert requests[0].response_path == "C:/응답결과.xlsx"
-    assert requests[0].operation_id == "grade-1"
+    assert page.findChild(type(page.upload_button), "otherResponseButton") is None
 
 
 def test_result_navigation_remains_read_only_but_is_gated_while_busy(qtbot) -> None:
@@ -200,7 +200,6 @@ def test_result_navigation_remains_read_only_but_is_gated_while_busy(qtbot) -> N
     page.set_grading_progress(GradingProgressDisplay(1, 2, 1, None))
     assert not page.result_button.isEnabled()
     assert not page.upload_button.isEnabled()
-    assert not page.other_response_button.isEnabled()
 
 
 def test_result_navigation_is_cleared_when_connected_identity_changes(qtbot) -> None:

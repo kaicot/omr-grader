@@ -134,11 +134,22 @@ class DashboardTableModel(QAbstractTableModel):
                 "-"
                 if entry.highest_score is None or entry.lowest_score is None
                 else f"{entry.highest_score} / {entry.lowest_score}점",
-                "상세 보기 · 삭제",
+                "",
             )
             return values[column]
         if role == Qt.ItemDataRole.ToolTipRole:
-            return f"{entry.exam_name}, {entry.exam_year or '-'}년 {_term_label(entry.exam_term)}"
+            values = (
+                "클릭하여 시험을 선택하거나 선택 해제합니다.",
+                entry.exam_name,
+                _timestamp(entry.graded_at),
+                f"{entry.participant_count}명",
+                "-" if entry.average_score is None else f"{entry.average_score}점",
+                "-"
+                if entry.highest_score is None or entry.lowest_score is None
+                else f"{entry.highest_score} / {entry.lowest_score}점",
+                f"{entry.exam_name} 상세 보기 또는 삭제",
+            )
+            return values[column]
         if role == Qt.ItemDataRole.AccessibleTextRole:
             return f"{HEADERS[column]}: {self.data(index, Qt.ItemDataRole.DisplayRole)}"
         if role == Qt.ItemDataRole.UserRole:
@@ -231,7 +242,14 @@ class DashboardTableModel(QAbstractTableModel):
     def _matches(self, item: DashboardIndexEntry) -> bool:
         return (
             (not self._search or self._search in korean_search_key(item.exam_name))
-            and (self._year is None or item.exam_year == self._year)
+            and (
+                self._year is None
+                or (
+                    item.graded_at is not None
+                    and item.graded_at[:4].isdigit()
+                    and int(item.graded_at[:4]) == self._year
+                )
+            )
             and (self._term is None or item.exam_term == self._term)
         )
 

@@ -57,3 +57,13 @@ def test_lifecycle_materialization_copies_only_immutable_or_audit_artifacts(
     path: str, preserved: bool
 ) -> None:
     assert _preserved_artifact(path, OperationKind.CORRECT) is preserved
+
+
+def test_finalization_preserves_the_last_score_workbook() -> None:
+    assert _preserved_artifact(
+        "02_score_시험_260730_120000_채점결과.xlsx", OperationKind.FINALIZE
+    )
+    assert _preserved_artifact(
+        "artifacts/02_score_시험_260730_120000_채점결과.xlsx",
+        OperationKind.FINALIZE,
+    )

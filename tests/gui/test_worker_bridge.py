@@ -33,6 +33,26 @@ def test_success_emits_one_terminal(qtbot):
     assert not bridge.active
 
 
+def test_throttled_progress_flushes_latest_value_while_worker_is_running(qtbot):
+    bridge = WorkerBridge(progress_interval_ms=20)
+    release = Event()
+    progress: list[str] = []
+    bridge.progress.connect(progress.append)
+
+    def operation(_cancel, emit_progress):
+        emit_progress("첫 상태")
+        emit_progress("최신 상태")
+        release.wait()
+        return "완료"
+
+    bridge.start(operation)
+    try:
+        qtbot.waitUntil(lambda: progress == ["첫 상태", "최신 상태"], timeout=1000)
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: not bridge.active)
+
+
 def test_error_and_late_progress_are_terminal_once(qtbot):
     bridge = WorkerBridge(progress_interval_ms=0)
     errors: list[WorkerError] = []

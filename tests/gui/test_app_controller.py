@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
 from threading import Event
 from types import MappingProxyType
 
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QThread
 
 from omr_grader.application.detail_presenter import (
     DetailAnswerDisplay,
@@ -20,6 +21,7 @@ from omr_grader.application.detail_presenter import (
 from omr_grader.application.dto import (
     CancelOperationCommand,
     CommitGenerationResult,
+    ProfileImportResult,
     RegradeCommand,
     ScanCommand,
     ScanProgress,
@@ -37,6 +39,8 @@ from omr_grader.application.settings_use_case import SettingsState
 from omr_grader.bootstrap import _canonical_response_workbook_selection
 from omr_grader.domain.enums import IndexState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok
+from omr_grader.infrastructure.dashboard_repository import DashboardListing
+from omr_grader.infrastructure.logging_setup import configure_logging
 from omr_grader.ui.app_controller import AppController, FreshResponseIntent, ServicePorts
 from omr_grader.ui.dashboard_model import DashboardSelection
 from omr_grader.ui.dashboard_page import DashboardRequest
@@ -44,7 +48,8 @@ from omr_grader.ui.grading_page import GradingPage
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
 from omr_grader.ui.main_window import MainWindow
 from omr_grader.ui.scan_page import ScanPage, ScanPageRequest, ValidatedProfileState
-from omr_grader.ui.worker_bridge import WorkerBridge
+from omr_grader.ui.settings_page import SettingsProfileCandidate
+from omr_grader.ui.worker_bridge import WorkerBridge, WorkerError
 from omr_grader.workbooks.schemas import RESPONSE_SHEET_NAME
 
 
@@ -67,6 +72,87 @@ def test_bootstrap_response_workbook_route_is_strict_and_canonical() -> None:
         RESPONSE_SHEET_NAME,
     )
     assert _canonical_response_workbook_selection("legacy-response.xls") is None
+
+
+def test_initial_dashboard_load_runs_off_the_ui_thread(qtbot) -> None:
+    window, scan, grading = _window(qtbot)
+    calls: list[QThread] = []
+
+    def load_dashboard():
+        calls.append(QThread.currentThread())
+        return Ok(DashboardListing(()))
+
+    controller = AppController(
+        window,
+        scan,
+        grading,
+        _ready_ports(dashboard_load=load_dashboard),
+        write_enabled=True,
+    )
+
+    qtbot.waitUntil(lambda: controller._active_bridge is None)
+
+    assert len(calls) == 1
+    assert calls[0] is not QCoreApplication.instance().thread()
+    controller.close()
+
+
+def test_scan_failure_logs_diagnostic_code_and_shows_log_path(qtbot, tmp_path: Path) -> None:
+    log_path = tmp_path / "omr-grader.log"
+    configured = configure_logging(log_path)
+    assert isinstance(configured, Ok)
+    window, scan, grading = _window(qtbot)
+    window.set_diagnostic_log_path(str(log_path))
+    controller = AppController(window, scan, grading, _ready_ports(), write_enabled=True)
+    controller._active_page = scan
+    controller._active_kind = "write"
+    controller._active_operation_id = "scan-operation"
+
+    controller._failed(
+        WorkerError(
+            "SCAN_NO_PROCESSABLE_RESULT",
+            "error.scan_no_processable_result",
+            "source",
+            (("failed_pages", 10), ("failure_codes", "ORIENTATION_UNCERTAIN:10")),
+            False,
+            None,
+        )
+    )
+    for handler in configured.value.handlers:
+        handler.flush()
+
+    assert "오류 코드: SCAN_NO_PROCESSABLE_RESULT" in scan.progress_label.text()
+    assert str(log_path) in scan.progress_label.text()
+    contents = log_path.read_text(encoding="utf-8")
+    assert "SCAN_NO_PROCESSABLE_RESULT" in contents
+    assert "ORIENTATION_UNCERTAIN:10" in contents
+    controller.close()
+
+
+def test_synchronous_scan_error_is_logged_with_code_and_log_path(qtbot, tmp_path: Path) -> None:
+    log_path = tmp_path / "omr-grader.log"
+    configured = configure_logging(log_path)
+    assert isinstance(configured, Ok)
+    window, scan, grading = _window(qtbot)
+    window.set_diagnostic_log_path(str(log_path))
+    controller = AppController(window, scan, grading, _ready_ports(), write_enabled=True)
+
+    controller._present_error(
+        scan,
+        ErrorInfo(
+            "SCAN_SOURCE_UNREADABLE",
+            "error.scan_source_unreadable",
+            context={"reason": "PDF 파일을 읽지 못했습니다."},
+        ),
+    )
+    for handler in configured.value.handlers:
+        handler.flush()
+
+    assert "오류 코드: SCAN_SOURCE_UNREADABLE" in scan.progress_label.text()
+    assert str(log_path) in scan.progress_label.text()
+    contents = log_path.read_text(encoding="utf-8")
+    assert "SCAN_SOURCE_UNREADABLE" in contents
+    controller.close()
 
 
 def test_dashboard_detail_request_uses_controller_port_and_persisted_detail(qtbot) -> None:
@@ -209,6 +295,30 @@ def test_settings_empty_profile_can_save_other_valid_settings(qtbot) -> None:
 
     assert len(requests) == 1
     assert requests[0].settings == Settings("", 5, True)
+    controller.close()
+
+
+def test_profile_import_completion_selects_profile_on_scan_page(qtbot, monkeypatch) -> None:
+    window, scan, grading = _window(qtbot)
+    controller = AppController(window, scan, grading, _ready_ports(), write_enabled=True)
+    imported = ValidatedProfileState(
+        "테스트 프로필",
+        "Tmot_OMR100.omrtemplate",
+        (1682, 1190),
+        "100문항",
+        validated=True,
+    )
+    candidate = SettingsProfileCandidate(imported.path, True, None)
+
+    def refresh():
+        scan.set_profiles((imported,))
+        return (candidate,)
+
+    monkeypatch.setattr(controller, "_refresh_profile_catalog", refresh)
+    controller._finish_profile_import(ProfileImportResult(imported.path, "a" * 64))
+
+    assert scan.profile_combo.currentData() == imported
+    assert "적용되었습니다" in scan.progress_label.text()
     controller.close()
 
 
@@ -797,9 +907,10 @@ def test_scan_error_is_presented_in_korean(qtbot):
     )
 
     scan.recognition_requested.emit(_request())
-    qtbot.waitUntil(lambda: scan.progress_label.text() == "실행 폴더에 쓸 권한이 없습니다.")
+    qtbot.waitUntil(lambda: "오류 코드: ROOT_WRITE_DENIED" in scan.progress_label.text())
 
-    assert scan.progress_label.text() == "실행 폴더에 쓸 권한이 없습니다."
+    assert "실행 폴더에 쓸 권한이 없습니다." in scan.progress_label.text()
+    assert "오류 코드: ROOT_WRITE_DENIED" in scan.progress_label.text()
     controller.close()
 
 
@@ -811,9 +922,10 @@ def test_write_denied_never_calls_mutating_service(qtbot):
     )
 
     scan.recognition_requested.emit(_request())
-    qtbot.waitUntil(lambda: scan.progress_label.text() == "실행 폴더에 쓸 권한이 없습니다.")
+    qtbot.waitUntil(lambda: "오류 코드: ROOT_WRITE_DENIED" in scan.progress_label.text())
 
     assert service.calls == []
+    assert "실행 폴더에 쓸 권한이 없습니다." in scan.progress_label.text()
     assert not scan.run_button.isEnabled()
     controller.close()
 

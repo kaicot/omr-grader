@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QStackedWidget,
     QStatusBar,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -66,11 +69,14 @@ class MainWindow(QMainWindow):
         self._close_requires_controller = False
         self._close_requested = False
         self._close_permitted = False
+        self.diagnostic_log_path: str | None = None
         self.setObjectName("mainWindow")
         self.setWindowTitle("OMR Grader")
         self.setMinimumSize(1280, 800)
-        self.resize(1440, 860)
+        self.initial_size = QSize(1500, 1000)
+        self.resize(self.initial_size)
         self.setAccessibleName("OMR Grader 메인 창")
+        self.help_dialog, self.help_browser = self._create_help_dialog()
 
         root = QWidget(self)
         root_layout = QHBoxLayout(root)
@@ -159,7 +165,7 @@ class MainWindow(QMainWindow):
 
         brand = QHBoxLayout()
         mark = QLabel("◒", sidebar)
-        mark.setStyleSheet("color: #61C3E8; font-size: 34px; font-weight: 700;")
+        mark.setObjectName("brandMark")
         mark.setAccessibleName("OMR Grader 로고")
         brand_text = QVBoxLayout()
         self.brand_title = QLabel("OMR Grader", sidebar)
@@ -208,8 +214,13 @@ class MainWindow(QMainWindow):
         self.session_name_label.setObjectName("sessionName")
         self.session_name_label.setWordWrap(True)
         self.session_name_label.setAccessibleName("현재 시험 세션")
+        self.session_progress_label = QLabel("작업 대기 중", self.session_card)
+        self.session_progress_label.setObjectName("sessionProgress")
+        self.session_progress_label.setWordWrap(True)
+        self.session_progress_label.setAccessibleName("현재 작업 진행 상태")
         card_layout.addWidget(caption)
         card_layout.addWidget(self.session_name_label)
+        card_layout.addWidget(self.session_progress_label)
         layout.addWidget(self.session_card)
         return sidebar
 
@@ -236,6 +247,51 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.theme_button)
         layout.addWidget(self.help_button)
         return top_bar
+
+    def _create_help_dialog(self) -> tuple[QDialog, QTextBrowser]:
+        dialog = QDialog(self)
+        dialog.setObjectName("helpDialog")
+        dialog.setWindowTitle("OMR Grader 도움말 / 사용 설명서")
+        dialog.setMinimumSize(760, 620)
+        dialog.setModal(False)
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        browser.setObjectName("helpBrowser")
+        browser.setOpenExternalLinks(True)
+        self._help_html = """
+            <h1>OMR Grader 사용 설명서</h1>
+            <h2>1. OMR 스캔</h2>
+            <ol>
+              <li>시험명을 입력합니다.</li>
+              <li><b>OMR 프로필 불러오기</b> 또는 끌어놓기로
+                  <code>.omrtemplate</code> 파일을 선택합니다.</li>
+              <li>프로필 정보에 <b>검증 완료</b>가 표시됐는지 확인합니다.</li>
+              <li>필요하면 응시 학생 명단 엑셀을 선택합니다.</li>
+              <li>스캔 이미지 폴더 또는 PDF를 선택합니다.</li>
+              <li><b>OMR 인식 실행</b>을 눌러 응답 결과를 생성합니다.</li>
+            </ol>
+            <h2>2. 정답/채점</h2>
+            <p>스캔이 완료되면 정답표 엑셀을 불러와 검증한 뒤 채점을 실행합니다.
+               공란·복수 마킹 등은 확인 대상으로 표시됩니다.</p>
+            <h2>3. 시험 관리</h2>
+            <p>저장된 시험을 열어 학생별 응답을 확인·수정하고, 백업·복원 및
+               통합 성적표 기능을 사용할 수 있습니다.</p>
+            <h2>4. 환경 설정</h2>
+            <p>기본 OMR 프로필, 인식 감도와 다중 처리 설정을 저장할 수 있습니다.</p>
+            <h2>문제 해결 및 Q&amp;A</h2>
+            <p>문의와 오류 제보:
+              <a href="https://github.com/kaicot/omr-grader">
+                https://github.com/kaicot/omr-grader
+              </a>
+            </p>
+            <p>프로그램개발: 조승현(kaic21@gmail.com)</p>
+            """
+        browser.setHtml(self._help_html)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.rejected.connect(dialog.close)
+        layout.addWidget(browser, 1)
+        layout.addWidget(buttons)
+        return dialog, browser
 
     def _set_tab_order(self) -> None:
         widgets = [*self.nav_buttons, self.theme_button, self.help_button, self.pages]
@@ -333,6 +389,17 @@ class MainWindow(QMainWindow):
         self.session_status_label.setText(f"세션: {display_name}")
         self.session_status_label.setToolTip(display_name)
 
+    def set_session_progress(self, message: str) -> None:
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("message must be a non-empty string")
+        self.session_progress_label.setText(message)
+        self.session_progress_label.setToolTip(message)
+
+    def set_diagnostic_log_path(self, path: str) -> None:
+        if not isinstance(path, str) or not path:
+            raise ValueError("path must be a non-empty string")
+        self.diagnostic_log_path = path
+
     def show_diagnostic(self, message: str) -> None:
         """Keep startup diagnostics visible without preventing help or navigation."""
         self.set_status(message, role="error")
@@ -369,7 +436,10 @@ class MainWindow(QMainWindow):
         self.status_label.style().polish(self.status_label)
 
     def show_help(self) -> None:
-        self.set_status("도움말: 왼쪽 메뉴에서 작업을 선택하고, OMR 스캔부터 순서대로 진행하세요.")
+        self.help_dialog.show()
+        self.help_dialog.raise_()
+        self.help_dialog.activateWindow()
+        self.set_status("도움말 / 사용 설명서를 열었습니다.")
 
     def set_close_requires_controller(self, required: bool) -> None:
         """Record whether a close must wait for an active worker to finish."""
@@ -445,6 +515,11 @@ class MainWindow(QMainWindow):
         application = QApplication.instance()
         if isinstance(application, QApplication):
             apply_theme(application, self._theme)
+        link_color = "#93C5FD" if self._theme is Theme.DARK else "#1D4ED8"
+        self.help_browser.document().setDefaultStyleSheet(
+            f"a {{ color: {link_color}; font-weight: 700; text-decoration: underline; }}"
+        )
+        self.help_browser.setHtml(self._help_html)
         self.theme_button.setText("밝은 테마" if self._theme is Theme.DARK else "어두운 테마")
 
     def _on_page_changed(self, page_index: int) -> None:

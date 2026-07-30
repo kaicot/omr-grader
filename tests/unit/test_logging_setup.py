@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import logging
+import sys
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from omr_grader.domain.errors import Ok
-from omr_grader.infrastructure.logging_setup import configure_logging, redact_log_text
+from omr_grader.infrastructure.logging_setup import (
+    configure_logging,
+    daily_log_path,
+    install_global_exception_hooks,
+    redact_log_text,
+)
 from omr_grader.infrastructure.paths import ManagedPaths
 
 
@@ -62,3 +69,33 @@ def test_configure_logging_writes_only_under_resolved_portable_data_root_and_red
         assert "[비공개]" in contents
     finally:
         _close_application_handlers(logger)
+
+
+def test_daily_log_path_and_global_exception_hook_record_traceback(tmp_path: Path) -> None:
+    log_path = daily_log_path(tmp_path, datetime(2026, 7, 30, 10, 54))
+    assert log_path == tmp_path / "logs" / "app_20260730.log"
+    configured = configure_logging(log_path)
+    assert isinstance(configured, Ok)
+    previous = sys.excepthook
+    try:
+        install_global_exception_hooks(configured.value)
+        try:
+            raise RuntimeError("전역 예외 테스트")
+        except RuntimeError:
+            sys.excepthook(*sys.exc_info())
+        for handler in configured.value.handlers:
+            handler.flush()
+        contents = log_path.read_text(encoding="utf-8")
+        assert "Unhandled exception" in contents
+        assert "RuntimeError: 전역 예외 테스트" in contents
+        assert "Traceback (most recent call last)" in contents
+    finally:
+        sys.excepthook = previous
+        _close_application_handlers(configured.value)
+
+
+def test_daily_log_directory_is_outside_session_storage(tmp_path: Path) -> None:
+    paths = ManagedPaths.from_root(tmp_path)
+
+    assert daily_log_path(paths.root).parent == paths.logs_dir
+    assert not daily_log_path(paths.root).is_relative_to(paths.data_dir)

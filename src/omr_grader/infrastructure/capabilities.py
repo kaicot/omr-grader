@@ -49,17 +49,22 @@ def probe_root_capability(paths: ManagedPaths) -> Result[RootCapability]:
     resolved_paths = ManagedPaths.from_root(root)
     profiles = resolved_paths.profiles_target()
     data = resolved_paths.data_target()
+    logs = resolved_paths.logs_target()
     config = resolved_paths.config_target()
     if isinstance(profiles, Err):
         return profiles
     if isinstance(data, Err):
         return data
+    if isinstance(logs, Err):
+        return logs
     if isinstance(config, Err):
         return config
     if profiles.value.exists() and not profiles.value.is_dir():
         return Err((_error("MANAGED_PATH_INVALID", "관리 폴더 경로가 올바르지 않습니다."),))
     if data.value.exists() and not data.value.is_dir():
         return Err((_error("MANAGED_PATH_INVALID", "관리 폴더 경로가 올바르지 않습니다."),))
+    if logs.value.exists() and not logs.value.is_dir():
+        return Err((_error("MANAGED_PATH_INVALID", "로그 폴더 경로가 올바르지 않습니다."),))
     if config.value.exists() and not config.value.is_file():
         return Err((_error("MANAGED_PATH_INVALID", "설정 파일 경로가 올바르지 않습니다."),))
 
@@ -87,13 +92,17 @@ def bootstrap_managed_paths(paths: ManagedPaths, token: CapabilityToken) -> Resu
         )
     profiles = paths.profiles_target()
     data = paths.data_target()
+    logs = paths.logs_target()
     if isinstance(profiles, Err):
         return profiles
     if isinstance(data, Err):
         return data
+    if isinstance(logs, Err):
+        return logs
     try:
         profiles.value.mkdir(parents=False, exist_ok=True)
         data.value.mkdir(parents=False, exist_ok=True)
+        logs.value.mkdir(parents=False, exist_ok=True)
     except OSError as exc:
         return Err(
             (
@@ -107,10 +116,17 @@ def bootstrap_managed_paths(paths: ManagedPaths, token: CapabilityToken) -> Resu
         )
     profiles = paths.profiles_target()
     data = paths.data_target()
+    logs = paths.logs_target()
     if isinstance(profiles, Err):
         return profiles
     if isinstance(data, Err):
         return data
-    if not profiles.value.is_dir() or not data.value.is_dir():
+    if isinstance(logs, Err):
+        return logs
+    if (
+        not profiles.value.is_dir()
+        or not data.value.is_dir()
+        or not logs.value.is_dir()
+    ):
         return Err((_error("MANAGED_PATH_INVALID", "관리 폴더 경로가 올바르지 않습니다."),))
     return Ok(paths)

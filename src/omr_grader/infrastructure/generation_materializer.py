@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import cv2
+import numpy as np
+
 from omr_grader.application.dto import (
     CorrectionSemanticView,
     EffectiveResponseProjection,
@@ -33,6 +36,8 @@ from omr_grader.domain.models import (
     SessionRecord,
 )
 from omr_grader.infrastructure.atomic_io import atomic_write_json
+from omr_grader.infrastructure.result_layout import SCORE_IMAGE_DIR
+from omr_grader.recognition.overlay import render_scored_overlay
 from omr_grader.workbooks.score_book import write_final_book, write_score_book
 
 if TYPE_CHECKING:
@@ -147,7 +152,7 @@ class GenerationMaterializer:
             output = write_final_book(
                 request.token.path("artifacts"),
                 exam_name=request.record.exam_name,
-                committed_at=request.record.updated_at,
+                committed_at=request.record.created_at,
                 session_id=request.record.session_id,
                 revision=request.record.revision,
                 manifest_sha256=request.parent_manifest_sha256,
@@ -160,7 +165,7 @@ class GenerationMaterializer:
             output = write_score_book(
                 request.token.path("artifacts"),
                 exam_name=request.record.exam_name,
-                committed_at=request.record.updated_at,
+                committed_at=request.record.created_at,
                 session_id=request.record.session_id,
                 revision=request.record.revision,
                 manifest_sha256=request.parent_manifest_sha256,
@@ -170,6 +175,7 @@ class GenerationMaterializer:
                 names_by_student_id=names,
             )
         _validate_xlsx(output)
+        request.token.write_bytes(output.name, output.read_bytes())
         request.token.write_json(
             f"{output.relative_to(request.token._root).as_posix()}.provenance.json",
             {"schema_version": 1, "source_manifest_sha256": request.parent_manifest_sha256},
@@ -203,6 +209,11 @@ class GenerationMaterializer:
             if request.recognition_artifacts is not None
             else {}
         )
+        answer_key = (
+            AnswerKeySnapshot.from_dict(_object(combined, "answer_key"))
+            if combined.get("scores") is not None
+            else None
+        )
         for response in responses:
             page = pages.get(response.work_item_id)
             image_path: str | None = None
@@ -214,6 +225,29 @@ class GenerationMaterializer:
                     request.token.write_bytes(image_path, image)
                 elif request.token.path(f"images/{response.work_item_id}.png").is_file():
                     image_path = f"images/{response.work_item_id}.png"
+                if answer_key is not None and image_path is not None:
+                    raster = cv2.imdecode(
+                        np.frombuffer(
+                            request.token.path(image_path).read_bytes(),
+                            dtype=np.uint8,
+                        ),
+                        cv2.IMREAD_COLOR,
+                    )
+                    if raster is None:
+                        raise ValueError("committed detail image cannot be decoded")
+                    scored = render_scored_overlay(
+                        raster,
+                        page.evidence,
+                        page.answers,
+                        answer_key.entries,
+                    )
+                    if isinstance(scored, Err):
+                        raise ValueError("scored detail overlay cannot be rendered")
+                    encoded, encoded_payload = cv2.imencode(".png", scored.value)
+                    if not encoded:
+                        raise ValueError("scored detail overlay cannot be encoded")
+                    image_path = f"{SCORE_IMAGE_DIR}/{response.work_item_id}.png"
+                    request.token.write_bytes(image_path, encoded_payload.tobytes())
             score, rank = scores.get(response.work_item_id, (None, None))
             detail_path = f"details/{response.work_item_id}.json"
             payload: dict[str, object] = {"response": response.to_dict()}
@@ -313,8 +347,11 @@ def _read_parent_projection(
             or document["schema_version"] != 1
         ):
             raise ValueError("projection request envelope is invalid")
-        base_snapshot = _mapping(document["base_snapshot"])
-        if set(base_snapshot) != {
+        base_snapshot_value = document["base_snapshot"]
+        base_snapshot = (
+            None if base_snapshot_value is None else _mapping(base_snapshot_value)
+        )
+        if base_snapshot is not None and set(base_snapshot) != {
             "session_id",
             "revision",
             "generation_id",
@@ -325,11 +362,25 @@ def _read_parent_projection(
         if not all(isinstance(item, str) for item in base_response_ids):
             raise ValueError("projection base response IDs are invalid")
         if (
-            base_snapshot["session_id"] != manifest.session_id
-            or base_snapshot["revision"] != manifest.parent_revision
-            or base_snapshot["generation_id"] != manifest.parent_generation_id
-            or base_snapshot["manifest_sha256"] != manifest.parent_manifest_sha256
-            or tuple(base_response_ids) != manifest.base_response_ids
+            (
+                base_snapshot is None
+                and (
+                    manifest.parent_revision is not None
+                    or manifest.parent_generation_id is not None
+                    or manifest.parent_manifest_sha256 is not None
+                )
+            )
+            or (
+                base_snapshot is not None
+                and (
+                    base_snapshot["session_id"] != manifest.session_id
+                    or base_snapshot["revision"] != manifest.parent_revision
+                    or base_snapshot["generation_id"] != manifest.parent_generation_id
+                    or base_snapshot["manifest_sha256"] != manifest.parent_manifest_sha256
+                )
+            )
+            or tuple(sorted(base_response_ids, key=lambda item: str(item).encode()))
+            != manifest.base_response_ids
         ):
             raise ValueError("projection base snapshot does not match parent lineage")
         payload = _mapping(document["projection"])
@@ -508,11 +559,9 @@ def _combined(
     projection: EffectiveResponseProjection | None,
 ) -> dict[str, object] | None:
     semantic = request.mutation.semantic_inputs
-    if request.mutation.operation_kind in (
-        OperationKind.CORRECT,
-        OperationKind.REGRADE,
-        OperationKind.FINALIZE,
-    ) and (parent is None or parent.get("scores") is None):
+    if request.mutation.operation_kind is OperationKind.FINALIZE and (
+        parent is None or parent.get("scores") is None
+    ):
         raise ValueError("score-bearing lifecycle generation requires canonical parent scores")
     if projection is None:
         if parent is None:

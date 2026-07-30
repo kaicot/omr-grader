@@ -44,7 +44,7 @@ from .schemas import (
 )
 
 _CELL_REFERENCE = re.compile(r"([A-Z]+)")
-_ID = re.compile(r"^[0-9]{8}$")
+_ID = re.compile(r"^[0-9]{1,8}$")
 _DANGEROUS_PARTS = (
     "vbaproject",
     "externallink",

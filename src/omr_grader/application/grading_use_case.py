@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -54,7 +55,11 @@ class GradingUseCase:
         self._answer_keys = answer_keys
         self._coordinator = coordinator
 
-    def regrade(self, command: RegradeCommand) -> Result[CommitGenerationResult]:
+    def regrade(
+        self,
+        command: RegradeCommand,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> Result[CommitGenerationResult]:
         committed = self._snapshots.read_grading_snapshot(
             command.session_id, command.expected_revision
         )
@@ -66,7 +71,9 @@ class GradingUseCase:
         if isinstance(validated, Err):
             return validated
         snapshot = committed.value
-        scores = score_effective(ScoreInput(snapshot.responses, validated.value.snapshot))
+        scores = score_effective(
+            ScoreInput(snapshot.responses, validated.value.snapshot), progress
+        )
         mutation = GenerationMutation(
             command.session_id,
             command.operation_id,

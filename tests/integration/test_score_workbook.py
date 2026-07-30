@@ -68,6 +68,15 @@ def test_score_and_final_workbooks_have_exact_projection_shape(tmp_path):
     assert final.cell(2, 106).value is True and final.cell(2, 106).data_type == "b"
     assert final.cell(2, 107).value == "학번1,Q2"
     assert final.cell(2, 108).value == "2026-07-28T01:02:03.123456Z"
+    assert score_book.sheetnames == ["채점결과", "응답내역"]
+    responses = score_book["응답내역"]
+    assert tuple(cell.value for cell in responses[1]) == expected_score_headers
+    assert tuple(responses.cell(2, column).value for column in range(5, 8)) == (
+        "1,2",
+        None,
+        None,
+    )
+    assert final_book.sheetnames == ["최종성적표", "응답내역"]
     assert {property.name: property.value for property in score_book.custom_doc_props} == {
         "schema": "1",
         "session_id": "session-1",

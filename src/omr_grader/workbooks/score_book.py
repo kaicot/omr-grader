@@ -9,10 +9,8 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
-from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.packaging.custom import StringProperty
@@ -21,6 +19,7 @@ from omr_grader.application.dto import ScoreSet
 from omr_grader.domain.enums import StudentIdStatus
 from omr_grader.domain.grading import question_outcomes
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
+from omr_grader.infrastructure.result_layout import result_base_name
 
 _SCORE_HEADERS = (
     "석차",
@@ -32,16 +31,13 @@ _SCORE_HEADERS = (
 )
 _FINAL_HEADERS = (*_SCORE_HEADERS, "수정여부", "수정문항", "확정일시")
 _DANGEROUS_PREFIXES = ("=", "+", "-", "@")
-_KST = ZoneInfo("Asia/Seoul")
-
-
 def score_filename(exam_name: str, committed_at: str) -> str:
-    return f"02_score_{_safe_exam_name(exam_name)}_{_display_timestamp(committed_at)}_채점결과.xlsx"
+    return f"02_score_{result_base_name(exam_name, committed_at)}_채점결과.xlsx"
 
 
 def final_filename(exam_name: str, committed_at: str) -> str:
     return (
-        f"03_final_{_safe_exam_name(exam_name)}_{_display_timestamp(committed_at)}_최종성적표.xlsx"
+        f"03_final_{result_base_name(exam_name, committed_at)}_최종성적표.xlsx"
     )
 
 
@@ -162,6 +158,8 @@ def _write(
         raise RuntimeError("new workbook must have an active worksheet")
     worksheet.title = sheet_name
     worksheet.append(list(headers))
+    response_sheet = workbook.create_sheet("응답내역")
+    response_sheet.append(list(headers))
     for _, response in ordered:
         score = scores_by_work_item[response.work_item_id]
         student_id = response.student_id
@@ -185,6 +183,22 @@ def _write(
             targets = ",".join(_correction_label(target) for target in response.corrected_targets)
             row.extend((corrected, _display_text(targets), _display_text(finalized_at)))
         worksheet.append(row)
+        response_row: list[object] = [
+            score.rank,
+            _display_text(student_id),
+            _display_text(name),
+            score.score,
+        ]
+        response_row.extend(
+            _display_text(",".join(str(choice) for choice in answer.choices))
+            for answer in response.answers
+        )
+        response_row.append(_display_text(note))
+        if finalized_at is not None:
+            corrected = bool(response.corrected_targets)
+            targets = ",".join(_correction_label(target) for target in response.corrected_targets)
+            response_row.extend((corrected, _display_text(targets), _display_text(finalized_at)))
+        response_sheet.append(response_row)
     _set_provenance(workbook, session_id, revision, manifest_sha256)
     target = Path(destination) / filename
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -213,24 +227,6 @@ def _set_provenance(
 
 def _display_text(value: str) -> str:
     return f"'{value}" if value.startswith(_DANGEROUS_PREFIXES) else value
-
-
-def _display_timestamp(committed_at: str) -> str:
-    try:
-        instant = datetime.strptime(committed_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-            tzinfo=ZoneInfo("UTC")
-        )
-    except ValueError as error:
-        raise ValueError("committed_at must be UTC RFC3339 with microseconds") from error
-    return instant.astimezone(_KST).strftime("%y%m%d_%H%M%S")
-
-
-def _safe_exam_name(value: str) -> str:
-    cleaned = "".join(
-        "_" if character in '<>:"/\\|?*' or ord(character) < 32 else character
-        for character in value
-    ).strip(". ")
-    return cleaned[:48] or "시험"
 
 
 def _correction_label(target: str) -> str:

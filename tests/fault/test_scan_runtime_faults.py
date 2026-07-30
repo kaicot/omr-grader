@@ -29,7 +29,7 @@ def test_scan_runtime_rejects_invalid_roster_before_source_processing(tmp_path: 
     roster.write_bytes(b"not a workbook")
 
     class Profiles:
-        def load_path(self, path: Path):
+        def load(self, filename: str):
             from omr_grader.domain.errors import Ok
 
             return Ok(object())
@@ -40,6 +40,26 @@ def test_scan_runtime_rejects_invalid_roster_before_source_processing(tmp_path: 
 
     assert isinstance(result, Err)
     assert result.errors[0].code == "XLSX_INVALID_WORKBOOK"
+
+
+def test_scan_runtime_loads_managed_profile_filename_from_profile_store(tmp_path: Path) -> None:
+    loaded: list[str] = []
+
+    class Profiles:
+        def load(self, filename: str):
+            from omr_grader.domain.errors import Ok
+
+            loaded.append(filename)
+            return Ok(object())
+
+        def load_path(self, path: Path):
+            raise AssertionError("managed scan profiles must not be reopened as external paths")
+
+    result = ScanRuntime(Profiles(), object()).build_tasks(_command(tmp_path / "missing.pdf"))
+
+    assert isinstance(result, Err)
+    assert loaded == ["profile.omrtemplate"]
+    assert result.errors[0].code != "PROFILE_SOURCE_NOT_FOUND"
 
 
 def test_scan_commit_without_a_processable_result_never_calls_store(tmp_path: Path) -> None:
@@ -55,4 +75,5 @@ def test_scan_commit_without_a_processable_result_never_calls_store(tmp_path: Pa
 
     assert isinstance(result, Err)
     assert result.errors[0].code == "SCAN_NO_PROCESSABLE_RESULT"
+    assert result.errors[0].context["failed_pages"] == 0
     assert command.operation_id not in runtime._prepared

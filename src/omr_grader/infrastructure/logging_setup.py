@@ -5,8 +5,12 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import threading
+import traceback
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import TracebackType
 from typing import TextIO
 
 from omr_grader.domain.errors import ErrorInfo, Ok, Result
@@ -26,6 +30,63 @@ def redact_log_text(value: object) -> str:
     text = _STUDENT_ID.sub(_PRIVATE_VALUE, text)
     text = _SENSITIVE_FIELD.sub(_PRIVATE_VALUE, text)
     return _KOREAN_SENSITIVE_FIELD.sub(_PRIVATE_VALUE, text)
+
+
+def daily_log_path(data_dir: Path, when: datetime | None = None) -> Path:
+    """Return the local daily application log under the portable data directory."""
+    timestamp = datetime.now() if when is None else when
+    return data_dir / "logs" / f"app_{timestamp:%Y%m%d}.log"
+
+
+def _log_unhandled_exception(
+    logger: logging.Logger,
+    exception_type: type[BaseException],
+    exception: BaseException,
+    exception_traceback: TracebackType | None,
+    *,
+    thread_name: str,
+) -> None:
+    stack = "".join(
+        traceback.format_exception(exception_type, exception, exception_traceback)
+    )
+    logger.critical(
+        f"Unhandled exception thread={thread_name}\n{stack.rstrip()}"
+    )
+    for handler in logger.handlers:
+        handler.flush()
+
+
+def install_global_exception_hooks(logger: logging.Logger) -> None:
+    """Route uncaught UI and Python worker exceptions to the application log."""
+    if not isinstance(logger, logging.Logger):
+        raise TypeError("logger must be logging.Logger")
+
+    def handle_main(
+        exception_type: type[BaseException],
+        exception: BaseException,
+        exception_traceback: TracebackType | None,
+    ) -> None:
+        _log_unhandled_exception(
+            logger,
+            exception_type,
+            exception,
+            exception_traceback,
+            thread_name="main",
+        )
+
+    def handle_thread(args: threading.ExceptHookArgs) -> None:
+        _log_unhandled_exception(
+            logger,
+            args.exc_type,
+            args.exc_value
+            if args.exc_value is not None
+            else RuntimeError(args.exc_type.__name__),
+            args.exc_traceback,
+            thread_name=args.thread.name if args.thread is not None else "unknown",
+        )
+
+    sys.excepthook = handle_main
+    threading.excepthook = handle_thread
 
 
 class PrivacyFilter(logging.Filter):
@@ -55,6 +116,9 @@ class _OMRGraderHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         self._delegate.emit(record)
 
+    def flush(self) -> None:
+        self._delegate.flush()
+
     def close(self) -> None:
         try:
             self._delegate.close()
@@ -82,8 +146,10 @@ def configure_logging(log_path: Path | None = None) -> Result[logging.Logger]:
 
     logger.addHandler(_handler(sys.stderr))
     if log_path is None:
+        install_global_exception_hooks(logger)
         return Ok(logger)
     try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         logger.addHandler(_handler(log_path))
     except OSError as exc:
         warning = ErrorInfo(
@@ -92,8 +158,19 @@ def configure_logging(log_path: Path | None = None) -> Result[logging.Logger]:
             context={"reason": type(exc).__name__},
             cause_type=type(exc).__name__,
         )
+        install_global_exception_hooks(logger)
         return Ok(logger, (warning,))
+    logger.info(f"application_logging_ready path={log_path}")
+    for handler in logger.handlers:
+        handler.flush()
+    install_global_exception_hooks(logger)
     return Ok(logger)
 
 
-__all__ = ["PrivacyFilter", "configure_logging", "redact_log_text"]
+__all__ = [
+    "PrivacyFilter",
+    "configure_logging",
+    "daily_log_path",
+    "install_global_exception_hooks",
+    "redact_log_text",
+]

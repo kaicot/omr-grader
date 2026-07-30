@@ -33,7 +33,7 @@ def test_scan_runtime_rejects_profile_source_with_wrong_extension_before_ingesti
     source.write_bytes(b"not inspected")
 
     class Profiles:
-        def load_path(self, path: Path):
+        def load(self, filename: str):
             return Ok(object())
 
     runtime = ScanRuntime(Profiles(), object())

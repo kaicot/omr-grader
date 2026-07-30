@@ -88,6 +88,8 @@ class ScanWorker:
         with self._lock:
             self._cancelled.clear()
         started = monotonic()
+        if progress is not None:
+            progress(ScanProgress(0, len(tasks), 0, 0, None))
         if not multiprocessing:
             return self._sequential(tasks, started, progress)
         return self._parallel(tasks, started, progress)
@@ -135,7 +137,7 @@ class ScanWorker:
                     try:
                         result = future.result()
                     except BrokenProcessPool:
-                        result = _broken_pool(task)
+                        result = run_pipeline_task(task)
                     except BaseException as error:
                         result = _task_failure(task, "WORKER_TASK_FAILED", type(error).__name__)
                     if self._cancelled.is_set():
@@ -157,9 +159,16 @@ class ScanWorker:
                 tuple(sorted(results, key=lambda item: item.ordinal)), cancelled
             )
         except BrokenProcessPool:
-            results.extend(_broken_pool(task) for task in pending.values())
-            results.extend(_broken_pool(task) for task in tasks[submitted:])
-            return WorkerBatchResult(tuple(sorted(results, key=lambda item: item.ordinal)), False)
+            retry_tasks = tuple(pending.values()) + tasks[submitted:]
+            for task in sorted(retry_tasks, key=lambda item: item.ordinal):
+                if self._cancelled.is_set():
+                    cancelled = True
+                    break
+                results.append(run_pipeline_task(task))
+                self._progress(progress, len(results), len(tasks), results, started)
+            return WorkerBatchResult(
+                tuple(sorted(results, key=lambda item: item.ordinal)), cancelled
+            )
         finally:
             try:
                 executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
@@ -181,10 +190,6 @@ class ScanWorker:
         remaining = total - completed
         eta_ms = int(elapsed_ms * remaining / completed) if completed else None
         callback(ScanProgress(completed - failures, total, failures, elapsed_ms, eta_ms))
-
-
-def _broken_pool(task: WorkerTask) -> WorkerResult:
-    return _task_failure(task, "WORKER_POOL_BROKEN", "BrokenProcessPool")
 
 
 def _task_failure(task: WorkerTask, code: str, cause: str) -> WorkerResult:

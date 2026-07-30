@@ -68,6 +68,12 @@ from omr_grader.infrastructure.generation_materializer import (
     StagingToken,
 )
 from omr_grader.infrastructure.paths import ManagedPaths
+from omr_grader.infrastructure.result_layout import (
+    COORDINATE_DIR,
+    OCR_IMAGE_DIR,
+    REVIEW_DIR,
+    SCORE_IMAGE_DIR,
+)
 from omr_grader.infrastructure.session_lease import (
     CommittedSnapshotLease,
     FileGateBackend,
@@ -545,13 +551,20 @@ def _verify_restored_staging(
             or _sha(path) != digest
         ):
             raise ValueError("staged restore bytes differ from archive entries")
-    if {path.name for path in prepared.iterdir()} != {
+    root_names = {path.name for path in prepared.iterdir()}
+    required_root_names = {
         "IDENTITY.json",
         "CURRENT.json",
         "LOCATION.json",
         "RESTORE_PROVENANCE.json",
         "generations",
-    }:
+    }
+    if not required_root_names.issubset(root_names) or any(
+        name not in required_root_names
+        and name not in _RESULT_VIEW_DIRS
+        and not name.startswith(_RESULT_VIEW_PREFIXES)
+        for name in root_names
+    ):
         raise ValueError("staged restore root layout is not exact")
     if (
         RestoreProvenance.from_dict(_read_json_object(prepared / "RESTORE_PROVENANCE.json"))
@@ -606,18 +619,55 @@ _LIFECYCLE_OPERATIONS = frozenset(
 
 
 _CONTROL_FILES = frozenset(("session.json", "manifest.json"))
+_RESULT_VIEW_DIRS = (OCR_IMAGE_DIR, SCORE_IMAGE_DIR, COORDINATE_DIR, REVIEW_DIR)
+_RESULT_VIEW_PREFIXES = ("01_ocr_", "02_score_", "03_final_")
 
 
 def _is_control_file(path: str) -> bool:
     return path in _CONTROL_FILES
 
 
+def _refresh_result_view(session: Path, generation: Path) -> None:
+    """Publish browse-friendly hard links for the immutable current generation."""
+    for name in _RESULT_VIEW_DIRS:
+        target = session / name
+        if target.exists():
+            shutil.rmtree(target)
+    for child in tuple(session.iterdir()):
+        if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
+            child.unlink()
+    for name in _RESULT_VIEW_DIRS:
+        source = generation / name
+        if source.is_dir():
+            shutil.copytree(source, session / name, copy_function=os.link)
+    for child in generation.iterdir():
+        if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
+            os.link(child, session / child.name)
+
+
 def _preserved_artifact(path: str, operation: OperationKind) -> bool:
     """Keep only immutable automatic evidence and correction audit for a re-projection."""
     if operation not in _LIFECYCLE_OPERATIONS:
         return True
-    return path == "correction_history.json" or path.startswith(
-        ("automatic/", "evidence/", "images/", "recognition/", "corrections/")
+    if operation is OperationKind.FINALIZE and (
+        path.startswith("02_score_") or path.startswith("artifacts/02_score_")
+    ):
+        return True
+    return (
+        path == "correction_history.json"
+        or path.startswith("01_ocr_")
+        or path.startswith(
+            (
+                "automatic/",
+                "evidence/",
+                "images/",
+                "recognition/",
+                "corrections/",
+                "01_인식결과_이미지/",
+                "좌표데이터/",
+                "수동확인필요/",
+            )
+        )
     )
 
 
@@ -1060,6 +1110,10 @@ class SessionStore:
     ]:
         """Validate the closed semantic view and derive all next-generation truth."""
         semantic = mutation.semantic_inputs
+        updated_at = _utc()
+        graded_at = old.graded_at
+        if graded_at is None and mutation.target_state.value in {"graded", "finalized"}:
+            graded_at = updated_at
         record = SessionRecord(
             1,
             old.session_id,
@@ -1069,8 +1123,8 @@ class SessionStore:
             old.exam_year,
             old.exam_term,
             old.created_at,
-            old.graded_at,
-            _utc(),
+            graded_at,
+            updated_at,
         )
         fields: tuple[
             tuple[str, ...],
@@ -1354,6 +1408,14 @@ class SessionStore:
             staging.mkdir()
             (staging / "generations").mkdir()
             atomic_write_json(staging / "IDENTITY.json", identity.to_dict())
+            atomic_write_json(
+                staging / "LOCATION.json",
+                self._location_metadata(
+                    identity.session_id,
+                    display_name,
+                    manifest.operation_id,
+                ),
+            )
             generation_name = f"g{manifest.revision:08d}_{manifest.generation_id}"
             generation = staging / "generations" / generation_name
             generation.mkdir()
@@ -1376,6 +1438,7 @@ class SessionStore:
                 _utc(),
             )
             atomic_write_json(staging / "CURRENT.json", pointer.to_dict())
+            _refresh_result_view(staging, generation)
             self._validate_current(staging)
             gate_created = self._gate_path(identity.session_id, manifest.generation_id)
             gate_created.parent.mkdir(parents=True, exist_ok=True)
@@ -1583,6 +1646,7 @@ class SessionStore:
                         return written
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     return written
+            _refresh_result_view(session, final)
             published = True
             result = CommitGenerationResult(
                 True,

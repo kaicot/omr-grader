@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QModelIndex, Signal
+from PySide6.QtCore import QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -19,7 +20,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from omr_grader.domain.enums import ExamTerm
 from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.ui.dashboard_model import DashboardSelection, DashboardTableModel
 from omr_grader.ui.trash_dialog import TrashDialog, TrashRequest
@@ -102,21 +102,6 @@ class DashboardPage(QWidget):
         self.year_combo.addItem("연도 전체", None)
         self.year_combo.currentIndexChanged.connect(self._apply_filters)
         toolbar.addWidget(self.year_combo)
-        self.term_combo = QComboBox()
-        self.term_combo.setObjectName("dashboardTermFilter")
-        self.term_combo.setAccessibleName("시험 학기 필터")
-        self.term_combo.addItem("학기 전체", None)
-        for term, label in (
-            (ExamTerm.FIRST, "1학기"),
-            (ExamTerm.SECOND, "2학기"),
-            (ExamTerm.SUMMER, "여름학기"),
-            (ExamTerm.WINTER, "겨울학기"),
-            (ExamTerm.OTHER, "기타"),
-            (ExamTerm.UNSPECIFIED, "미지정"),
-        ):
-            self.term_combo.addItem(label, term.value)
-        self.term_combo.currentIndexChanged.connect(self._apply_filters)
-        toolbar.addWidget(self.term_combo)
         root.addLayout(toolbar)
         actions = QHBoxLayout()
         self.backup_button = self._button("백업하기", "dashboardBackupButton", "backup")
@@ -143,11 +128,23 @@ class DashboardPage(QWidget):
         self.table.setModel(DashboardTableModel(self.table))
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self.model.modelReset.connect(self._install_row_actions)
+        self.model.dataChanged.connect(lambda *_: self._refresh_state())
         self.table.setSortingEnabled(True)
+        self.table.clicked.connect(self._toggle_clicked_row)
         self.table.doubleClicked.connect(self._open_detail)
         self.table.selectionModel().selectionChanged.connect(lambda *_: self._refresh_state())
         self.table.setMinimumHeight(300)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header = self.table.horizontalHeader()
+        header.setMinimumSectionSize(72)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        header.resizeSection(2, 180)
         table_layout.addWidget(self.table)
         root.addWidget(table_frame)
         row_actions = QHBoxLayout()
@@ -168,6 +165,50 @@ class DashboardPage(QWidget):
         button.clicked.connect(lambda: self._request(action))
         return button
 
+    def _toggle_clicked_row(self, index: QModelIndex) -> None:
+        if not index.isValid() or index.column() == 6:
+            return
+        if index.column() != 0:
+            selection_index = self.model.index(index.row(), 0)
+            checked = (
+                self.model.data(selection_index, Qt.ItemDataRole.CheckStateRole)
+                == Qt.CheckState.Checked
+            )
+            self.model.setData(
+                selection_index,
+                Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked,
+                Qt.ItemDataRole.CheckStateRole,
+            )
+        self._refresh_state()
+
+    def _install_row_actions(self) -> None:
+        for row in range(self.model.rowCount()):
+            cell = QWidget(self.table)
+            cell.setObjectName("dashboardActionCell")
+            layout = QHBoxLayout(cell)
+            layout.setContentsMargins(4, 2, 4, 2)
+            layout.setSpacing(4)
+            for text, name, action in (
+                ("상세 보기", "dashboardDetailButton", "detail"),
+                ("삭제", "dashboardDeleteButton", "delete"),
+            ):
+                button = QPushButton(text, cell)
+                button.setObjectName(name)
+                button.setAccessibleName(text)
+                button.clicked.connect(
+                    lambda _checked=False, action=action, row=row: self._request_row(
+                        action, row
+                    )
+                )
+                layout.addWidget(button)
+            self.table.setIndexWidget(self.model.index(row, 6), cell)
+
+    def _request_row(self, action: str, row: int) -> None:
+        if not 0 <= row < self.model.rowCount():
+            return
+        self.table.selectRow(row)
+        self._request(action)
+
     @property
     def model(self) -> DashboardTableModel:
         model = self.table.model()
@@ -180,7 +221,12 @@ class DashboardPage(QWidget):
         selected_id = current_entry.session_id if current_entry is not None else None
         self.model.set_entries(entries)
         years = sorted(
-            {entry.exam_year for entry in entries if entry.exam_year is not None}, reverse=True
+            {
+                int(entry.graded_at[:4])
+                for entry in entries
+                if entry.graded_at is not None and entry.graded_at[:4].isdigit()
+            },
+            reverse=True,
         )
         current = self.year_combo.currentData()
         self.year_combo.blockSignals(True)
@@ -207,9 +253,7 @@ class DashboardPage(QWidget):
         self._refresh_state()
 
     def _apply_filters(self) -> None:
-        self.model.set_filters(
-            self.search_edit.text(), self.year_combo.currentData(), self.term_combo.currentData()
-        )
+        self.model.set_filters(self.search_edit.text(), self.year_combo.currentData(), None)
         self._refresh_state()
 
     def _current_entry(self) -> DashboardIndexEntry | None:
@@ -225,7 +269,13 @@ class DashboardPage(QWidget):
                 break
 
     def _selection(self) -> DashboardSelection | None:
-        return self.model.selection()
+        checked = self.model.selection()
+        if checked is not None:
+            return checked
+        entry = self._current_entry()
+        if entry is None:
+            return None
+        return DashboardSelection((entry.session_id,), (entry.revision,))
 
     def _request(self, action: str) -> None:
         if action not in _DASHBOARD_ACTIONS:

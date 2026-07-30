@@ -115,7 +115,7 @@ def test_config_scalar_type_confusion_falls_back_without_rewriting_file(
     result = load_config(paths)
 
     assert isinstance(result, Ok)
-    assert result.value == AppConfig("", 3, True)
+    assert result.value == AppConfig("", 5, True)
     assert result.warnings[0].code == "CONFIG_INVALID"
     assert paths.config_path.read_bytes() == original
 

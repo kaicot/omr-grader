@@ -40,13 +40,15 @@ def test_probe_then_bootstrap_creates_only_managed_directories(
     assert capability.value.token is not None
     assert not paths.profiles_dir.exists()
     assert not paths.data_dir.exists()
+    assert not paths.logs_dir.exists()
 
     bootstrapped = bootstrap_managed_paths(paths, capability.value.token)
 
     assert isinstance(bootstrapped, Ok)
     assert paths.profiles_dir.is_dir()
     assert paths.data_dir.is_dir()
-    assert {path.name for path in root.iterdir()} == {"Profiles", "OMR_Grader"}
+    assert paths.logs_dir.is_dir()
+    assert {path.name for path in root.iterdir()} == {"Profiles", "OMR_Grader", "logs"}
 
 
 def test_probe_returns_read_only_capability_when_root_is_denied(

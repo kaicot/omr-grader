@@ -1,4 +1,4 @@
-from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication
 
@@ -76,7 +76,7 @@ def test_run_emits_immutable_validated_profile_request(qtbot):
     assert request.profile == _profile(is_default=True)
     assert request.profile_path == "C:/Profiles/basic.omrtemplate"
     assert request.source.paths == ("C:/input/scans.pdf",)
-    assert request.sensitivity == 3
+    assert request.sensitivity == 5
     assert request.roster_path == "C:/input/roster.xlsx"
 
 
@@ -125,24 +125,58 @@ def test_fresh_response_button_is_visible_and_keyboard_accessible_at_minimum_win
     assert not page.fresh_response_button.isEnabled()
 
 
+def test_initial_window_fits_scan_page_without_vertical_scroll(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    QApplication.processEvents()
+
+    assert window.size() == window.initial_size
+    assert not window.page_scroll_areas[window.SCAN_PAGE].verticalScrollBar().isVisible()
+
+
+def test_scan_run_and_cancel_actions_are_in_top_action_row(qtbot):
+    page = ScanPage()
+    qtbot.addWidget(page)
+    page.resize(1200, 900)
+    page.show()
+    QApplication.processEvents()
+
+    profile_top = page.profile_combo.mapTo(page, QPoint(0, 0)).y()
+    assert page.run_button.y() < profile_top
+    assert page.cancel_button.y() < profile_top
+    assert not hasattr(page, "help_button")
+
+
+def test_sample_roster_button_is_grouped_with_roster_heading(qtbot):
+    page = ScanPage()
+    qtbot.addWidget(page)
+    page.resize(1200, 900)
+    page.show()
+    QApplication.processEvents()
+
+    button_top = page.sample_roster_button.mapTo(page, QPoint(0, 0)).y()
+    roster_top = page.roster_widget.mapTo(page, QPoint(0, 0)).y()
+    assert button_top < roster_top
+
+
 def test_source_folder_pdf_and_roster_drops_enforce_mode_and_extensions(qtbot):
     page = _ready_page(qtbot)
     rejected = []
     page.source_widget.rejected.connect(rejected.append)
     page.roster_widget.rejected.connect(rejected.append)
+    page.source_widget.clear()
+    assert "이미지(JPG, PNG) 폴더나 PDF 파일" in page.source_widget._detail.text()
 
-    page.folder_radio.setChecked(True)
     _drop(page.source_widget, ["C:/input/scans"])
     assert page.source_widget.selection == ImportSelection(ImportKind.FOLDER, ("C:/input/scans",))
     assert page.run_button.isEnabled()
 
-    page.pdf_radio.setChecked(True)
-    assert page.source_widget.selection is None
-    assert not page.run_button.isEnabled()
     _drop(page.source_widget, ["C:/input/scans.PDF"])
     assert page.source_widget.selection == ImportSelection(ImportKind.PDF, ("C:/input/scans.PDF",))
-    _drop(page.source_widget, ["C:/input/scans.png"])
-    assert page.source_widget.selection == ImportSelection(ImportKind.PDF, ("C:/input/scans.PDF",))
+    assert not hasattr(page, "folder_radio")
+    assert not hasattr(page, "pdf_radio")
 
     _drop(page.roster_widget, ["C:/input/roster.XLSM"])
     assert page.roster_widget.selection == ImportSelection(
@@ -152,23 +186,20 @@ def test_source_folder_pdf_and_roster_drops_enforce_mode_and_extensions(qtbot):
     assert page.roster_widget.selection == ImportSelection(
         ImportKind.ROSTER, ("C:/input/roster.XLSM",)
     )
-    assert rejected == [
-        "PDF 파일만 선택할 수 있습니다.",
-        "명단 엑셀 파일(.xlsx 또는 .xlsm)만 선택할 수 있습니다.",
-    ]
+    assert rejected == ["명단 엑셀 파일(.xlsx 또는 .xlsm)만 선택할 수 있습니다."]
 
 
-def test_mode_switch_discards_source_and_cancel_preserves_mode(
-    qtbot,
-):
+def test_unified_source_buttons_request_picker_and_cancel_preserves_selection(qtbot):
     page = _ready_page(qtbot)
-    page.folder_radio.setChecked(True)
-    _drop(page.source_widget, ["C:/input/scans"])
-    page.pdf_radio.setChecked(True)
 
-    assert page.source_widget.kind is ImportKind.PDF
-    assert page.source_widget.selection is None
-    _drop(page.source_widget, ["C:/input/scans.pdf"])
+    with qtbot.waitSignal(page.source_browse_requested) as folder:
+        qtbot.mouseClick(page.source_folder_button, Qt.MouseButton.LeftButton)
+    with qtbot.waitSignal(page.source_browse_requested) as pdf:
+        qtbot.mouseClick(page.source_pdf_button, Qt.MouseButton.LeftButton)
+
+    assert folder.args == [ImportKind.FOLDER]
+    assert pdf.args == [ImportKind.PDF]
+    assert page.source_widget.kind is ImportKind.SOURCE
     prior = page.source_widget.selection
     page.set_source_picker_cancelled()
 
@@ -192,6 +223,22 @@ def test_profile_browse_keyboard_and_drop_emit_explicit_requests(qtbot):
     expected = ImportSelection(ImportKind.PROFILE, ("C:/outside/template.omrtemplate",))
     assert dropped.args == [expected]
     assert imported.args == [expected]
+
+
+def test_imported_profile_is_selected_with_visible_confirmation(qtbot):
+    page = ScanPage()
+    qtbot.addWidget(page)
+    imported = _profile()
+
+    page.set_profile_importing("C:/outside/basic.omrtemplate")
+    assert "불러오는 중" in page.profile_summary.text()
+
+    page.set_profiles((imported,))
+    assert page.select_profile(imported.path)
+
+    assert page.profile_combo.currentData() == imported
+    assert "검증 완료" in page.profile_summary.text()
+    assert "적용되었습니다" in page.progress_label.text()
 
 
 def test_busy_locks_mutation_and_cancel_cleanup_reenables_inputs(qtbot):
@@ -229,9 +276,47 @@ def test_progress_includes_counts_elapsed_and_eta(qtbot):
 
     assert page.progress_bar.value() == 5
     assert "5 / 10" in page.progress_label.text()
+    assert "50%" in page.progress_label.text()
+    assert page.progress_bar.format() == "%v / %m (%p%)"
+    assert "OMR 인식 실행중" in page.progress_label.text()
+    assert "(5 / 10) 인식중" in page.progress_label.text()
     assert "경과 00:01:05" in page.progress_label.text()
     assert "예상 남은 시간 00:02:05" in page.progress_label.text()
     assert page.cancel_button.isEnabled()
+
+
+def test_progress_reports_eta_calculation_before_first_completion(qtbot):
+    page = _ready_page(qtbot)
+
+    page.set_progress(0, 10, elapsed_seconds=2, eta_seconds=None)
+
+    assert page.progress_bar.value() == 0
+    assert (
+        page.progress_label.text()
+        == "OMR 인식 실행중. 경과 2초. 남은시간 계산 중... (0 / 10) 인식중."
+    )
+
+
+def test_failure_preserves_last_numeric_progress(qtbot):
+    page = _ready_page(qtbot)
+    page.show()
+    page.set_progress(1, 10)
+
+    page.set_error("판독 가능한 OMR 페이지가 없습니다.")
+
+    assert page.progress_bar.isVisible()
+    assert page.progress_bar.value() == 1
+    assert page.progress_bar.maximum() == 10
+    assert "마지막 진행 1 / 10 (10%)" in page.progress_label.text()
+    assert "판독 가능한 OMR 페이지가 없습니다." in page.progress_label.text()
+
+
+def test_default_sensitivity_is_five(qtbot):
+    page = ScanPage()
+    qtbot.addWidget(page)
+
+    assert page.sensitivity_slider.value() == 5
+    assert page.sensitivity_label.text() == "인식 수준 5 / 10"
 
 
 def test_picker_cancellation_preserves_prior_input_and_marks_state(qtbot):
@@ -249,7 +334,6 @@ def test_write_denied_preserves_help_but_blocks_mutation(qtbot):
     page = _ready_page(qtbot)
     page.set_write_enabled(False, "쓰기 권한이 없습니다.")
 
-    assert page.help_button.isEnabled()
     assert not page.run_button.isEnabled()
     assert not page.source_widget.isEnabled()
     assert page.progress_label.text() == "쓰기 권한이 없습니다."

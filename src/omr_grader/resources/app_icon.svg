@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="background" x1="60" y1="32" x2="452" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B3954"/>
+      <stop offset="1" stop-color="#102A43"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="152" y1="122" x2="390" y2="395" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#61C3E8"/>
+      <stop offset="1" stop-color="#21A6D4"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#background)"/>
+  <path d="M146 88h178l66 66v262c0 18-14 32-32 32H146c-18 0-32-14-32-32V120c0-18 14-32 32-32Z" fill="#F7FBFD"/>
+  <path d="M324 88v66h66" fill="#CDECF7"/>
+  <path d="M324 88v66h66" fill="none" stroke="#9DD9EE" stroke-width="10" stroke-linejoin="round"/>
+  <g fill="none" stroke="#0B3954" stroke-width="12">
+    <circle cx="174" cy="204" r="18"/>
+    <circle cx="236" cy="204" r="18"/>
+    <circle cx="298" cy="204" r="18"/>
+    <circle cx="174" cy="270" r="18"/>
+    <circle cx="236" cy="270" r="18"/>
+    <circle cx="298" cy="270" r="18"/>
+    <circle cx="174" cy="336" r="18"/>
+    <circle cx="236" cy="336" r="18"/>
+    <circle cx="298" cy="336" r="18"/>
+  </g>
+  <circle cx="236" cy="270" r="12" fill="#0B3954"/>
+  <circle cx="174" cy="336" r="12" fill="#0B3954"/>
+  <circle cx="298" cy="204" r="12" fill="#0B3954"/>
+  <circle cx="358" cy="358" r="82" fill="url(#accent)" stroke="#F7FBFD" stroke-width="12"/>
+  <path d="m320 358 25 25 52-60" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -39,22 +39,17 @@ def _error(code: str, reason: str) -> Err:
 
 def project_dashboard_entry(lease: CommittedSnapshotLease) -> Result[DashboardIndexEntry]:
     """Project metadata from an allowlisted generation control payload."""
-    opened = lease.open_allowlisted("session.json")
-    if isinstance(opened, Err):
-        return _error("DASHBOARD_SESSION_MISSING", "커밋된 세션 메타데이터가 없습니다.")
     try:
-        with opened.value:
-            record = SessionRecord.from_dict(_mapping(json.load(opened.value)))
         ref = lease.snapshot_ref
-        if record.session_id != ref.session_id or record.revision != ref.revision:
-            return _error(
-                "DASHBOARD_SESSION_INVALID", "세션 메타데이터가 스냅샷과 일치하지 않습니다."
-            )
         semantic = _semantic_statistics(lease)
         location = _location(lease)
         if semantic is None or location is None:
             return _error("DASHBOARD_SESSION_INVALID", "커밋된 세션 교차 참조가 올바르지 않습니다.")
-        participant_count, average, highest, lowest = semantic
+        record, participant_count, average, highest, lowest = semantic
+        if record.session_id != ref.session_id or record.revision != ref.revision:
+            return _error(
+                "DASHBOARD_SESSION_INVALID", "세션 메타데이터가 스냅샷과 일치하지 않습니다."
+            )
         display_folder = location
         return Ok(
             DashboardIndexEntry(
@@ -81,7 +76,7 @@ def project_dashboard_entry(lease: CommittedSnapshotLease) -> Result[DashboardIn
 
 def _semantic_statistics(
     lease: CommittedSnapshotLease,
-) -> tuple[int, str | None, str | None, str | None] | None:
+) -> tuple[SessionRecord, int, str | None, str | None, str | None] | None:
     source = lease.open_allowlisted("semantic_inputs.json")
     if isinstance(source, Err):
         return None
@@ -92,12 +87,13 @@ def _semantic_statistics(
             return None
         combined = _mapping(envelope["combined"])
         session = _mapping(combined["session"])
+        record = SessionRecord.from_dict(session)
         ref = lease.snapshot_ref
-        if session.get("session_id") != ref.session_id or session.get("revision") != ref.revision:
+        if record.session_id != ref.session_id or record.revision != ref.revision:
             return None
         scores = combined.get("scores")
         if scores is None:
-            return (0, None, None, None)
+            return (record, 0, None, None, None)
         score_set = _mapping(scores)
         statistics = _mapping(score_set["statistics"])
         count = statistics.get("participant_count")
@@ -108,13 +104,13 @@ def _semantic_statistics(
         if type(count) is not int or count < 0:
             return None
         if count == 0:
-            return (0, None, None, None) if values == (None, None, None) else None
+            return (record, 0, None, None, None) if values == (None, None, None) else None
         if not (isinstance(average, str) and isinstance(highest, str) and isinstance(lowest, str)):
             return None
         parsed = (Decimal(average), Decimal(highest), Decimal(lowest))
         if any(value < 0 for value in parsed) or not parsed[2] <= parsed[0] <= parsed[1]:
             return None
-        return (count, average, highest, lowest)
+        return (record, count, average, highest, lowest)
     except (OSError, ValueError, TypeError, KeyError, InvalidOperation, json.JSONDecodeError):
         return None
 

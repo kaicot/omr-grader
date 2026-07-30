@@ -43,7 +43,10 @@ def test_bootstrap_prepares_storage_and_config_before_portable_logging(
 
     def configure(log_path: Path | None = None):
         calls.append("logging")
-        assert log_path == paths.data_dir / "omr-grader.log"
+        assert log_path is not None
+        assert log_path.parent == paths.root / "logs"
+        assert log_path.name.startswith("app_")
+        assert log_path.suffix == ".log"
         return Ok(logging.getLogger("bootstrap-test"))
 
     original_import = builtins.__import__
@@ -160,3 +163,43 @@ def test_scan_controller_adapter_keeps_commit_authority_explicit() -> None:
 
     assert adapter.run_scan(command) == Ok(None)  # type: ignore[arg-type]
     assert calls == [(command, coordinator)]
+
+
+def test_startup_splash_identifies_product_and_developer(qapp) -> None:
+    splash = bootstrap_module._create_startup_splash()
+
+    assert splash.accessibleName() == "OMR Grader 시작 화면"
+    assert "OMR Grader" in splash.accessibleDescription()
+    assert "조승현(kaic21@gmail.com)" in splash.accessibleDescription()
+    splash.close()
+
+
+def test_application_branding_loads_dedicated_window_icon(qapp) -> None:
+    bootstrap_module._configure_application_branding(qapp)
+
+    assert not qapp.windowIcon().isNull()
+
+
+def test_main_shows_lightweight_splash_before_importing_bootstrap() -> None:
+    source = (Path(__file__).resolve().parents[2] / "main.py").read_text(encoding="utf-8")
+
+    assert source.index("create_startup") < source.index("omr_grader.bootstrap")
+
+
+def test_packaging_uses_onedir_qt_splash_and_dedicated_icon() -> None:
+    spec = (
+        Path(__file__).resolve().parents[2] / "packaging" / "OMR_Grader.spec"
+    ).read_text(encoding="utf-8")
+    icon = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "omr_grader"
+        / "resources"
+        / "app_icon.svg"
+    )
+
+    assert "Splash(" not in spec
+    assert "exclude_binaries=True" in spec
+    assert "COLLECT(" in spec
+    assert "icon=str(icon_path)" in spec
+    assert icon.is_file()

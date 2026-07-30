@@ -22,6 +22,7 @@ from omr_grader.application.grading_presenter import (
     GradingPageRequest,
     GradingProgressDisplay,
 )
+from omr_grader.ui.import_widgets import ImportDropWidget, ImportKind, ImportSelection
 
 
 class GradingPage(QWidget):
@@ -62,11 +63,6 @@ class GradingPage(QWidget):
         self.session_label.setWordWrap(True)
         self.session_label.setAccessibleName("연결된 시험 정보")
         root.addWidget(self.session_label)
-        self.other_response_button = QPushButton("다른 응답 엑셀 불러오기")
-        self.other_response_button.setObjectName("otherResponseButton")
-        self.other_response_button.setAccessibleName("다른 응답 엑셀 불러오기")
-        self.other_response_button.clicked.connect(lambda: self._emit_intent("other_response"))
-        root.addWidget(self.other_response_button, 0, Qt.AlignmentFlag.AlignLeft)
         cards = QHBoxLayout()
         cards.setSpacing(16)
         cards.addWidget(self._answer_key_card(), 1)
@@ -105,14 +101,14 @@ class GradingPage(QWidget):
         self.progress_frame.setVisible(False)
         actions = QHBoxLayout()
         actions.addStretch()
-        self.grade_button = QPushButton("채점 실행 및 결과 보기")
-        self.grade_button.setObjectName("gradeButton")
-        self.grade_button.setAccessibleName("채점 실행 및 결과 보기")
+        self.grade_button = QPushButton("채점 실행")
+        self.grade_button.setObjectName("primaryActionButton")
+        self.grade_button.setAccessibleName("채점 실행")
         self.grade_button.setDefault(True)
         self.grade_button.clicked.connect(lambda: self._emit_intent("grade"))
-        self.result_button = QPushButton("결과 보기")
-        self.result_button.setObjectName("gradingResultButton")
-        self.result_button.setAccessibleName("채점 결과 보기")
+        self.result_button = QPushButton("채점 결과보기")
+        self.result_button.setObjectName("primaryActionButton")
+        self.result_button.setAccessibleName("채점 결과보기")
         self.result_button.clicked.connect(self._request_result_navigation)
         self.result_button.setVisible(False)
         actions.addWidget(self.grade_button)
@@ -141,6 +137,13 @@ class GradingPage(QWidget):
         self.key_label.setWordWrap(True)
         self.key_label.setAccessibleName("선택한 정답표")
         layout.addWidget(self.key_label)
+        self.answer_key_drop_widget = ImportDropWidget(ImportKind.ANSWER_KEY, card)
+        self.answer_key_drop_widget.selection_changed.connect(self._accept_dropped_answer_key)
+        self.answer_key_drop_widget.browse_requested.connect(
+            lambda _kind: self._emit_intent("answer_key_browse")
+        )
+        self.answer_key_drop_widget.rejected.connect(self.set_error)
+        layout.addWidget(self.answer_key_drop_widget)
         self.upload_button = QPushButton("정답표 엑셀 찾아보기")
         self.upload_button.setObjectName("answerKeyUploadButton")
         self.upload_button.setAccessibleName("정답표 엑셀 찾아보기")
@@ -211,6 +214,14 @@ class GradingPage(QWidget):
         ):
             raise ValueError("path and sheet_name must be nonempty strings")
         self._answer_key_path, self._answer_key_sheet = path, sheet_name
+        if path is None:
+            self.answer_key_drop_widget.clear()
+        elif self.answer_key_drop_widget.selection is None or (
+            self.answer_key_drop_widget.selection.paths != (path,)
+        ):
+            blocked = self.answer_key_drop_widget.blockSignals(True)
+            self.answer_key_drop_widget.set_selection((path,))
+            self.answer_key_drop_widget.blockSignals(blocked)
         self.key_label.setText(
             f"선택한 정답표: {basename(path)} (시트: {sheet_name})"
             if path
@@ -226,6 +237,14 @@ class GradingPage(QWidget):
             return
         self.set_answer_key_selection(path, sheet_name)
         self._emit_intent("answer_key_drop")
+
+    def _accept_dropped_answer_key(self, selection: object) -> None:
+        if (
+            not isinstance(selection, ImportSelection)
+            or selection.kind is not ImportKind.ANSWER_KEY
+        ):
+            return
+        self.drop_answer_key(selection.paths[0], "정답표")
 
     def set_validation_result(self, result: AnswerKeyValidationDisplay | None) -> None:
         self._validation = result
@@ -290,12 +309,16 @@ class GradingPage(QWidget):
         self._busy = progress is not None
         self.progress_frame.setVisible(progress is not None)
         if progress is not None:
-            self.progress_bar.setRange(0, max(progress.total, 1))
+            self.progress_bar.setRange(0, progress.total if progress.total > 0 else 0)
             self.progress_bar.setValue(progress.completed)
             eta = (
                 "계산 중" if progress.eta_seconds is None else self._time_text(progress.eta_seconds)
             )
-            status = progress.status or f"채점 중: {progress.completed}/{progress.total}"
+            status = progress.status or (
+                f"채점 중: {progress.completed}/{progress.total}"
+                if progress.total
+                else "채점 준비 중"
+            )
             self.progress_label.setText(
                 f"{status} · 경과 {self._time_text(progress.elapsed_seconds)} · 남은 시간 {eta}"
             )
@@ -418,8 +441,8 @@ class GradingPage(QWidget):
         result_available = (
             self._result_identity is not None and self._result_identity == self._session_identity()
         )
-        self.other_response_button.setEnabled(can_mutate)
         self.sample_button.setEnabled(can_mutate)
+        self.answer_key_drop_widget.setEnabled(can_mutate)
         self.upload_button.setEnabled(can_mutate)
         self.grade_button.setEnabled(can_mutate and has_key and valid_key)
         self.cancel_button.setEnabled(

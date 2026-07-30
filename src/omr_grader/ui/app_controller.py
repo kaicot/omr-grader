@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -10,7 +11,7 @@ from threading import Event
 from typing import Protocol
 from uuid import uuid4
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer
 
 from omr_grader.application.detail_presenter import (
     DetailLoadRequest,
@@ -87,6 +88,7 @@ FreshResponsePicker = Callable[["FreshResponseIntent"], tuple[str, str] | None]
 FreshResponseSelectionImport = Callable[
     ["FreshResponseIntent", tuple[str, str]], Result[ConnectedSessionDisplay]
 ]
+_LOGGER = logging.getLogger("omr_grader.ui.controller")
 IntentHandler = Callable[[GradingPageRequest], None]
 
 
@@ -172,6 +174,18 @@ def _error_text(error: object) -> str:
     if isinstance(reason, str) and reason:
         return reason
     return "작업을 완료하지 못했습니다. 입력과 실행 환경을 확인하세요."
+
+
+def _error_code(error: object) -> str:
+    return error.code if isinstance(error, ErrorInfo | WorkerError) else "UI_OPERATION_FAILED"
+
+
+def _error_context(error: object) -> dict[str, object]:
+    if isinstance(error, ErrorInfo):
+        return dict(error.context)
+    if isinstance(error, WorkerError):
+        return dict(error.context)
+    return {"reason": str(error) or type(error).__name__}
 
 
 class AppController(QObject):
@@ -265,14 +279,12 @@ class AppController(QObject):
         if dashboard_load is None:
             self.main_window.show_diagnostic(_error_text(self._unavailable()))
         else:
-            result = dashboard_load()
-            if isinstance(result, Ok) and isinstance(result.value, DashboardListing):
-                self.dashboard_page.set_entries(result.value.entries)
-            else:
-                error = (
-                    result.errors[0] if isinstance(result, Err) else self._invalid_service_result()
-                )
-                self.main_window.show_diagnostic(_error_text(error))
+            self._start_desktop_action(
+                self.dashboard_page,
+                dashboard_load,
+                self._finish_dashboard_load,
+                self.dashboard_page.set_busy,
+            )
         self._refresh_profile_catalog()
         settings_load = self.services.settings_load
         if settings_load is None:
@@ -291,6 +303,13 @@ class AppController(QObject):
                 else self._invalid_service_result()
             )
             self.settings_page.set_settings_unavailable(_error_text(error))
+
+    def _finish_dashboard_load(self, result: object) -> None:
+        if not isinstance(result, DashboardListing):
+            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+            return
+        self.dashboard_page.set_entries(result.entries)
+        self._present_warnings(result.warnings)
 
     def _handle_dashboard_request(self, request: DashboardRequest) -> None:
         if request.action == "detail":
@@ -366,6 +385,7 @@ class AppController(QObject):
         busy: Callable[[bool], None],
         *,
         operation_id: str | None = None,
+        kind: str = "desktop-service",
     ) -> None:
         if self._closing or self._active_bridge is not None and self._active_bridge.active:
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
@@ -379,7 +399,7 @@ class AppController(QObject):
             page,
             operation_id or uuid4().hex,
             lambda _cancelled, _progress: operation(),
-            kind="desktop-service",
+            kind=kind,
         )
 
     def _finish_dashboard_action(
@@ -388,15 +408,19 @@ class AppController(QObject):
         if not isinstance(result, expected_type):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
-        if refresh_dashboard and self.services.dashboard_load is not None:
-            loaded = self.services.dashboard_load()
-            if isinstance(loaded, Ok) and isinstance(loaded.value, DashboardListing):
-                self.dashboard_page.set_entries(loaded.value.entries)
-            else:
-                error = (
-                    loaded.errors[0] if isinstance(loaded, Err) else self._invalid_service_result()
-                )
-                self.main_window.show_diagnostic(_error_text(error))
+        if refresh_dashboard:
+            QTimer.singleShot(0, self._reload_dashboard)
+
+    def _reload_dashboard(self) -> None:
+        loader = self.services.dashboard_load
+        if loader is None:
+            return
+        self._start_desktop_action(
+            self.dashboard_page,
+            loader,
+            self._finish_dashboard_load,
+            self.dashboard_page.set_busy,
+        )
 
     def _load_detail_work_item(self, request: object) -> None:
         if not isinstance(request, DetailLoadRequest):
@@ -642,6 +666,7 @@ class AppController(QObject):
             request.sensitivity,
             settings.use_multiprocessing,
         )
+        self.main_window.set_session_progress("OMR 인식을 준비하고 있습니다.")
         self.grading_page.clear_result_available()
         service = self.services.scan
         self._start_write(
@@ -846,12 +871,17 @@ class AppController(QObject):
         if self._closing or self._active_page is None:
             return
         if isinstance(self._active_page, ScanPage) and isinstance(progress, ScanProgress):
+            processed = progress.completed + progress.failed
+            percent = round(processed * 100 / progress.total) if progress.total else 0
             self._active_page.set_progress(
                 progress.completed,
                 progress.total,
                 progress.failed,
                 elapsed_seconds=progress.elapsed_ms / 1000,
                 eta_seconds=None if progress.eta_ms is None else progress.eta_ms / 1000,
+            )
+            self.main_window.set_session_progress(
+                f"OMR 인식 {processed} / {progress.total} ({percent}%)"
             )
         elif isinstance(self._active_page, GradingPage) and isinstance(
             progress, GradingProgressDisplay
@@ -861,7 +891,7 @@ class AppController(QObject):
     def _succeeded(self, result: object) -> None:
         if self._closing:
             return
-        if self._active_kind == "desktop-service":
+        if self._active_kind in {"desktop-service", "profile-import"}:
             callback = self._desktop_success
             if callback is not None:
                 callback(result)
@@ -952,18 +982,40 @@ class AppController(QObject):
             self.grading_page.set_operation_id(uuid4().hex)
             self.main_window.set_current_session(connected_session.exam_name)
             self.main_window.set_grading_available(True)
+            if self._active_kind == "grading":
+                self.main_window.set_session_progress("정답/채점 완료")
             if self._active_kind == "fresh-response-import":
                 self.main_window.navigate_to(self.main_window.GRADING_PAGE)
+        if isinstance(page, ScanPage):
+            self.main_window.set_session_progress("OMR 인식 완료")
         self.main_window.set_status(get_message("status.completed"))
 
     def _failed(self, error: object) -> None:
         if self._closing:
             return
-        if self._active_kind == "desktop-service":
-            self.main_window.show_diagnostic(_error_text(error))
+        code = _error_code(error)
+        context = _error_context(error)
+        _LOGGER.error(
+            f"operation_failed kind={self._active_kind or 'unknown'} "
+            f"operation_id={self._active_operation_id or 'none'} code={code} "
+            f"context={context} cause={getattr(error, 'cause_type', None)}"
+        )
+        if self._active_kind in {"desktop-service", "profile-import"}:
+            text = _error_text(error)
+            self.main_window.show_diagnostic(text)
+            if self._active_kind == "profile-import":
+                self.scan_page.set_profile_import_error(text)
             return
         if not self._closing and self._active_page is not None:
-            self._present_error(self._active_page, error)
+            message = f"{_error_text(error)}\n오류 코드: {code}"
+            log_path = self.main_window.diagnostic_log_path
+            if log_path is not None:
+                message += f"\n상세 로그: {log_path}"
+            if isinstance(self._active_page, ScanPage | GradingPage):
+                self._active_page.set_error(message)
+            else:
+                self.main_window.show_diagnostic(message)
+            self.main_window.set_session_progress(f"작업 실패 · 오류 코드 {code}")
             self.main_window.set_status(get_message("status.failed"))
 
     def _cancelled(self) -> None:
@@ -976,6 +1028,7 @@ class AppController(QObject):
             return
         if isinstance(self._active_page, ScanPage):
             self._active_page.set_cancelled()
+            self.main_window.set_session_progress("OMR 인식 취소됨")
         elif isinstance(self._active_page, GradingPage):
             self._active_page.complete_cancel()
         self.main_window.set_status("작업이 취소되었습니다")
@@ -1017,8 +1070,20 @@ class AppController(QObject):
         page: ScanPage | GradingPage | DashboardPage | SettingsPage,
         error: object,
     ) -> None:
+        code = _error_code(error)
+        context = _error_context(error)
+        _LOGGER.error(
+            f"operation_rejected kind={self._active_kind or 'synchronous'} "
+            f"operation_id={self._active_operation_id or 'none'} code={code} "
+            f"context={context} cause={getattr(error, 'cause_type', None)}"
+        )
         if isinstance(page, ScanPage | GradingPage):
-            page.set_error(_error_text(error))
+            message = f"{_error_text(error)}\n오류 코드: {code}"
+            log_path = self.main_window.diagnostic_log_path
+            if log_path is not None:
+                message += f"\n상세 로그: {log_path}"
+            page.set_error(message)
+            self.main_window.set_session_progress(f"작업 실패 · 오류 코드 {code}")
         else:
             self.main_window.show_diagnostic(_error_text(error))
 
@@ -1104,6 +1169,7 @@ class AppController(QObject):
         if importer is None:
             self._present_error(self.scan_page, self._unavailable())
             return
+        self.scan_page.set_profile_importing(selection.paths[0])
         self._start_desktop_action(
             self.settings_page,
             lambda: importer(
@@ -1111,6 +1177,7 @@ class AppController(QObject):
             ),
             self._finish_profile_import,
             self.settings_page.set_busy,
+            kind="profile-import",
         )
 
     def _finish_profile_import(self, result: object) -> None:
@@ -1121,8 +1188,12 @@ class AppController(QObject):
         candidate = next((item for item in candidates if item.name == result.stored_name), None)
         if candidate is None:
             self.settings_page.set_save_error(self._invalid_service_result())
+            self.scan_page.set_profile_import_error(
+                "불러온 OMR 프로필을 목록에서 찾을 수 없습니다."
+            )
             return
         self.settings_page.set_imported_profile(candidate, candidates)
+        self.scan_page.select_profile(result.stored_name)
 
     def _apply_settings_snapshot(self, settings: Settings, revision: int) -> None:
         self._settings_snapshot = settings
@@ -1238,10 +1309,32 @@ class AppController(QObject):
         self.services.sample_answer_key(request)
 
     def _navigate_results(self, request: GradingPageRequest) -> None:
-        if self.services.result_navigation is None:
+        navigation = self.services.result_navigation
+        if navigation is None:
             self._present_error(self.grading_page, self._unavailable())
             return
-        self.services.result_navigation(request)
+        loader = self.services.dashboard_load
+        if loader is None:
+            navigation(request)
+            return
+        self._start_desktop_action(
+            self.dashboard_page,
+            loader,
+            lambda result: self._finish_result_navigation(result, request),
+            self.dashboard_page.set_busy,
+        )
+
+    def _finish_result_navigation(
+        self, result: object, request: GradingPageRequest
+    ) -> None:
+        if not isinstance(result, DashboardListing):
+            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+            return
+        self.dashboard_page.set_entries(result.entries)
+        self._present_warnings(result.warnings)
+        navigation = self.services.result_navigation
+        if navigation is not None:
+            navigation(request)
 
     def _reset_scan(self) -> None:
         self.main_window.set_status("입력 항목을 초기화했습니다.")

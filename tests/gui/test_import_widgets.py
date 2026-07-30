@@ -1,5 +1,5 @@
 from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
-from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 
 from omr_grader.ui.import_widgets import ImportDropWidget, ImportKind, ImportSelection
 
@@ -77,6 +77,27 @@ def test_profile_drop_accepts_only_declared_template_without_opening_it(qtbot):
 
     assert not widget.set_selection(("C:/outside/new.json",))
     assert widget.selection == selected[0]
+
+
+def test_profile_drag_hover_has_explicit_visual_state(qtbot):
+    widget = ImportDropWidget(ImportKind.PROFILE)
+    qtbot.addWidget(widget)
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile("C:/outside/new.omrtemplate")])
+    enter = QDragEnterEvent(
+        widget.rect().center(),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    widget.dragEnterEvent(enter)
+    assert enter.isAccepted()
+    assert widget.property("dragActive") is True
+
+    widget.dragLeaveEvent(QDragLeaveEvent())
+    assert widget.property("dragActive") is False
 
 
 def test_kind_switch_discards_incompatible_selection_but_cancel_preserves_current_selection(qtbot):

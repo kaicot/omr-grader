@@ -105,6 +105,15 @@ def test_generation_one_create_publishes_only_a_committed_snapshot(tmp_path: Pat
     pointer = json.loads((tmp_path / "exam-session-1" / "CURRENT.json").read_text(encoding="utf-8"))
     assert pointer["revision"] == 1
     assert pointer["generation_id"] == "generation-1"
+    location = json.loads(
+        (tmp_path / "exam-session-1" / "LOCATION.json").read_text(encoding="utf-8")
+    )
+    assert location == {
+        "schema_version": 1,
+        "session_id": "session-1",
+        "display_name": "exam-session-1",
+        "operation_id": "create-1",
+    }
     assert not list(tmp_path.glob("*.staging"))
     snapshot = store.open_committed_snapshot(
         SnapshotRequest("session-1", 1, SnapshotPurpose.DETAIL)

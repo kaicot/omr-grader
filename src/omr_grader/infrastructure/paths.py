@@ -14,6 +14,7 @@ from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 _CONFIG_NAME = "config.json"
 _PROFILES_NAME = "Profiles"
 _DATA_NAME = "OMR_Grader"
+_LOGS_NAME = "logs"
 _RESERVED_WINDOWS_NAMES = {
     "CON",
     "PRN",
@@ -133,6 +134,10 @@ class ManagedPaths:
     def data_dir(self) -> Path:
         return self.root / _DATA_NAME
 
+    @property
+    def logs_dir(self) -> Path:
+        return self.root / _LOGS_NAME
+
     def config_target(self) -> Result[Path]:
         return self._contained(self.config_path)
 
@@ -141,6 +146,9 @@ class ManagedPaths:
 
     def data_target(self) -> Result[Path]:
         return self._contained(self.data_dir)
+
+    def logs_target(self) -> Result[Path]:
+        return self._contained(self.logs_dir)
 
     def profile_path(self, filename: str) -> Result[Path]:
         validated = validate_profile_filename(filename)
@@ -156,6 +164,12 @@ class ManagedPaths:
                 return validated
             candidate /= validated.value
         return self._contained(candidate)
+
+    def log_path(self, filename: str) -> Result[Path]:
+        validated = validate_component(filename, field_path="log_path")
+        if isinstance(validated, Err):
+            return validated
+        return self._contained(self.logs_dir / validated.value)
 
     def _contained(self, candidate: Path) -> Result[Path]:
         """Resolve existing ancestors physically and reject every managed reparse point."""
@@ -185,7 +199,14 @@ class ManagedPaths:
 
     def existing_managed_entries(self) -> tuple[Path, ...]:
         return tuple(
-            path for path in (self.config_path, self.profiles_dir, self.data_dir) if path.exists()
+            path
+            for path in (
+                self.config_path,
+                self.profiles_dir,
+                self.data_dir,
+                self.logs_dir,
+            )
+            if path.exists()
         )
 
 

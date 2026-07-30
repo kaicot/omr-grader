@@ -169,11 +169,18 @@ def import_answer_key(path: str, sheet_name: str) -> Result[AnswerKeySnapshot]:
                 answer = _answer("", f"B{row_number}")
             elif type(answer_cell.value) is str:
                 answer = _answer(answer_cell.value, f"B{row_number}")
+            elif type(answer_cell.value) is int:
+                answer = _answer(str(answer_cell.value), f"B{row_number}")
             else:
                 return Err((_error("XLSX_CELL_TYPE", f"B{row_number}"),))
             if isinstance(answer, Err):
                 return answer
-            points = _canonical_points(points_cell.value, f"C{row_number}")
+            points = (
+                Ok("0")
+                if answer.value[1] is KeyQuestionStatus.UNASKED
+                and points_cell.value is None
+                else _canonical_points(points_cell.value, f"C{row_number}")
+            )
             if isinstance(points, Err):
                 return points
             value, status = answer.value
@@ -210,12 +217,12 @@ def import_answer_key(path: str, sheet_name: str) -> Result[AnswerKeySnapshot]:
 
 
 def answer_key_sample_bytes(sheet_name: str = "정답표") -> bytes:
-    """Return a deterministic, formula-free Q1--Q100 sample workbook."""
+    """Return a deterministic, formula-free 50-question sample workbook."""
     workbook = Workbook(write_only=True)
     sheet = workbook.create_sheet(sheet_name)
     sheet.append(ANSWER_KEY_HEADERS)
-    for question in range(1, 101):
-        sheet.append((question, "", 0))
+    for question in range(1, 51):
+        sheet.append((question, 1, 1))
     stream = BytesIO()
     workbook.save(stream)
     return stream.getvalue()

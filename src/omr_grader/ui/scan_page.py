@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QComboBox,
     QFormLayout,
     QFrame,
@@ -17,7 +16,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
-    QRadioButton,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -104,11 +102,12 @@ class ScanPage(QWidget):
         self._session_id: str | None = None
         self._write_enabled = True
         self._busy = False
+        self._profile_importing = False
         self._operation_id: str | None = None
         self._cancellable = True
         self._build_ui()
         self._update_gating()
-        self._default_sensitivity = 3
+        self._default_sensitivity = 5
         self._default_profile_name: str | None = None
 
     def _build_ui(self) -> None:
@@ -134,14 +133,18 @@ class ScanPage(QWidget):
         self.fresh_response_button.setAccessibleName("응답 엑셀로 새 세션 시작")
         self.fresh_response_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.fresh_response_button.installEventFilter(self)
-        self.help_button = QPushButton("도움말 / 사용 설명서", self)
-        self.help_button.setObjectName("scanHelpButton")
-        self.help_button.setAccessibleName("도움말 및 사용 설명서")
+        self.cancel_button = QPushButton("인식 취소", self)
+        self.cancel_button.setObjectName("scanCancelButton")
+        self.cancel_button.setAccessibleName("진행 중인 OMR 인식 취소")
+        self.run_button = QPushButton("OMR 인식 실행", self)
+        self.run_button.setObjectName("scanRunButton")
+        self.run_button.setAccessibleName("OMR 시험지 인식 및 응답결과 생성")
         self.reset_button = QPushButton("초기화 / 재설정", self)
         self.reset_button.setObjectName("scanResetButton")
         self.reset_button.setAccessibleName("입력 초기화 및 재설정")
         top.addWidget(self.fresh_response_button)
-        top.addWidget(self.help_button)
+        top.addWidget(self.cancel_button)
+        top.addWidget(self.run_button)
         top.addWidget(self.reset_button)
         root.addLayout(top)
 
@@ -174,49 +177,54 @@ class ScanPage(QWidget):
         exam_form.addRow("인식 프로필 *", profile_row)
         exam_form.addRow("프로필 끌어놓기", self.profile_widget)
         exam_form.addRow("프로필 정보", self.profile_summary)
+        for field in (
+            self.exam_name_edit,
+            profile_row,
+            self.profile_widget,
+            self.profile_summary,
+        ):
+            label = exam_form.labelForField(field)
+            if label is not None:
+                label.setObjectName("scanFormLabel")
         root.addWidget(exam_card)
 
         roster_card = QFrame(self)
         roster_card.setObjectName("scanRosterCard")
-        roster_layout = QHBoxLayout(roster_card)
-        roster_text = QVBoxLayout()
+        roster_layout = QVBoxLayout(roster_card)
+        roster_header = QHBoxLayout()
         roster_title = QLabel("2. 응시 학생 명단 업로드 (선택 사항)", roster_card)
         roster_title.setObjectName("rosterTitle")
-        self.roster_status = QLabel("명단이 없으면 이름은 ‘미등록’으로 표시됩니다.", roster_card)
-        self.roster_status.setObjectName("rosterStatus")
-        roster_text.addWidget(roster_title)
-        roster_text.addWidget(self.roster_status)
-        roster_layout.addLayout(roster_text, 1)
         self.sample_roster_button = QPushButton("샘플 명단 내려받기", roster_card)
         self.sample_roster_button.setObjectName("sampleRosterButton")
         self.sample_roster_button.setAccessibleName("샘플 응시 학생 명단 내려받기")
+        roster_header.addWidget(roster_title)
+        roster_header.addStretch()
+        roster_header.addWidget(self.sample_roster_button)
+        roster_layout.addLayout(roster_header)
+        self.roster_status = QLabel("명단이 없으면 이름은 ‘미등록’으로 표시됩니다.", roster_card)
+        self.roster_status.setObjectName("rosterStatus")
+        roster_layout.addWidget(self.roster_status)
         self.roster_widget = ImportDropWidget(ImportKind.ROSTER, roster_card)
         self.roster_widget.setObjectName("rosterImportWidget")
-        self.roster_widget.setFixedWidth(270)
-        roster_layout.addWidget(self.sample_roster_button)
         roster_layout.addWidget(self.roster_widget)
         root.addWidget(roster_card)
 
         source_card = QFrame(self)
         source_card.setObjectName("scanSourceCard")
         source_layout = QVBoxLayout(source_card)
-        source_layout.addWidget(QLabel("3. 스캔 파일/폴더 선택 *", source_card))
-        mode_row = QHBoxLayout()
-        self.folder_radio = QRadioButton("이미지 폴더 선택 (JPG, PNG)", source_card)
-        self.folder_radio.setObjectName("folderModeRadio")
-        self.folder_radio.setAccessibleName("이미지 폴더 선택")
-        self.pdf_radio = QRadioButton("PDF 파일 선택", source_card)
-        self.pdf_radio.setObjectName("pdfModeRadio")
-        self.pdf_radio.setAccessibleName("PDF 파일 선택")
-        self.folder_radio.setChecked(True)
-        self._mode_group = QButtonGroup(self)
-        self._mode_group.addButton(self.folder_radio)
-        self._mode_group.addButton(self.pdf_radio)
-        mode_row.addWidget(self.folder_radio)
-        mode_row.addWidget(self.pdf_radio)
-        mode_row.addStretch()
-        source_layout.addLayout(mode_row)
-        self.source_widget = ImportDropWidget(ImportKind.FOLDER, source_card)
+        source_header = QHBoxLayout()
+        source_title = QLabel("3. 스캔 파일/폴더 선택 *", source_card)
+        source_title.setObjectName("scanSectionLabel")
+        source_header.addWidget(source_title)
+        source_header.addStretch()
+        self.source_folder_button = QPushButton("이미지 폴더 찾기", source_card)
+        self.source_folder_button.setObjectName("sourceFolderButton")
+        self.source_pdf_button = QPushButton("PDF 파일 찾기", source_card)
+        self.source_pdf_button.setObjectName("sourcePdfButton")
+        source_header.addWidget(self.source_folder_button)
+        source_header.addWidget(self.source_pdf_button)
+        source_layout.addLayout(source_header)
+        self.source_widget = ImportDropWidget(ImportKind.SOURCE, source_card)
         self.source_widget.setObjectName("scanSourceImportWidget")
         source_layout.addWidget(self.source_widget)
         root.addWidget(source_card)
@@ -224,16 +232,18 @@ class ScanPage(QWidget):
         settings_card = QFrame(self)
         settings_card.setObjectName("scanSensitivityCard")
         settings = QHBoxLayout(settings_card)
-        settings.addWidget(QLabel("4. 고급 인식 설정", settings_card))
+        settings_title = QLabel("4. 고급 인식 설정", settings_card)
+        settings_title.setObjectName("scanSectionLabel")
+        settings.addWidget(settings_title)
         self.sensitivity_slider = QSlider(Qt.Orientation.Horizontal, settings_card)
         self.sensitivity_slider.setObjectName("sensitivitySlider")
         self.sensitivity_slider.setAccessibleName("스캐너 명암 및 인식 감도")
         self.sensitivity_slider.setRange(1, 10)
-        self.sensitivity_slider.setValue(3)
+        self.sensitivity_slider.setValue(5)
         self.sensitivity_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.sensitivity_slider.setTickInterval(1)
         settings.addWidget(self.sensitivity_slider, 1)
-        self.sensitivity_label = QLabel("인식 수준 3 / 10", settings_card)
+        self.sensitivity_label = QLabel("인식 수준 5 / 10", settings_card)
         self.sensitivity_label.setObjectName("sensitivityValueLabel")
         self.sensitivity_help = QLabel("낮음  ←  스캐너 명암/인식 감도  →  높음", settings_card)
         self.sensitivity_help.setObjectName("sensitivityHelpLabel")
@@ -245,6 +255,7 @@ class ScanPage(QWidget):
         self.progress_bar.setObjectName("scanProgressBar")
         self.progress_bar.setAccessibleName("OMR 인식 진행률")
         self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFormat("%v / %m (%p%)")
         self.progress_bar.hide()
         self.progress_label = QLabel("입력 항목을 모두 선택하면 인식을 시작할 수 있습니다.", self)
         self.progress_label.setObjectName("scanProgressLabel")
@@ -256,28 +267,22 @@ class ScanPage(QWidget):
         self.session_footer.setAccessibleName("현재 세션 및 준비 상태")
         root.addWidget(self.session_footer)
 
-        actions = QHBoxLayout()
-        actions.addStretch()
-        self.cancel_button = QPushButton("인식 취소", self)
-        self.cancel_button.setObjectName("scanCancelButton")
-        self.cancel_button.setAccessibleName("진행 중인 OMR 인식 취소")
-        self.run_button = QPushButton("OMR 인식 실행", self)
-        self.run_button.setObjectName("scanRunButton")
-        self.run_button.setAccessibleName("OMR 시험지 인식 및 응답결과 생성")
-        actions.addWidget(self.cancel_button)
-        actions.addWidget(self.run_button)
-        root.addLayout(actions)
-
-        self.help_button.clicked.connect(self.help_requested)
         self.reset_button.clicked.connect(self._reset_inputs)
         self.reset_button.clicked.connect(self.reset_requested)
         self.sample_roster_button.clicked.connect(self.sample_roster_requested)
         self.profile_import_button.clicked.connect(self.profile_browse_requested)
         self.profile_widget.browse_requested.connect(self._profile_browse_requested)
         self.profile_widget.selection_changed.connect(self._profile_dropped)
-        self.folder_radio.toggled.connect(self._set_source_mode)
         self.source_widget.selection_changed.connect(self._source_selected)
-        self.source_widget.browse_requested.connect(self.source_browse_requested)
+        self.source_widget.browse_requested.connect(
+            lambda _: self.source_browse_requested.emit(ImportKind.PDF)
+        )
+        self.source_folder_button.clicked.connect(
+            lambda: self.source_browse_requested.emit(ImportKind.FOLDER)
+        )
+        self.source_pdf_button.clicked.connect(
+            lambda: self.source_browse_requested.emit(ImportKind.PDF)
+        )
         self.roster_widget.selection_changed.connect(self._roster_selected)
         self.roster_widget.browse_requested.connect(self.roster_browse_requested)
         self.sensitivity_slider.valueChanged.connect(self._set_sensitivity_label)
@@ -367,9 +372,6 @@ class ScanPage(QWidget):
         if source is None:
             self.source_widget.clear()
         else:
-            if source.kind is not self.source_widget.kind:
-                self.folder_radio.setChecked(source.kind is ImportKind.FOLDER)
-                self.pdf_radio.setChecked(source.kind is ImportKind.PDF)
             if not self.source_widget.set_selection(source.paths):
                 self._source = None
         self._update_gating()
@@ -382,6 +384,38 @@ class ScanPage(QWidget):
 
     def set_profile_picker_cancelled(self) -> None:
         self.profile_widget.set_picker_cancelled()
+
+    def set_profile_importing(self, source_path: str) -> None:
+        if not isinstance(source_path, str) or not source_path:
+            raise ValueError("source_path must be a non-empty string")
+        self._profile_importing = True
+        self.profile_summary.setText(f"OMR 프로필을 불러오는 중입니다.\n{source_path}")
+        self.progress_label.setText("OMR 프로필을 검증하고 안전하게 저장하는 중입니다.")
+        self._update_gating()
+
+    def select_profile(self, path: str) -> bool:
+        if not isinstance(path, str) or not path:
+            raise ValueError("path must be a non-empty string")
+        for index in range(1, self.profile_combo.count()):
+            profile = self.profile_combo.itemData(index)
+            if isinstance(profile, ValidatedProfileState) and profile.path == path:
+                self._profile_importing = False
+                self.profile_combo.setCurrentIndex(index)
+                self.progress_label.setText(
+                    f"OMR 프로필 '{profile.name}'을(를) 불러와 인식 프로필로 적용되었습니다."
+                )
+                self._update_gating()
+                return True
+        self.set_profile_import_error("불러온 OMR 프로필을 목록에서 찾을 수 없습니다.")
+        return False
+
+    def set_profile_import_error(self, message: str) -> None:
+        if not isinstance(message, str) or not message:
+            raise ValueError("message must be a non-empty string")
+        self._profile_importing = False
+        self.profile_summary.setText(f"프로필 불러오기 실패: {message}")
+        self.progress_label.setText(message)
+        self._update_gating()
 
     def set_session(self, session_id: str | None, label: str | None = None) -> None:
         if session_id is not None and (not isinstance(session_id, str) or not session_id):
@@ -436,17 +470,30 @@ class ScanPage(QWidget):
         self._busy = True
         self.progress_bar.show()
         self.progress_bar.setRange(0, max(total, 1))
+        self.progress_bar.setFormat("%v / %m (%p%)")
         self.progress_bar.setValue(completed + failed)
-        timing = []
-        if elapsed_seconds is not None:
-            timing.append(f"경과 {self._format_duration(elapsed_seconds)}")
-        if eta_seconds is not None:
-            timing.append(f"예상 남은 시간 {self._format_duration(eta_seconds)}")
-        suffix = f" · {' · '.join(timing)}" if timing else ""
-        progress_text = (
-            f"현재 처리 중: {completed + failed} / {total} "
-            f"(성공 {completed}, 확인 필요 {failed}){suffix}"
+        processed = completed + failed
+        elapsed = (
+            "0초"
+            if elapsed_seconds is None
+            else (
+                f"{int(elapsed_seconds)}초"
+                if elapsed_seconds < 60
+                else self._format_duration(elapsed_seconds)
+            )
         )
+        remaining = (
+            "남은시간 계산 중..."
+            if eta_seconds is None
+            else f"예상 남은 시간 {self._format_duration(eta_seconds)}"
+        )
+        progress_text = (
+            f"OMR 인식 실행중. 경과 {elapsed}. {remaining} "
+            f"({processed} / {total}) 인식중."
+        )
+        if processed:
+            percent = round(processed * 100 / total) if total else 0
+            progress_text += f" ({percent}%; 성공 {completed}, 확인 필요 {failed})"
         self.progress_label.setText(progress_text)
         self._update_gating()
 
@@ -462,10 +509,18 @@ class ScanPage(QWidget):
         self._update_gating()
 
     def set_error(self, error: object | None = None, message: str | None = None) -> None:
+        preserve_progress = self.progress_bar.isVisible() and self.progress_bar.maximum() > 0
+        completed = self.progress_bar.value()
+        total = self.progress_bar.maximum()
         self._busy = False
         self._operation_id = None
-        self.progress_bar.hide()
         text = message or (str(error) if error else "OMR 인식 중 오류가 발생했습니다.")
+        if preserve_progress:
+            percent = round(completed * 100 / total)
+            text += f"\n마지막 진행 {completed} / {total} ({percent}%)"
+            self.progress_bar.show()
+        else:
+            self.progress_bar.hide()
         self.progress_label.setText(text)
         self._update_gating()
 
@@ -477,16 +532,8 @@ class ScanPage(QWidget):
         self.progress_label.setText(message)
         self._update_gating()
 
-    def _set_source_mode(self, folder_mode: bool) -> None:
-        if self._busy:
-            return
-        kind = ImportKind.FOLDER if folder_mode else ImportKind.PDF
-        self._source = None
-        self.source_widget.set_kind(kind)
-        self._update_gating()
-
     def _source_selected(self, selection: ImportSelection) -> None:
-        if self._busy or selection.kind is not self.source_widget.kind:
+        if self._busy or selection.kind not in (ImportKind.FOLDER, ImportKind.PDF):
             return
         self._source = selection
         self._update_gating()
@@ -571,12 +618,13 @@ class ScanPage(QWidget):
         return (
             self._write_enabled
             and not self._busy
+            and not self._profile_importing
             and bool(self.exam_name_edit.text().strip())
             and profile is not None
             and profile.validated
             and not profile.validation_errors
             and self._source is not None
-            and self._source.kind is self.source_widget.kind
+            and self._source.kind in (ImportKind.FOLDER, ImportKind.PDF)
         )
 
     @staticmethod
@@ -596,8 +644,8 @@ class ScanPage(QWidget):
             self.profile_combo,
             self.profile_import_button,
             self.profile_widget,
-            self.folder_radio,
-            self.pdf_radio,
+            self.source_folder_button,
+            self.source_pdf_button,
             self.source_widget,
             self.roster_widget,
             self.sensitivity_slider,
@@ -605,6 +653,8 @@ class ScanPage(QWidget):
             self.reset_button,
         ):
             widget.setEnabled(editable)
+        for widget in (self.profile_combo, self.profile_import_button, self.profile_widget):
+            widget.setEnabled(editable and not self._profile_importing)
 
     def _emit_recognition_request(self) -> None:
         profile = self._selected_profile()

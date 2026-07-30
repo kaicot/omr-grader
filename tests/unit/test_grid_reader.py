@@ -54,7 +54,7 @@ def _answer_mark(image: np.ndarray, question: int, choice: int, value: int = 0) 
 
 def _read(image: np.ndarray, calibrated: bool = True):
     thresholds = thresholds_for_sensitivity(
-        50,
+        5,
         calibrated=calibrated,
         calibration_provenance=CALIBRATION_PROVENANCE if calibrated else None,
     ).value
@@ -116,6 +116,18 @@ def test_id_is_emitted_only_when_every_column_is_single() -> None:
     assert boundary_result.cells[0].status is FieldStatus.UNCERTAIN
 
 
+def test_id_accepts_a_clear_seven_digit_prefix_with_blank_trailing_column() -> None:
+    image = np.full((1000, 1000), 255, dtype=np.uint8)
+    for column in range(7):
+        _id_mark(image, column, column + 1)
+
+    student_id = _read(image).student_id
+
+    assert student_id.status is StudentIdStatus.NORMAL
+    assert student_id.value == "1234567"
+    assert student_id.cells[7].status is FieldStatus.BLANK
+
+
 def test_uncalibrated_scores_are_for_manual_review() -> None:
     image = np.full((1000, 1000), 255, dtype=np.uint8)
     for column in range(8):
@@ -134,7 +146,7 @@ def test_old_calibration_provenance_cannot_auto_confirm() -> None:
         _id_mark(image, column, column)
     _answer_mark(image, 1, 1)
     thresholds = thresholds_for_sensitivity(
-        50,
+        5,
         calibrated=True,
         calibration_provenance="local-background-v2",
     ).value

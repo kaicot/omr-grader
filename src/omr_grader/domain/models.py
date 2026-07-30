@@ -34,7 +34,7 @@ from .enums import (
 from .errors import ErrorInfo
 
 SCHEMA_VERSION = 1
-_DIGITS = re.compile(r"^[0-9]{8}$")
+_DIGITS = re.compile(r"^[0-9]{1,8}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 type JsonValue = None | bool | int | str | tuple[JsonValue, ...] | dict[str, JsonValue]
@@ -392,11 +392,21 @@ class StudentIdRecognition(_Wire):
             return
         if len(self.cells) != 8:
             raise ValueError("student ID needs eight cells")
-        complete = all(cell.status is FieldStatus.NORMAL for cell in self.cells)
+        normal_count = 0
+        for index, cell in enumerate(self.cells):
+            if cell.status is FieldStatus.NORMAL and normal_count == index:
+                normal_count += 1
+                continue
+            break
+        complete = normal_count > 0 and all(
+            cell.status is FieldStatus.BLANK for cell in self.cells[normal_count:]
+        )
         if (
             (self.status is StudentIdStatus.NORMAL) != complete
             or (
-                complete and self.value != "".join(cell.selected_digit or "" for cell in self.cells)
+                complete
+                and self.value
+                != "".join(cell.selected_digit or "" for cell in self.cells[:normal_count])
             )
             or (not complete and self.value is not None)
         ):

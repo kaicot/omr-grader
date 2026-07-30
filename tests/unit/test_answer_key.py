@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
+from io import BytesIO
 from zipfile import ZIP_BZIP2, ZipFile
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from omr_grader.domain.enums import AnswerStatus, KeyQuestionStatus
 from omr_grader.domain.errors import Err, Ok
@@ -74,6 +75,19 @@ def test_answer_key_accepts_physical_blank_answer_as_unasked(tmp_path):
     assert entry.points == "0"
 
 
+def test_answer_key_accepts_numeric_answers_and_blank_trailing_placeholders(tmp_path):
+    path = tmp_path / "key.xlsx"
+    _book(path, [(1, 3, 1), (2, None, None)])
+
+    result = answer_key.import_answer_key(str(path), "정답표")
+
+    assert isinstance(result, Ok)
+    assert result.value.entries[0].answer.choices == (3,)
+    assert result.value.entries[0].points == "1"
+    assert result.value.entries[1].status is KeyQuestionStatus.UNASKED
+    assert result.value.entries[1].points == "0"
+
+
 def test_answer_key_rejects_duplicate_question_and_n_plus_one_rows(tmp_path, monkeypatch):
     duplicate = tmp_path / "duplicate.xlsx"
     _book(duplicate, [(1, "1", 1), (1, "2", 1)])
@@ -140,7 +154,6 @@ def test_answer_key_rejects_negative_nonfinite_or_overprecise_points(value):
     [
         ("1", "1", 1),
         (True, "1", 1),
-        (1, 1, 1),
         (1, True, 1),
         (1, "1", "1"),
         (1, "1", True),
@@ -468,6 +481,20 @@ def test_write_answer_key_sample_cleans_temp_after_generation_failure(
     assert result.errors[0].code == "XLSX_WRITE_FAILED"
     assert not target.exists()
     assert not list(tmp_path.iterdir())
+
+
+def test_answer_key_sample_contains_fifty_scored_questions() -> None:
+    workbook = load_workbook(
+        BytesIO(answer_key.answer_key_sample_bytes()), read_only=True, data_only=True
+    )
+    try:
+        sheet = workbook["정답표"]
+        rows = tuple(sheet.iter_rows(min_row=2, values_only=True))
+        assert rows == tuple(
+            (question, 1, 1) for question in range(1, 51)
+        )
+    finally:
+        workbook.close()
 
 
 def test_write_answer_key_sample_cleans_temp_after_write_failure(tmp_path, monkeypatch):

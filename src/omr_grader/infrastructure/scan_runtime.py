@@ -54,6 +54,14 @@ from omr_grader.domain.models import (
 from omr_grader.domain.profile import Profile
 from omr_grader.domain.session import build_page_ref
 from omr_grader.infrastructure.profile_store import ProfileStore
+from omr_grader.infrastructure.result_layout import (
+    COORDINATE_DIR,
+    OCR_IMAGE_DIR,
+    REVIEW_DIR,
+    ocr_filename,
+    result_base_name,
+    safe_exam_name,
+)
 from omr_grader.infrastructure.session_store import SessionStore
 from omr_grader.ingestion.images import ScanInput, enumerate_image_folder, enumerate_image_paths
 from omr_grader.ingestion.pdf import PdfInput, enumerate_pdf, render_pdf_page
@@ -152,7 +160,7 @@ class ScanRuntime:
         self._app_version = app_version
 
     def build_tasks(self, command: ScanCommand) -> Result[tuple[WorkerTask, ...]]:
-        profile = self._profiles.load_path(Path(command.profile_path))
+        profile = self._profiles.load(command.profile_path)
         if isinstance(profile, Err):
             return profile
         if Path(command.profile_path).suffix.casefold() != ".omrtemplate":
@@ -269,7 +277,27 @@ class ScanRuntime:
         if prepared is None:
             return _error("SCAN_PREPARATION_MISSING", "operation_id")
         if not results or not any(isinstance(item, PipelineSuccess) for item in results):
-            return _error("SCAN_NO_PROCESSABLE_RESULT", "source")
+            failures = tuple(item for item in results if isinstance(item, PipelineFailure))
+            counts: dict[str, int] = {}
+            for failure in failures:
+                for error in failure.failure.errors:
+                    counts[error.code] = counts.get(error.code, 0) + 1
+            failure_codes = ", ".join(
+                f"{code}:{count}" for code, count in sorted(counts.items())
+            )
+            return Err(
+                (
+                    ErrorInfo(
+                        "SCAN_NO_PROCESSABLE_RESULT",
+                        "error.scan_no_processable_result",
+                        "source",
+                        {
+                            "failed_pages": len(failures),
+                            "failure_codes": failure_codes or "none",
+                        },
+                    ),
+                )
+            )
         try:
             profile, roster, thresholds, expected_refs = prepared
         except (TypeError, ValueError):
@@ -289,11 +317,11 @@ class ScanRuntime:
         ):
             return _error("SCAN_RESULT_IDENTITY_MISMATCH", "source")
         try:
-            generated = self._artifacts(command, profile.sha256, roster, results)
+            created = _utc()
+            generated = self._artifacts(command, profile.sha256, roster, results, created)
             if isinstance(generated, Err):
                 return generated
             artifacts, canonical_responses, automatic_pages = generated.value
-            created = _utc()
             generation_id = uuid.uuid4().hex
             record = SessionRecord(
                 1,
@@ -410,13 +438,14 @@ class ScanRuntime:
                 ),
             )
             identity = IdentityRecord(1, command.session_id, created, CreationKind.SCAN)
+            display_name = result_base_name(command.exam_name, created)
         except (TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
             return _error("SCAN_COMMIT_SERIALIZATION_FAILED", str(exc))
         return self._sessions._create_initial_generation(
             identity=identity,
             manifest=manifest,
             session=record,
-            display_name=command.session_id,
+            display_name=display_name,
             artifacts=artifacts,
         )
 
@@ -450,6 +479,7 @@ class ScanRuntime:
         profile_sha256: str,
         roster: RosterSnapshot,
         results: tuple[PipelineResult, ...],
+        created_at: str,
     ) -> Result[tuple[dict[str, bytes], tuple[EffectiveResponse, ...], tuple[AutomaticPage, ...]]]:
         output: dict[str, bytes] = {"recognition/roster.json": _json_bytes(roster.to_dict())}
         automatic_pages = tuple(item.page for item in results if isinstance(item, PipelineSuccess))
@@ -468,12 +498,27 @@ class ScanRuntime:
                 output[f"recognition/failures/{page.page_ref.work_item_id}.json"] = _json_bytes(
                     result.failure.to_dict()
                 )
+                output[f"{REVIEW_DIR}/{page.page_ref.work_item_id}.json"] = _json_bytes(
+                    result.failure.to_dict()
+                )
+                for source in command.source.paths:
+                    candidate = Path(source)
+                    if candidate.is_file() and candidate.name == page.page_ref.source_display_name:
+                        output[f"{REVIEW_DIR}/{safe_exam_name(candidate.name)}"] = (
+                            candidate.read_bytes()
+                        )
+                        break
                 continue
             key = page.page_ref.work_item_id
             output[f"recognition/{key}/normalized.png"] = result.artifacts.normalized_png
             output[f"recognition/{key}/coordinates.json"] = result.artifacts.coordinates_json
             output[f"recognition/{key}/overlay.png"] = result.artifacts.overlay_png
             output[f"images/{key}.png"] = result.artifacts.normalized_png
+            display_stem = f"{ordinal + 1:03}_{key}"
+            output[f"{OCR_IMAGE_DIR}/{display_stem}.png"] = result.artifacts.overlay_png
+            output[f"{COORDINATE_DIR}/{display_stem}.json"] = (
+                result.artifacts.coordinates_json
+            )
             student_id = page.student_id.value or ""
             rows.append(
                 ImportedResponseRef(
@@ -502,6 +547,7 @@ class ScanRuntime:
                     manifest_sha256="0" * 64,
                 )
                 output["responses.xlsx"] = book.read_bytes()
+                output[ocr_filename(command.exam_name, created_at)] = output["responses.xlsx"]
         except (OSError, TypeError, ValueError) as exc:
             return _error("SCAN_RESPONSE_PROJECTION_FAILED", str(exc))
         output["recognition/projection.json"] = _json_bytes(
@@ -510,6 +556,10 @@ class ScanRuntime:
                 "roster": roster.to_dict(),
                 "pages": [item.page.to_dict() for item in results],
             }
+        )
+        output.setdefault(
+            f"{REVIEW_DIR}/현재_수동확인_항목_없음.txt",
+            "현재 수동 확인이 필요한 항목이 없습니다.\n".encode(),
         )
         return Ok((output, projected.value, automatic_pages))
 

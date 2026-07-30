@@ -46,6 +46,10 @@ def test_load_config_uses_safe_defaults_for_missing_damaged_or_wrong_type_json(
         assert result.warnings[0].cause_type is None
 
 
+def test_default_config_uses_sensitivity_five() -> None:
+    assert default_config().default_sensitivity == 5
+
+
 @pytest.mark.parametrize(
     ("failure", "cause_type"),
     [

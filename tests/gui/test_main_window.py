@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QScrollArea
+from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
 
 from omr_grader.ui.dashboard_page import DashboardPage
 from omr_grader.ui.detail_page import DetailPage
@@ -87,6 +87,7 @@ def test_shell_accessibility_status_and_write_authority_contract(qtbot) -> None:
     assert all(button.accessibleName() for button in window.nav_buttons)
     stylesheet = stylesheet_for(Theme.LIGHT)
     assert "QLabel#brandTitle" in stylesheet
+    assert "QLabel#brandMark" in stylesheet
     assert "background: transparent" in stylesheet
     assert "QFrame#scanExamCard" in stylesheet
     assert "QFrame#rosterImportWidget" in stylesheet
@@ -165,7 +166,82 @@ def test_theme_help_and_sidebar_tab_keyboard_activation(qtbot) -> None:
     qtbot.keyClick(window.theme_button, Qt.Key.Key_Tab)
     qtbot.waitUntil(window.help_button.hasFocus)
     qtbot.keyClick(window.help_button, Qt.Key.Key_Return)
-    assert "도움말" in window.status_label.text()
+    qtbot.waitUntil(lambda: window.help_dialog.isVisible())
+    help_text = window.help_browser.toPlainText()
+    assert "OMR 스캔" in help_text
+    assert "정답/채점" in help_text
+    assert "시험 관리" in help_text
+    assert "조승현" in help_text
+    assert "https://github.com/kaicot/omr-grader" in window.help_browser.toHtml()
+
+
+def test_global_help_is_the_only_visible_help_button(qtbot) -> None:
+    window, _, _ = _window(qtbot)
+
+    help_buttons = [
+        button
+        for button in window.findChildren(QPushButton)
+        if "도움말" in button.text() and button.isVisible()
+    ]
+
+    assert help_buttons == [window.help_button]
+
+
+def test_light_theme_keeps_help_text_and_links_high_contrast(qtbot) -> None:
+    window, _, _ = _window(qtbot)
+    window.show_help()
+    palette = QApplication.instance().palette()
+
+    assert palette.color(QPalette.ColorRole.Text).name() == "#172b4d"
+    assert palette.color(QPalette.ColorRole.Link).name() == "#1d4ed8"
+    assert window.help_browser.palette().color(QPalette.ColorRole.Link).name() == "#1d4ed8"
+    assert "text-decoration: underline" in window.help_browser.document().defaultStyleSheet()
+    assert "color:#1d4ed8" in window.help_browser.toHtml().lower()
+    assert "color:#99ebff" not in window.help_browser.toHtml().lower()
+
+
+def test_session_card_displays_live_scan_progress(qtbot) -> None:
+    window, _, _ = _window(qtbot)
+
+    window.set_current_session("중간고사")
+    window.set_session_progress("OMR 인식 3 / 10 (30%)")
+
+    assert window.session_name_label.text() == "중간고사"
+    assert window.session_progress_label.text() == "OMR 인식 3 / 10 (30%)"
+
+
+def test_scan_actions_are_visually_button_like_and_have_pressed_feedback(qtbot) -> None:
+    window, _, _ = _window(qtbot)
+    stylesheet = stylesheet_for(Theme.LIGHT)
+
+    for object_name in (
+        "freshResponseButton",
+        "scanResetButton",
+        "scanCancelButton",
+        "scanRunButton",
+        "profileImportButton",
+    ):
+        assert f"QPushButton#{object_name}" in stylesheet
+    assert "QPushButton#scanRunButton:pressed" in stylesheet
+    assert "QPushButton#scanResetButton:pressed" in stylesheet
+
+
+def test_theme_keeps_shell_surfaces_and_standard_actions_opaque(qtbot) -> None:
+    _window(qtbot)
+    stylesheet = stylesheet_for(Theme.DARK)
+
+    assert "QFrame#sidebar QLabel" in stylesheet
+    assert "QFrame#topBar QLabel" in stylesheet
+    assert "QPushButton#freshResponseButton:hover:enabled" in stylesheet
+    assert "QPushButton#scanRunButton:hover:enabled" in stylesheet
+    for object_name in (
+        "sampleAnswerKeyButton",
+        "answerKeyUploadButton",
+        "cancelGradingButton",
+        "dashboardDetailButton",
+        "dashboardDeleteButton",
+    ):
+        assert f"QPushButton#{object_name}" in stylesheet
 
 
 def test_primary_tab_order_skips_disabled_navigation_in_both_directions(qtbot) -> None:

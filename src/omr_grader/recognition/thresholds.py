@@ -8,10 +8,10 @@ from typing import Final
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 
-THRESHOLD_VERSION: Final = 3
-CALIBRATION_PROVENANCE: Final = "local-background-v3"
-MIN_SENSITIVITY: Final = 0
-MAX_SENSITIVITY: Final = 100
+THRESHOLD_VERSION: Final = 4
+CALIBRATION_PROVENANCE: Final = "local-background-v4"
+MIN_SENSITIVITY: Final = 1
+MAX_SENSITIVITY: Final = 10
 
 
 @dataclass(frozen=True, slots=True)

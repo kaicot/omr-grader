@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 
 from omr_grader.application.dto import ScoreInput, ScoreResult, ScoreSet, ScoreStatistics
@@ -50,7 +51,9 @@ def question_outcomes(response: ScoreInput | object, key: object | None = None) 
     return tuple(outcomes)
 
 
-def score_effective(score_input: ScoreInput) -> ScoreSet:
+def score_effective(
+    score_input: ScoreInput, progress: Callable[[int, int], None] | None = None
+) -> ScoreSet:
     """Score every work item independently using only committed domain values.
 
     An uncertain answer makes only that work item unscoreable.  Duplicate
@@ -79,10 +82,15 @@ def score_effective(score_input: ScoreInput) -> ScoreSet:
         context.rounding = ROUND_HALF_EVEN
         maximum = sum(point_values, Decimal("0"))
     preliminary: list[tuple[str, Decimal | None]] = []
-    for response in score_input.responses:
+    total = len(score_input.responses)
+    if progress is not None:
+        progress(0, total)
+    for position, response in enumerate(score_input.responses, 1):
         outcomes = question_outcomes(response, score_input.key)
         if REVIEW in outcomes:
             preliminary.append((response.work_item_id, None))
+            if progress is not None:
+                progress(position, total)
             continue
         points = tuple(
             Decimal(entry.points)
@@ -94,6 +102,8 @@ def score_effective(score_input: ScoreInput) -> ScoreSet:
             context.rounding = ROUND_HALF_EVEN
             score = sum(points, Decimal("0"))
         preliminary.append((response.work_item_id, score))
+        if progress is not None:
+            progress(position, total)
 
     scores = tuple(score for _, score in preliminary if score is not None)
     ranks = {score: 1 + sum(other > score for other in scores) for score in set(scores)}

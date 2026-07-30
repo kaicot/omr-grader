@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from omr_grader.domain.enums import ProcessingStatus, StudentIdStatus
-from omr_grader.domain.errors import Err, ErrorContextValue, ErrorInfo
+from omr_grader.domain.enums import ProcessingStatus, SourceKind, StudentIdStatus
+from omr_grader.domain.errors import Err, ErrorContextValue, ErrorInfo, Ok, Result
 from omr_grader.domain.models import (
     AutomaticPage,
     EvidenceSummary,
@@ -30,11 +30,12 @@ from omr_grader.ingestion.images import (
     MAX_SOURCE_BYTES,
     preflight_tiff,
 )
-from omr_grader.recognition.geometry import detect_page_contour
+from omr_grader.recognition.geometry import PageContour, detect_page_contour
 from omr_grader.recognition.grid_reader import _has_frozen_profile_invariants, read_grid
 from omr_grader.recognition.normalization import normalize_page
 from omr_grader.recognition.orientation import rotate_right_angle, select_orientation
 from omr_grader.recognition.overlay import render_overlay
+from omr_grader.recognition.registration import register_profile_grid
 from omr_grader.recognition.thresholds import RecognitionThresholds
 
 _RASTER = NDArray[np.uint8]
@@ -123,17 +124,16 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
     image = decoded
     gray = _gray(image)
     orientation = select_orientation(
-        gray, _orientation_scorer(task.profile), minimum_confidence=0.50, tie_margin=0.05
+        gray,
+        _orientation_scorer(task.profile),
+        minimum_confidence=0.50,
+        tie_margin=0.05,
+        preferred_rotation=0,
     )
     if isinstance(orientation, Err):
         return _failure(task.page_ref, orientation.errors[0])
     rotated = rotate_right_angle(image, orientation.value.rotation_degrees)
-    contour = detect_page_contour(
-        rotated,
-        expected_aspect_ratio=float(task.profile.page.aspect_ratio)
-        if task.profile.page is not None
-        else None,
-    )
+    contour = _page_contour(rotated, task.page_ref, task.profile)
     if isinstance(contour, Err):
         return _failure(task.page_ref, contour.errors[0])
     normalized = normalize_page(
@@ -146,7 +146,8 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
     if isinstance(normalized, Err):
         return _failure(task.page_ref, normalized.errors[0])
     raster = normalized.value
-    recognition = read_grid(raster.pixels, task.profile, task.thresholds)
+    registered_profile = register_profile_grid(raster.pixels, task.profile)
+    recognition = read_grid(raster.pixels, registered_profile, task.thresholds)
     if isinstance(recognition, Err):
         return _failure(task.page_ref, recognition.errors[0])
     grid = recognition.value
@@ -174,6 +175,28 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
         return _failure(task.page_ref, overlay.errors[0])
     artifacts = RecognitionArtifacts(raster.png_bytes, _coordinates(page), _png(overlay.value))
     return PipelineSuccess(page, artifacts)
+
+
+def _page_contour(image: _RASTER, page_ref: PageRef, profile: Profile) -> Result[PageContour]:
+    expected_aspect_ratio = (
+        float(profile.page.aspect_ratio) if profile.page is not None else None
+    )
+    if page_ref.source_kind is SourceKind.PDF and expected_aspect_ratio is not None:
+        height, width = image.shape[:2]
+        actual_aspect_ratio = width / height
+        aspect_error = abs(actual_aspect_ratio - expected_aspect_ratio) / expected_aspect_ratio
+        if aspect_error <= 0.05:
+            corners = np.array(
+                (
+                    (0.0, 0.0),
+                    (float(width - 1), 0.0),
+                    (float(width - 1), float(height - 1)),
+                    (0.0, float(height - 1)),
+                ),
+                dtype=np.float32,
+            )
+            return Ok(PageContour(corners, 1.0 - aspect_error, 0.0))
+    return detect_page_contour(image, expected_aspect_ratio=expected_aspect_ratio)
 
 
 def _is_uint8_raster(value: object) -> TypeGuard[_RASTER]:

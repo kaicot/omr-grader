@@ -6,7 +6,9 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from threading import Event
+from time import monotonic
+from typing import TYPE_CHECKING, TypeVar
 from uuid import uuid4
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
@@ -16,10 +18,13 @@ from omr_grader.infrastructure.capabilities import (
     probe_root_capability,
 )
 from omr_grader.infrastructure.config_store import AppConfig, load_config
-from omr_grader.infrastructure.logging_setup import configure_logging
+from omr_grader.infrastructure.logging_setup import configure_logging, daily_log_path
 from omr_grader.infrastructure.paths import ManagedPaths, resolve_portable_root
 from omr_grader.resources.messages import get_message
 from omr_grader.workbooks.schemas import RESPONSE_SHEET_NAME
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication, QSplashScreen
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +194,8 @@ def bootstrap(paths: ManagedPaths | None = None) -> Result[BootstrapState]:
             ),
             capability.warnings + config.warnings + _result_warnings(logging_result),
         )
-    log_target = managed.value.data_path("omr-grader.log")
+    daily_target = daily_log_path(managed.value.root)
+    log_target = managed.value.log_path(daily_target.name)
     if isinstance(log_target, Err):
         logging_result = configure_logging()
         return Ok(
@@ -216,18 +222,48 @@ def _diagnostic_from_errors(errors: tuple[ErrorInfo, ...]) -> str:
     return get_message("bootstrap.unavailable_body")
 
 
-def run() -> int:
+def _create_startup_splash() -> QSplashScreen:
+    """Create the native startup surface before bootstrap and heavy imports."""
+    from omr_grader.startup import create_splash
+
+    return create_splash()
+
+
+def _configure_application_branding(application: QApplication) -> None:
+    from omr_grader.startup import configure_application_branding
+
+    configure_application_branding(application)
+
+
+def run(
+    *,
+    application: QApplication | None = None,
+    startup_splash: QSplashScreen | None = None,
+) -> int:
     """Launch the Qt shell after the portable bootstrap has completed."""
     global _RUNTIME_REFERENCES
     if sys.platform == "win32":
         from multiprocessing import freeze_support
 
         freeze_support()
-    outcome = bootstrap()
 
-    # Keep Qt imports out of the headless/bootstrap and child-process import paths.
     from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
+    existing = application if application is not None else QApplication.instance()
+    app = existing if isinstance(existing, QApplication) else QApplication(sys.argv)
+    QApplication.setApplicationName(get_message("app.title"))
+    QApplication.setOrganizationName(get_message("app.organization"))
+    QApplication.setApplicationDisplayName(get_message("app.title"))
+    _configure_application_branding(app)
+    splash = startup_splash
+    if splash is None:
+        splash = _create_startup_splash()
+        splash.show()
+        app.processEvents()
+
+    outcome = bootstrap()
+
+    # Keep the remaining heavy imports behind the visible startup surface.
     from omr_grader.application.answer_key_use_case import AnswerKeyWorkbookUseCase
     from omr_grader.application.backup_use_case import BackupApplicationService
     from omr_grader.application.correction_use_case import (
@@ -263,6 +299,7 @@ def run() -> int:
         CorrectionBatch,
         ImportResponseCommand,
         PermanentDeleteResult,
+        RegradeCommand,
         ResponseBookRequest,
         RestoreCommand,
         SessionCreateResult,
@@ -274,7 +311,10 @@ def run() -> int:
         SoftDeleteResult,
         TrashRestoreResult,
     )
-    from omr_grader.application.grading_presenter import ConnectedSessionDisplay
+    from omr_grader.application.grading_presenter import (
+        ConnectedSessionDisplay,
+        GradingProgressDisplay,
+    )
     from omr_grader.application.grading_use_case import GradingUseCase
     from omr_grader.application.profile_use_case import ProfileApplicationService
     from omr_grader.application.response_import_use_case import ResponseImportUseCase
@@ -313,11 +353,6 @@ def run() -> int:
     from omr_grader.workbooks.answer_key import write_answer_key_sample
     from omr_grader.workbooks.roster_sample import write_roster_sample
 
-    application = QApplication.instance()
-    app = application if isinstance(application, QApplication) else QApplication(sys.argv)
-    QApplication.setApplicationName(get_message("app.title"))
-    QApplication.setOrganizationName(get_message("app.organization"))
-    QApplication.setApplicationDisplayName(get_message("app.title"))
     diagnostic: str | None
 
     if isinstance(outcome, Err):
@@ -414,6 +449,7 @@ def run() -> int:
     scan_service = None
     response_import_service = None
     grading_service = None
+    grading_context = None
     answer_key_service = None
     import_response_selection = None
     import_fresh_response_selection = None
@@ -579,6 +615,36 @@ def run() -> int:
                 coordinator,
             )
 
+            def grading_context(
+                command: RegradeCommand,
+                _cancelled: Event,
+                emit_progress: Callable[[object], None],
+            ) -> Result[CommitGenerationResult]:
+                started = monotonic()
+
+                def report(completed: int, total: int) -> None:
+                    elapsed = max(0, int(monotonic() - started))
+                    eta = (
+                        None
+                        if completed <= 0
+                        else max(0, int(elapsed * (total - completed) / completed))
+                    )
+                    emit_progress(
+                        GradingProgressDisplay(
+                            completed,
+                            total,
+                            elapsed,
+                            eta,
+                            (
+                                "결과 파일 저장 중"
+                                if total > 0 and completed == total
+                                else f"현재 처리 중: {completed} / 총 {total}명"
+                            ),
+                        )
+                    )
+
+                return grading_service.regrade(command, report)
+
             def display_committed_session(
                 result: SessionCreateResult | CommitGenerationResult,
             ) -> Result[ConnectedSessionDisplay]:
@@ -696,14 +762,6 @@ def run() -> int:
                 window.set_status("정답표 샘플을 저장했습니다.")
 
             def navigate_to_results(_: object) -> None:
-                loaded = dashboard_service.list_exams()
-                if isinstance(loaded, Err):
-                    error = loaded.errors[0]
-                    window.show_diagnostic(
-                        str(error.context.get("reason", get_message(error.message_key)))
-                    )
-                    return
-                window.dashboard_page.set_entries(loaded.value.entries)
                 window.navigate_to(MainWindow.EXAM_PAGE)
 
             import_response_selection = import_response_selection_for_grading
@@ -1096,6 +1154,7 @@ def run() -> int:
         scan=scan_service,
         response_import=response_import_service,
         grading=grading_service,
+        grading_context=grading_context,
         answer_key=answer_key_service,
         import_response_selection=import_response_selection,
         fresh_response_picker=select_fresh_response,
@@ -1126,6 +1185,8 @@ def run() -> int:
         detail_save=detail_save,
         detail_close=detail_close,
     )
+    if isinstance(outcome, Ok):
+        window.set_diagnostic_log_path(str(daily_log_path(outcome.value.paths.root)))
     controller = AppController(
         window,
         scan_page,
@@ -1152,6 +1213,8 @@ def run() -> int:
         displays,
     )
     window.show()
+    if splash is not None:
+        splash.finish(window)
     return app.exec()
 
 
