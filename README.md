@@ -28,31 +28,9 @@ PowerShell에서 다음 명령을 실행합니다.
 
 ```powershell
 py -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pip install -e .
 .venv\Scripts\python main.py
 ```
-
-`constraints/windows-py312.lock`은 재현 가능한 오프라인 Windows 릴리스 빌드 전용이며,
-일반 소스 실행의 Python 상한을 제한하지 않습니다.
-
-## 검증
-
-```powershell
-.venv\Scripts\python -m pytest
-.venv\Scripts\python -m ruff check src tests packaging tools
-.venv\Scripts\python -m mypy
-```
-
-현재 2.0 소스 후보는 전체 테스트 1,012개 통과, 13개 건너뜀 상태에서 Ruff와 strict mypy 검사를 통과했습니다.
-
-## Windows 실행 파일 빌드
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\build-onefile.ps1
-powershell -ExecutionPolicy Bypass -File tools\run-packaged-tests.ps1
-```
-
-재현 가능한 애플리케이션 wheel, 공급망 manifest 및 릴리스 번들 검증 도구는 `tools/`와 `packaging/`에 있습니다. `build/`, `dist/`, EXE 및 로컬 검증 증빙은 Git에 포함하지 않습니다.
 
 ## 데이터와 보안
 
@@ -61,25 +39,8 @@ powershell -ExecutionPolicy Bypass -File tools\run-packaged-tests.ps1
 - `.omrtemplate`과 `OCR100.pdf`는 권리 및 개인정보 보호를 위해 저장소에서 제외합니다.
 - 로컬 에이전트 상태, 빌드 결과와 내부 검증 증빙도 `.gitignore`로 제외합니다.
 
-## 2.0 출시 상태
-
-소프트웨어 개발과 자동 검증은 완료됐지만 다음 외부 검증은 아직 남아 있습니다.
-
-- 실제 스캔 OMR 100장 이상의 정확도 검증
-- 외부 참고 자료의 사용·재배포 권리 확인
-- Windows 실행 파일 코드 서명
-- 독립 Windows 11 환경에서의 오프라인·Defender·SmartScreen 검사
-- 최종 배포 승인
-
-따라서 현재 소스는 2.0 개발 완료 후보이며, 서명된 정식 배포본으로 간주해서는 안 됩니다.
-
 ## 저장소 구성
 
 - `src/omr_grader/`: 제품 소스
-- `tests/`: 단위·통합·GUI·장애·보안·성능·패키지 테스트
-- `packaging/`: PyInstaller와 릴리스 검증 코드
-- `tools/`: 빌드, 공급망 및 검증 명령
-- `constraints/`: 재현 가능한 오프라인 Windows 릴리스용 Python 3.12 잠금 의존성
-- `requirements/`: 직접 의존성 목록
-
-변경 내역은 [CHANGELOG.md](CHANGELOG.md), 내부 구조는 [DESIGN.md](DESIGN.md)를 참고하십시오.
+- `main.py`: 소스 실행 진입점
+- `pyproject.toml`: 런타임 의존성과 설치 메타데이터

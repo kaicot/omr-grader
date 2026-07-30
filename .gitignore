@@ -48,6 +48,16 @@ $RECYCLE.BIN/
 .claude/
 .agents/
 
+# Local development, verification, and task material
+fix*/
+tests/
+tools/
+packaging/
+constraints/
+requirements/
+CHANGELOG.md
+DESIGN.md
+
 # Secrets, credentials, signing material, and local environment
 .env
 .env.*

@@ -16,18 +16,6 @@ dependencies = [
     "tzdata==2026.3",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest==8.4.1",
-    "pytest-qt==4.4.0",
-    "pytest-cov==6.2.1",
-    "hypothesis==6.131.15",
-    "ruff==0.11.13",
-    "mypy==1.16.1",
-    "pyinstaller==6.14.1",
-    "types-openpyxl==3.1.5.20260724",
-]
-
 [project.scripts]
 omr-grader = "omr_grader.bootstrap:run"
 
@@ -39,36 +27,3 @@ include-package-data = true
 where = ["src"]
 include = ["omr_grader*"]
 namespaces = false
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers"]
-qt_api = "pyside6"
-markers = [
-    "packaged: PyInstaller 단일 실행 파일 검증",
-    "performance: 성능 워크로드 검증",
-]
-
-[tool.coverage.run]
-branch = true
-source = ["omr_grader"]
-
-[tool.coverage.report]
-show_missing = true
-skip_covered = true
-fail_under = 0
-
-[tool.ruff]
-target-version = "py312"
-line-length = 100
-src = ["src", "tests"]
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
-
-[tool.mypy]
-mypy_path = ["src"]
-packages = ["omr_grader"]
-strict = true
-warn_unused_configs = true
-explicit_package_bases = true
