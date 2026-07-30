@@ -8,10 +8,11 @@ import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from omr_grader.application.dto import (
     CorrectionSemanticView,
@@ -27,7 +28,9 @@ from omr_grader.domain.errors import Err
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
+    AnswerRecognition,
     AutomaticPage,
+    CellEvidence,
     CorrectionDraft,
     CorrectionEvent,
     EffectiveResponse,
@@ -36,8 +39,14 @@ from omr_grader.domain.models import (
     SessionRecord,
 )
 from omr_grader.infrastructure.atomic_io import atomic_write_json
-from omr_grader.infrastructure.result_layout import SCORE_IMAGE_DIR
+from omr_grader.infrastructure.result_layout import (
+    SCORE_IMAGE_DIR,
+    answer_key_filename,
+    ocr_filename,
+)
 from omr_grader.recognition.overlay import render_scored_overlay
+from omr_grader.workbooks.answer_key import answer_key_snapshot_bytes
+from omr_grader.workbooks.response_book import write_effective_response_projection
 from omr_grader.workbooks.score_book import write_final_book, write_score_book
 
 if TYPE_CHECKING:
@@ -56,6 +65,37 @@ class RecognitionArtifactInput:
             for work_item_id, image in self.normalized_images.items()
         ):
             raise TypeError("recognition artifacts must be nonempty pinned bytes")
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewGeometryPage:
+    work_item_id: str
+    evidence: tuple[CellEvidence, ...]
+    answers: tuple[AnswerRecognition, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "work_item_id": self.work_item_id,
+            "evidence": [item.to_dict() for item in self.evidence],
+            "answers": [item.to_dict() for item in self.answers],
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> _ReviewGeometryPage:
+        payload = _mapping(value)
+        if set(payload) != {"work_item_id", "evidence", "answers"}:
+            raise ValueError("review geometry fields are invalid")
+        work_item_id = payload["work_item_id"]
+        if not isinstance(work_item_id, str) or not work_item_id:
+            raise ValueError("review geometry work item is invalid")
+        return cls(
+            work_item_id,
+            tuple(CellEvidence.from_dict(_mapping(item)) for item in _list(payload["evidence"])),
+            tuple(
+                AnswerRecognition.from_dict(_mapping(item))
+                for item in _list(payload["answers"])
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +155,7 @@ class GenerationMaterializer:
         parent_projection = _read_parent_projection(
             request.parent_generation, request.parent_manifest
         )
+        parent_review_geometry = _read_review_geometry(request.parent_generation)
         _validate_parent_projection(request, parent, parent_projection)
         projection = _projection(request)
         _validate_projection_lineage(request, parent_projection, projection)
@@ -127,7 +168,42 @@ class GenerationMaterializer:
         combined = _combined(request, parent, projection)
         if combined is not None:
             request.token.write_json("semantic_inputs.json", {"combined": combined})
-            self._write_details(request, combined, projection or parent_projection)
+            compact = mutation.operation_kind in (
+                OperationKind.REGRADE,
+                OperationKind.FINALIZE,
+            )
+            review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...] = (
+                projection.automatic_pages
+                if projection is not None
+                else parent_projection.automatic_pages
+                if parent_projection is not None
+                else parent_review_geometry
+            )
+            if compact and review_pages:
+                request.token.write_json(
+                    "review_geometry.json",
+                    {
+                        "schema_version": 1,
+                        "pages": [
+                            (
+                                _ReviewGeometryPage(
+                                    page.page_ref.work_item_id,
+                                    page.evidence,
+                                    page.answers,
+                                )
+                                if isinstance(page, AutomaticPage)
+                                else page
+                            ).to_dict()
+                            for page in review_pages
+                        ],
+                    },
+                )
+            self._write_details(
+                request,
+                combined,
+                review_pages,
+                persist_recognition=not compact,
+            )
         if mutation.operation_kind in (
             OperationKind.REGRADE,
             OperationKind.FINALIZE,
@@ -146,6 +222,23 @@ class GenerationMaterializer:
         )
         roster = RosterSnapshot.from_dict(_object(combined, "roster"))
         names = {row.student_id: row.name for row in roster.rows if row.student_id is not None}
+        response_output = request.token.path(
+            ocr_filename(request.record.exam_name, request.record.created_at)
+        )
+        write_effective_response_projection(
+            response_output,
+            responses,
+            session_id=request.record.session_id,
+            revision=request.record.revision,
+            manifest_sha256=request.parent_manifest_sha256,
+            names_by_student_id=names,
+        )
+        _validate_xlsx(response_output)
+        key_output = request.token.path(
+            answer_key_filename(request.record.exam_name, request.record.created_at)
+        )
+        request.token.write_bytes(key_output.name, answer_key_snapshot_bytes(answer_key))
+        _validate_xlsx(key_output)
         # This is deliberately the parent digest: embedding the target manifest
         # digest in an artifact would make the manifest's own hash cyclic.
         if request.mutation.operation_kind is OperationKind.FINALIZE:
@@ -176,16 +269,16 @@ class GenerationMaterializer:
             )
         _validate_xlsx(output)
         request.token.write_bytes(output.name, output.read_bytes())
-        request.token.write_json(
-            f"{output.relative_to(request.token._root).as_posix()}.provenance.json",
-            {"schema_version": 1, "source_manifest_sha256": request.parent_manifest_sha256},
-        )
+        output.unlink()
+        output.parent.rmdir()
 
     def _write_details(
         self,
         request: GenerationMaterializationInput,
         combined: dict[str, object],
-        projection: EffectiveResponseProjection | None,
+        review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...],
+        *,
+        persist_recognition: bool = True,
     ) -> None:
         """Write immutable, allowlisted detail documents from pinned canonical inputs."""
         responses = tuple(
@@ -195,8 +288,12 @@ class GenerationMaterializer:
         names = {row.student_id: row.name for row in roster.rows if row.student_id is not None}
         scores = _score_rows(combined.get("scores"))
         pages = {
-            page.page_ref.work_item_id: page
-            for page in (projection.automatic_pages if projection is not None else ())
+            (
+                page.page_ref.work_item_id
+                if isinstance(page, AutomaticPage)
+                else page.work_item_id
+            ): page
+            for page in review_pages
         }
         snapshot = {
             "session_id": request.record.session_id,
@@ -218,7 +315,12 @@ class GenerationMaterializer:
             page = pages.get(response.work_item_id)
             image_path: str | None = None
             if page is not None:
-                request.token.write_json(f"evidence/{response.work_item_id}.json", page.to_dict())
+                if persist_recognition:
+                    if not isinstance(page, AutomaticPage):
+                        raise ValueError("recognition detail requires an automatic page")
+                    request.token.write_json(
+                        f"evidence/{response.work_item_id}.json", page.to_dict()
+                    )
                 image = artifacts.get(response.work_item_id)
                 if image is not None:
                     image_path = f"images/{response.work_item_id}.png"
@@ -243,15 +345,39 @@ class GenerationMaterializer:
                     )
                     if isinstance(scored, Err):
                         raise ValueError("scored detail overlay cannot be rendered")
-                    encoded, encoded_payload = cv2.imencode(".png", scored.value)
+                    review_image = scored.value
+                    height, width = review_image.shape[:2]
+                    long_edge = max(height, width)
+                    if long_edge > 2000:
+                        scale = 2000 / long_edge
+                        review_image = cast(
+                            NDArray[np.uint8],
+                            cv2.resize(
+                                review_image,
+                                (round(width * scale), round(height * scale)),
+                                interpolation=cv2.INTER_AREA,
+                            ),
+                        )
+                    encoded, encoded_payload = cv2.imencode(
+                        ".jpg",
+                        review_image,
+                        [
+                            cv2.IMWRITE_JPEG_QUALITY,
+                            80,
+                            cv2.IMWRITE_JPEG_OPTIMIZE,
+                            1,
+                        ],
+                    )
                     if not encoded:
                         raise ValueError("scored detail overlay cannot be encoded")
-                    image_path = f"{SCORE_IMAGE_DIR}/{response.work_item_id}.png"
+                    image_path = f"{SCORE_IMAGE_DIR}/{response.work_item_id}.jpg"
                     request.token.write_bytes(image_path, encoded_payload.tobytes())
             score, rank = scores.get(response.work_item_id, (None, None))
             detail_path = f"details/{response.work_item_id}.json"
             payload: dict[str, object] = {"response": response.to_dict()}
-            if page is not None:
+            if page is not None and persist_recognition:
+                if not isinstance(page, AutomaticPage):
+                    raise ValueError("recognition detail requires an automatic page")
                 payload["recognition"] = page.to_dict()
                 payload["evidence_path"] = f"evidence/{response.work_item_id}.json"
             request.token.write_json(
@@ -404,6 +530,22 @@ def _read_parent_projection(
         raise ValueError("committed projection inputs are corrupt") from error
 
 
+def _read_review_geometry(generation: Path) -> tuple[_ReviewGeometryPage, ...]:
+    path = generation / "review_geometry.json"
+    if not path.is_file():
+        return ()
+    try:
+        document = _mapping(json.loads(path.read_text(encoding="utf-8")))
+        if set(document) != {"schema_version", "pages"} or document["schema_version"] != 1:
+            raise ValueError("review geometry envelope is invalid")
+        pages = tuple(_ReviewGeometryPage.from_dict(item) for item in _list(document["pages"]))
+        if len({page.work_item_id for page in pages}) != len(pages):
+            raise ValueError("review geometry work items are duplicated")
+        return pages
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("committed review geometry is corrupt") from error
+
+
 def _list(value: object) -> list[object]:
     if not isinstance(value, list):
         raise ValueError("projection JSON array is invalid")
@@ -448,9 +590,9 @@ def _validate_projection_lineage(
     if operation is OperationKind.RECOGNIZE:
         return
     if operation in (OperationKind.CORRECT, OperationKind.REGRADE, OperationKind.FINALIZE):
-        if parent is None or projection is None:
-            raise ValueError("lifecycle generation requires a complete parent projection")
         if operation is OperationKind.CORRECT:
+            if parent is None or projection is None:
+                raise ValueError("correction generation requires a complete parent projection")
             semantic = request.mutation.semantic_inputs
             prefix = len(parent.corrections)
             delta = projection.corrections[prefix:]
@@ -463,7 +605,7 @@ def _validate_projection_lineage(
                 or semantic.corrections != delta
             ):
                 raise ValueError("correction projection is not parent authority plus exact delta")
-        elif projection != parent:
+        elif projection is not None and projection != parent:
             raise ValueError("lifecycle projection must exactly preserve parent authority")
 
 
@@ -498,11 +640,7 @@ def _materialize_correction_events(
         raise ValueError("parent correction event authority is invalid")
     if any(event.committed_revision > request.parent_manifest.revision for event in parent_events):
         raise ValueError("parent correction event exceeds authoritative revision")
-    if request.mutation.operation_kind not in (
-        OperationKind.CORRECT,
-        OperationKind.REGRADE,
-        OperationKind.FINALIZE,
-    ):
+    if request.mutation.operation_kind is not OperationKind.CORRECT:
         return
     if parent_projection is None:
         raise ValueError("lifecycle generation requires parent projection authority")
@@ -566,16 +704,21 @@ def _combined(
     if projection is None:
         if parent is None:
             return None
-        return {**parent, "session": request.record.to_dict()}
-    from omr_grader.domain.corrections import project_effective_responses
+        effective_responses = tuple(
+            EffectiveResponse.from_dict(_mapping(value))
+            for value in _array(parent, "responses")
+        )
+    else:
+        from omr_grader.domain.corrections import project_effective_responses
 
-    responses = project_effective_responses(
-        projection,
-        session_id=request.mutation.session_id,
-        expected_base_revision=request.parent_manifest.revision,
-    )
-    if isinstance(responses, Err):
-        raise ValueError("effective-response projection is invalid")
+        responses = project_effective_responses(
+            projection,
+            session_id=request.mutation.session_id,
+            expected_base_revision=request.parent_manifest.revision,
+        )
+        if isinstance(responses, Err):
+            raise ValueError("effective-response projection is invalid")
+        effective_responses = responses.value
     roster = _object(parent, "roster") if parent is not None else None
     if roster is None and isinstance(semantic, RecognitionSemanticView):
         roster = semantic.roster.to_dict()
@@ -597,7 +740,7 @@ def _combined(
         if answer_key is None:
             raise ValueError("required pinned grading answer key is absent")
         key = AnswerKeySnapshot.from_dict(answer_key)
-        recomputed = score_effective(ScoreInput(responses.value, key))
+        recomputed = score_effective(ScoreInput(effective_responses, key))
         if isinstance(semantic, GradingSemanticView):
             if semantic.scores is None:
                 raise ValueError("score-bearing grading generation requires typed scores")
@@ -610,7 +753,7 @@ def _combined(
     return {
         "session": request.record.to_dict(),
         "roster": roster,
-        "responses": [item.to_dict() for item in responses.value],
+        "responses": [item.to_dict() for item in effective_responses],
         "scores": scores,
         "answer_key": answer_key,
         "failures": failures,

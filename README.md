@@ -19,7 +19,7 @@ Windows에서 스캔한 OMR 답안지를 인식하고 검토·채점·보관하�
 ## 요구 사항
 
 - Windows 11
-- 소스 실행 시 Python `3.12.x` (3.13 이상 미지원)
+- 소스 실행 시 Python `3.12 이상`
 - 최종 사용자는 단일 EXE 배포본 사용 시 Python이 필요하지 않습니다.
 
 ## 소스에서 실행
@@ -27,17 +27,13 @@ Windows에서 스캔한 OMR 답안지를 인식하고 검토·채점·보관하�
 PowerShell에서 다음 명령을 실행합니다.
 
 ```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\python -m pip install --require-hashes -r constraints\windows-py312.lock
-.venv\Scripts\python -m pip install --no-deps -e .
+py -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\python main.py
 ```
 
-잠금 파일 대신 개발 의존성을 설치해야 할 때는 다음 명령을 사용할 수 있습니다.
-
-```powershell
-.venv\Scripts\python -m pip install -e ".[dev]"
-```
+`constraints/windows-py312.lock`은 재현 가능한 오프라인 Windows 릴리스 빌드 전용이며,
+일반 소스 실행의 Python 상한을 제한하지 않습니다.
 
 ## 검증
 
@@ -83,7 +79,7 @@ powershell -ExecutionPolicy Bypass -File tools\run-packaged-tests.ps1
 - `tests/`: 단위·통합·GUI·장애·보안·성능·패키지 테스트
 - `packaging/`: PyInstaller와 릴리스 검증 코드
 - `tools/`: 빌드, 공급망 및 검증 명령
-- `constraints/`: Windows Python 3.12 잠금 의존성
+- `constraints/`: 재현 가능한 오프라인 Windows 릴리스용 Python 3.12 잠금 의존성
 - `requirements/`: 직접 의존성 목록
 
 변경 내역은 [CHANGELOG.md](CHANGELOG.md), 내부 구조는 [DESIGN.md](DESIGN.md)를 참고하십시오.

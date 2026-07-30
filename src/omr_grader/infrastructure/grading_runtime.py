@@ -372,12 +372,10 @@ class CommittedGradingSnapshotReader:
                 raise ValueError("pinned lease identity mismatch")
             combined_stream = lease.open_allowlisted("semantic_inputs.json")
             projection_stream = lease.open_allowlisted("projection_request.json")
-            if isinstance(combined_stream, Err) or isinstance(projection_stream, Err):
+            if isinstance(combined_stream, Err):
                 raise ValueError("required canonical grading artifacts are absent")
             with combined_stream.value:
                 envelope = _mapping(json.load(combined_stream.value))
-            with projection_stream.value:
-                projection_document = _mapping(json.load(projection_stream.value))
             canonical = _mapping(envelope.get("combined"))
             if set(envelope) != {"combined"} or set(canonical) != {
                 "session",
@@ -411,12 +409,22 @@ class CommittedGradingSnapshotReader:
             ids = tuple(sorted((item.work_item_id for item in responses), key=str.encode))
             if not responses or ids != lease.manifest.base_response_ids:
                 raise ValueError("canonical responses do not match manifest base responses")
-            projection = self._projection(projection_document, session_id, expected_revision, ids)
-            projected = project_effective_responses(
-                projection, session_id=session_id, expected_base_revision=expected_revision
-            )
-            if isinstance(projected, Err) or projected.value != responses:
-                raise ValueError("projection does not reproduce canonical responses")
+            projection: EffectiveResponseProjection | None = None
+            if not isinstance(projection_stream, Err):
+                with projection_stream.value:
+                    projection_document = _mapping(json.load(projection_stream.value))
+                projection = self._projection(
+                    projection_document, session_id, expected_revision, ids
+                )
+                projected = project_effective_responses(
+                    projection,
+                    session_id=session_id,
+                    expected_base_revision=expected_revision,
+                )
+                if isinstance(projected, Err) or projected.value != responses:
+                    raise ValueError("projection does not reproduce canonical responses")
+            elif record.state not in {SessionState.GRADED, SessionState.FINALIZED}:
+                raise ValueError("ungraded session requires canonical projection inputs")
             key_value = canonical["answer_key"]
             if key_value is None:
                 raise ValueError("committed answer key is absent")

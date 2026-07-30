@@ -249,6 +249,14 @@ def stylesheet_for(theme: Theme | str) -> str:
             background: {values["surface"]}; alternate-background-color: {values["window"]};
             border: 1px solid {values["border"]}; gridline-color: {values["border"]};
         }}
+        QTableView#dashboardTable::indicator:unchecked {{
+            background-color: {values["surface"]};
+            border: 2px solid {values["text"]};
+        }}
+        QTableView#dashboardTable::indicator:checked {{
+            background-color: {values["primary"]};
+            border: 2px solid {values["primary"]};
+        }}
         QHeaderView::section {{
             background: {values["window"]}; color: {values["text"]};
             border: 0; border-bottom: 1px solid {values["border"]}; padding: 7px;
@@ -269,6 +277,9 @@ def stylesheet_for(theme: Theme | str) -> str:
             border-color: {values["primary"]}; background: {values["window"]};
         }}
         QWidget#dashboardActionCell {{ background: transparent; }}
+        QPushButton#dashboardDetailButton, QPushButton#dashboardDeleteButton {{
+            font-size: 12px; min-height: 24px; padding: 3px 6px;
+        }}
         QPushButton#dashboardDeleteButton, QPushButton#trashPermanentDeleteButton,
         QPushButton#trashEmptyButton {{ color: {values["error"]}; }}
     """

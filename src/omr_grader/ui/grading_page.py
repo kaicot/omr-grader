@@ -438,13 +438,19 @@ class GradingPage(QWidget):
         can_mutate = self._can_mutate()
         has_key = self._answer_key_path is not None and self._answer_key_sheet is not None
         valid_key = self._validation is not None and self._validation.is_valid
+        can_grade = can_mutate and has_key and valid_key
         result_available = (
             self._result_identity is not None and self._result_identity == self._session_identity()
         )
         self.sample_button.setEnabled(can_mutate)
         self.answer_key_drop_widget.setEnabled(can_mutate)
         self.upload_button.setEnabled(can_mutate)
-        self.grade_button.setEnabled(can_mutate and has_key and valid_key)
+        self.grade_button.setEnabled(can_grade)
+        self.grade_button.setText(
+            "채점 실행"
+            if can_grade
+            else "채점 실행 (채점이 완료되면 채점 결과보기가 활성화 됩니다)"
+        )
         self.cancel_button.setEnabled(
             self._busy and self._session is not None and self._operation_id is not None
         )

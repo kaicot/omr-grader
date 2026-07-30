@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from PySide6.QtCore import QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -30,12 +32,26 @@ _DASHBOARD_ACTIONS = frozenset(
 _GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash"})
 
 
+def _validate_payload_json(payload_json: str | None) -> None:
+    if payload_json is None:
+        return
+    if not isinstance(payload_json, str) or not payload_json:
+        raise ValueError("payload_json must be a nonempty JSON object or None")
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError as error:
+        raise ValueError("payload_json must contain valid JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("payload_json must contain a JSON object")
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardRequest:
     """Frozen controller intent containing no Qt object or mutable payload."""
 
     action: str
     selection: DashboardSelection
+    payload_json: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.action) is not str:
@@ -44,6 +60,7 @@ class DashboardRequest:
             raise ValueError("unsupported dashboard action")
         if type(self.selection) is not DashboardSelection:
             raise TypeError("selection must be exactly DashboardSelection")
+        _validate_payload_json(self.payload_json)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,12 +68,14 @@ class DashboardGlobalRequest:
     """Frozen controller intent for a dashboard action without a selection."""
 
     action: str
+    payload_json: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.action) is not str:
             raise TypeError("action must be str")
         if self.action not in _GLOBAL_DASHBOARD_ACTIONS:
             raise ValueError("unsupported global dashboard action")
+        _validate_payload_json(self.payload_json)
 
 
 class DashboardPage(QWidget):
@@ -285,7 +304,10 @@ class DashboardPage(QWidget):
         ):
             return
         if action in _GLOBAL_DASHBOARD_ACTIONS:
-            self.request_emitted.emit(DashboardGlobalRequest(action))
+            payload_json = self._select_file_payload(action) if action == "restore" else None
+            if action == "restore" and payload_json is None:
+                return
+            self.request_emitted.emit(DashboardGlobalRequest(action, payload_json))
             return
         selection = self._selection()
         if action == "detail":
@@ -312,7 +334,52 @@ class DashboardPage(QWidget):
             return
         if action == "backup" and len(selection.session_ids) != 1:
             return
-        self.request_emitted.emit(DashboardRequest(action, selection))
+        payload_json = (
+            self._select_file_payload(action) if action in {"backup", "combined"} else None
+        )
+        if action in {"backup", "combined"} and payload_json is None:
+            return
+        self.request_emitted.emit(DashboardRequest(action, selection, payload_json))
+
+    def _select_file_payload(self, action: str) -> str | None:
+        try:
+            if action == "restore":
+                path, _ = QFileDialog.getOpenFileName(
+                    self, "백업 파일 선택", filter="OMR 백업 (*.omrbak)"
+                )
+                return None if not path else json.dumps({"path": path}, ensure_ascii=False)
+            title, file_filter = (
+                ("백업 파일 저장", "OMR 백업 (*.omrbak)")
+                if action == "backup"
+                else ("통합 성적표 저장", "Excel 파일 (*.xlsx)")
+            )
+            path, _ = QFileDialog.getSaveFileName(self, title, filter=file_filter)
+            if not path:
+                return None
+            choice = QMessageBox.question(
+                self,
+                "파일 충돌",
+                "같은 이름의 파일이 있으면 바꾸시겠습니까?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return None
+            collision = "replace" if choice == QMessageBox.StandardButton.Yes else "error"
+            return json.dumps(
+                {"collision": collision, "path": path},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        except Exception as error:
+            QMessageBox.warning(
+                self,
+                "파일 선택 오류",
+                f"파일 선택을 완료하지 못했습니다: {error}",
+            )
+            return None
 
     def _open_detail(self, index: QModelIndex) -> None:
         if not self._busy:

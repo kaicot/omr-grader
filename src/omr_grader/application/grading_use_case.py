@@ -32,7 +32,7 @@ class CommittedGradingSnapshot:
     state: SessionState
     answer_key: AnswerKeySnapshot
     responses: tuple[EffectiveResponse, ...]
-    projection_request: EffectiveResponseProjection
+    projection_request: EffectiveResponseProjection | None
     scores: ScoreSet | None
 
 
@@ -81,7 +81,7 @@ class GradingUseCase:
             command.expected_revision,
             SessionState.GRADED,
             GradingSemanticView(validated.value.snapshot, snapshot.state, scores),
-            snapshot.projection_request,
+            None,
         )
         return self._coordinator.commit_generation(mutation)
 
@@ -104,7 +104,7 @@ class GradingUseCase:
             command.expected_revision,
             SessionState.FINALIZED,
             GradingSemanticView(snapshot.answer_key, snapshot.state, scores),
-            snapshot.projection_request,
+            None,
         )
         return self._coordinator.commit_generation(mutation)
 

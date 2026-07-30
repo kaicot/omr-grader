@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -247,7 +248,7 @@ def run(
 
         freeze_support()
 
-    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+    from PySide6.QtWidgets import QApplication, QFileDialog
 
     existing = application if application is not None else QApplication.instance()
     app = existing if isinstance(existing, QApplication) else QApplication(sys.argv)
@@ -345,7 +346,7 @@ def run(
     from omr_grader.infrastructure.session_store import SessionCommitCoordinator, SessionStore
     from omr_grader.ui.app_controller import AppController, FreshResponseIntent, ServicePorts
     from omr_grader.ui.dashboard_model import DashboardSelection
-    from omr_grader.ui.dashboard_page import DashboardRequest
+    from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardRequest
     from omr_grader.ui.grading_page import GradingPage
     from omr_grader.ui.import_widgets import ImportKind, ImportSelection
     from omr_grader.ui.main_window import MainWindow
@@ -402,22 +403,6 @@ def run(
 
     def unavailable(code: str = "SERVICE_UNAVAILABLE") -> Err:
         return Err((ErrorInfo(code, f"error.{code.lower()}"),))
-
-    def choose_collision() -> CollisionPolicy | None:
-        choice = QMessageBox.question(
-            window,
-            "파일 충돌",
-            "같은 이름의 파일이 있으면 바꾸시겠습니까?",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if choice == QMessageBox.StandardButton.Yes:
-            return CollisionPolicy.REPLACE
-        if choice == QMessageBox.StandardButton.No:
-            return CollisionPolicy.ERROR
-        return None
 
     profiles = (
         None
@@ -781,18 +766,42 @@ def run(
                     SessionMutationRequest(identity[0], identity[1], uuid4().hex)
                 )
 
-            def backup_dashboard(
-                selection: DashboardSelection,
-            ) -> Result[BackupExportResult]:
-                identity = selected(selection)
+            def file_payload(
+                payload_json: str | None, *, collision_required: bool
+            ) -> tuple[str, CollisionPolicy | None] | None:
+                try:
+                    payload = json.loads(payload_json or "")
+                except (json.JSONDecodeError, TypeError):
+                    return None
+                if not isinstance(payload, dict):
+                    return None
+                path = payload.get("path")
+                if not isinstance(path, str) or not path:
+                    return None
+                if not collision_required:
+                    return path, None
+                raw_collision = payload.get("collision")
+                if not isinstance(raw_collision, str):
+                    return None
+                try:
+                    collision = CollisionPolicy(raw_collision)
+                except ValueError:
+                    return None
+                if collision not in {CollisionPolicy.ERROR, CollisionPolicy.REPLACE}:
+                    return None
+                return path, collision
+
+            def backup_dashboard(request: DashboardRequest) -> Result[BackupExportResult]:
+                identity = selected(request.selection)
                 if isinstance(identity, Err):
                     return identity
-                destination, _ = QFileDialog.getSaveFileName(
-                    window, "백업 파일 저장", filter="OMR 백업 (*.omrbak)"
-                )
-                collision = choose_collision() if destination else None
-                if not destination or collision is None:
+                options = file_payload(request.payload_json, collision_required=True)
+                if options is None:
                     return unavailable("BACKUP_DESTINATION_REQUIRED")
+                destination, collision_or_none = options
+                if collision_or_none is None:
+                    return unavailable("BACKUP_DESTINATION_REQUIRED")
+                collision = collision_or_none
                 return backup_service.export_backup(
                     BackupExportRequest(
                         SnapshotRequest(identity[0], identity[1], SnapshotPurpose.BACKUP),
@@ -802,12 +811,13 @@ def run(
                     )
                 )
 
-            def restore_dashboard() -> Result[BackupRestoreResult]:
-                source, _ = QFileDialog.getOpenFileName(
-                    window, "백업 파일 선택", filter="OMR 백업 (*.omrbak)"
-                )
-                if not source:
+            def restore_dashboard(
+                request: DashboardGlobalRequest,
+            ) -> Result[BackupRestoreResult]:
+                options = file_payload(request.payload_json, collision_required=False)
+                if options is None:
                     return unavailable("BACKUP_SOURCE_REQUIRED")
+                source, _ = options
                 validated = backup_service.validate_backup(BackupValidateRequest(source))
                 if isinstance(validated, Err):
                     return validated
@@ -815,20 +825,23 @@ def run(
                     RestoreCommand(validated.value, str(store.root), uuid4().hex)
                 )
 
-            def combined_dashboard(
-                selection: DashboardSelection,
-            ) -> Result[CombinedReportResult]:
-                if not selection.session_ids:
+            def combined_dashboard(request: DashboardRequest) -> Result[CombinedReportResult]:
+                if not request.selection.session_ids:
                     return unavailable("DASHBOARD_SELECTION_INVALID")
-                destination, _ = QFileDialog.getSaveFileName(
-                    window, "통합 성적표 저장", filter="Excel 파일 (*.xlsx)"
-                )
-                collision = choose_collision() if destination else None
-                if not destination or collision is None:
+                options = file_payload(request.payload_json, collision_required=True)
+                if options is None:
                     return unavailable("REPORT_DESTINATION_REQUIRED")
+                destination, collision_or_none = options
+                if collision_or_none is None:
+                    return unavailable("REPORT_DESTINATION_REQUIRED")
+                collision = collision_or_none
                 return report_service.build_combined_report(
                     CombinedReportRequest(
-                        selection.session_ids, True, destination, collision, uuid4().hex
+                        request.selection.session_ids,
+                        True,
+                        destination,
+                        collision,
+                        uuid4().hex,
                     )
                 )
 

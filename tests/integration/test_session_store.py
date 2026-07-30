@@ -84,7 +84,7 @@ def _mutation(session_id: str = "session-1", expected_revision: int = 1) -> Gene
     updated = _record(session_id, expected_revision + 1)
     return GenerationMutation(
         session_id,
-        "metadata-2",
+        f"metadata-{expected_revision + 1}",
         OperationKind.METADATA_EDIT,
         expected_revision,
         SessionState.CREATED,
@@ -182,3 +182,41 @@ def test_semantic_mismatch_is_rejected_before_staging(tmp_path: Path) -> None:
 
     assert _code(store.commit_generation(mutation)) == "SESSION_SEMANTIC_MISMATCH"
     assert not (tmp_path / "exam-session-1" / ".staging").exists()
+
+
+def test_generation_prune_failure_preserves_committed_current_and_retries_safely(
+    tmp_path: Path,
+) -> None:
+    failed = False
+
+    def fail_first_prune(name: str) -> None:
+        nonlocal failed
+        if name == "before_generation_prune" and not failed:
+            failed = True
+            raise OSError("injected generation prune failure")
+
+    store = SessionStore(tmp_path, fault_barrier=fail_first_prune)
+    _create(store)
+
+    first = store.commit_generation(_mutation())
+
+    assert isinstance(first, Ok)
+    assert any(warning.code == "GENERATION_PRUNE_RETRY_REQUIRED" for warning in first.warnings)
+    session = tmp_path / "exam-session-1"
+    pointer = json.loads((session / "CURRENT.json").read_text(encoding="utf-8"))
+    assert pointer["revision"] == 2
+    opened = store.open_committed_snapshot(
+        SnapshotRequest("session-1", 2, SnapshotPurpose.DETAIL)
+    )
+    assert isinstance(opened, Ok)
+    opened.value.close()
+    assert len(tuple((session / "generations").iterdir())) == 2
+
+    retried = SessionStore(tmp_path).commit_generation(_mutation(expected_revision=2))
+
+    assert isinstance(retried, Ok)
+    pointer = json.loads((session / "CURRENT.json").read_text(encoding="utf-8"))
+    generations = tuple((session / "generations").iterdir())
+    assert pointer["revision"] == 3
+    assert len(generations) == 1
+    assert generations[0].name == Path(pointer["generation_relpath"]).name

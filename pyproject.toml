@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "omr-grader"
 version = "2.0.0"
 description = "OMR Grader 데스크톱 애플리케이션"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
 dependencies = [
     "PySide6==6.9.1",
     "opencv-python==4.11.0.86",
@@ -67,7 +67,6 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
-python_version = "3.12"
 mypy_path = ["src"]
 packages = ["omr_grader"]
 strict = true

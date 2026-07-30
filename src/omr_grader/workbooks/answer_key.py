@@ -12,6 +12,7 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile, ZipInfo
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
+from openpyxl.worksheet.worksheet import Worksheet
 
 from omr_grader.domain.enums import AnswerKeySnapshotKind, AnswerStatus, KeyQuestionStatus
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
@@ -223,6 +224,33 @@ def answer_key_sample_bytes(sheet_name: str = "정답표") -> bytes:
     sheet.append(ANSWER_KEY_HEADERS)
     for question in range(1, 51):
         sheet.append((question, 1, 1))
+    stream = BytesIO()
+    workbook.save(stream)
+    return stream.getvalue()
+
+
+def answer_key_snapshot_bytes(snapshot: AnswerKeySnapshot) -> bytes:
+    """Serialize a validated answer-key snapshot as a portable canonical workbook."""
+    if (
+        not isinstance(snapshot, AnswerKeySnapshot)
+        or snapshot.snapshot_kind is not AnswerKeySnapshotKind.WORKBOOK
+    ):
+        raise ValueError("answer-key snapshot must come from a validated workbook")
+    workbook = Workbook(write_only=False)
+    sheet = workbook.active
+    if not isinstance(sheet, Worksheet):
+        raise RuntimeError("new workbook must have an active worksheet")
+    sheet.title = snapshot.sheet_name or "정답표"
+    sheet.append(ANSWER_KEY_HEADERS)
+    for entry in snapshot.entries:
+        answer = (
+            ""
+            if entry.status is KeyQuestionStatus.UNASKED
+            else "0"
+            if entry.status is KeyQuestionStatus.ALL
+            else "".join(str(choice) for choice in entry.answer.choices)
+        )
+        sheet.append((entry.question, answer, Decimal(entry.points)))
     stream = BytesIO()
     workbook.save(stream)
     return stream.getvalue()

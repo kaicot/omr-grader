@@ -73,6 +73,7 @@ from omr_grader.infrastructure.result_layout import (
     OCR_IMAGE_DIR,
     REVIEW_DIR,
     SCORE_IMAGE_DIR,
+    SOURCE_IMAGE_DIR,
 )
 from omr_grader.infrastructure.session_lease import (
     CommittedSnapshotLease,
@@ -561,7 +562,7 @@ def _verify_restored_staging(
     }
     if not required_root_names.issubset(root_names) or any(
         name not in required_root_names
-        and name not in _RESULT_VIEW_DIRS
+        and name not in _RESULT_VIEW_NAMES
         and not name.startswith(_RESULT_VIEW_PREFIXES)
         for name in root_names
     ):
@@ -619,7 +620,14 @@ _LIFECYCLE_OPERATIONS = frozenset(
 
 
 _CONTROL_FILES = frozenset(("session.json", "manifest.json"))
-_RESULT_VIEW_DIRS = (OCR_IMAGE_DIR, SCORE_IMAGE_DIR, COORDINATE_DIR, REVIEW_DIR)
+_RESULT_VIEW_DIRS = (
+    ("images", SOURCE_IMAGE_DIR),
+    (OCR_IMAGE_DIR, OCR_IMAGE_DIR),
+    (SCORE_IMAGE_DIR, SCORE_IMAGE_DIR),
+    (COORDINATE_DIR, COORDINATE_DIR),
+    (REVIEW_DIR, REVIEW_DIR),
+)
+_RESULT_VIEW_NAMES = frozenset(target for _, target in _RESULT_VIEW_DIRS)
 _RESULT_VIEW_PREFIXES = ("01_ocr_", "02_score_", "03_final_")
 
 
@@ -629,45 +637,30 @@ def _is_control_file(path: str) -> bool:
 
 def _refresh_result_view(session: Path, generation: Path) -> None:
     """Publish browse-friendly hard links for the immutable current generation."""
-    for name in _RESULT_VIEW_DIRS:
-        target = session / name
+    for _, target_name in _RESULT_VIEW_DIRS:
+        target = session / target_name
         if target.exists():
             shutil.rmtree(target)
     for child in tuple(session.iterdir()):
         if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
             child.unlink()
-    for name in _RESULT_VIEW_DIRS:
-        source = generation / name
+    for source_name, target_name in _RESULT_VIEW_DIRS:
+        source = generation / source_name
         if source.is_dir():
-            shutil.copytree(source, session / name, copy_function=os.link)
+            shutil.copytree(source, session / target_name, copy_function=os.link)
     for child in generation.iterdir():
         if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
             os.link(child, session / child.name)
 
 
 def _preserved_artifact(path: str, operation: OperationKind) -> bool:
-    """Keep only immutable automatic evidence and correction audit for a re-projection."""
+    """Carry only compact, user-recoverable inputs into a lifecycle generation."""
     if operation not in _LIFECYCLE_OPERATIONS:
         return True
-    if operation is OperationKind.FINALIZE and (
-        path.startswith("02_score_") or path.startswith("artifacts/02_score_")
-    ):
+    if path.startswith("images/") or path.startswith("01_ocr_"):
         return True
-    return (
-        path == "correction_history.json"
-        or path.startswith("01_ocr_")
-        or path.startswith(
-            (
-                "automatic/",
-                "evidence/",
-                "images/",
-                "recognition/",
-                "corrections/",
-                "01_인식결과_이미지/",
-                "좌표데이터/",
-                "수동확인필요/",
-            )
-        )
+    return operation is OperationKind.FINALIZE and path.startswith(
+        "02_score_"
     )
 
 
@@ -908,8 +901,13 @@ class SessionStore:
                 raise ValueError("generation parent lineage is incomplete")
             parent = by_id.get(parent_id)
             if parent is None:
-                if not self._is_authenticated_restore_boundary(
-                    session, manifest, parent_id, parent_digest
+                if not (
+                    self._is_authenticated_restore_boundary(
+                        session, manifest, parent_id, parent_digest
+                    )
+                    or self._is_authenticated_retention_boundary(
+                        session, manifest, parent_id, parent_digest
+                    )
                 ):
                     raise ValueError(
                         "generation parent lineage is truncated without an authenticated boundary"
@@ -948,6 +946,40 @@ class SessionStore:
                 and omitted.manifest_sha256 == parent_digest
             )
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+
+    def _is_authenticated_retention_boundary(
+        self, session: Path, boundary: SessionManifest, parent_id: str, parent_digest: str
+    ) -> bool:
+        try:
+            payload = _read_json_object(session / "RETENTION.json")
+            omitted = payload["omitted_parent"]
+            if not isinstance(omitted, Mapping):
+                return False
+            _, boundary_digest = self._manifest(
+                session / "generations" / f"g{boundary.revision:08d}_{boundary.generation_id}"
+            )
+            return (
+                set(payload)
+                == {
+                    "schema_version",
+                    "session_id",
+                    "boundary_revision",
+                    "boundary_generation_id",
+                    "boundary_manifest_sha256",
+                    "omitted_parent",
+                    "retained_at",
+                }
+                and payload["schema_version"] == 1
+                and payload["session_id"] == boundary.session_id
+                and payload["boundary_revision"] == boundary.revision
+                and payload["boundary_generation_id"] == boundary.generation_id
+                and payload["boundary_manifest_sha256"] == boundary_digest
+                and omitted.get("generation_id") == parent_id
+                and omitted.get("revision") == boundary.parent_revision
+                and omitted.get("manifest_sha256") == parent_digest
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             return False
 
     def open_committed_snapshot(self, request: SnapshotRequest) -> Result[CommittedSnapshotLease]:
@@ -1668,6 +1700,37 @@ class SessionStore:
                         ),
                     ),
                 )
+            try:
+                retained = atomic_write_json(
+                    session / "RETENTION.json",
+                    {
+                        "schema_version": 1,
+                        "session_id": manifest.session_id,
+                        "boundary_revision": manifest.revision,
+                        "boundary_generation_id": manifest.generation_id,
+                        "boundary_manifest_sha256": pointer.manifest_sha256,
+                        "omitted_parent": {
+                            "revision": manifest.parent_revision,
+                            "generation_id": manifest.parent_generation_id,
+                            "manifest_sha256": manifest.parent_manifest_sha256,
+                        },
+                        "retained_at": _utc(),
+                    },
+                )
+                if isinstance(retained, Err):
+                    raise OSError("retention boundary를 기록하지 못했습니다.")
+                self._barrier("before_generation_prune")
+                self._prune_superseded_generations(session, final)
+            except OSError as exc:
+                return Ok(
+                    result,
+                    (
+                        _warning(
+                            "GENERATION_PRUNE_RETRY_REQUIRED",
+                            f"현재 generation 게시 후 이전 자료를 정리하지 못했습니다: {exc}",
+                        ),
+                    ),
+                )
             return Ok(result)
         except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
             return _error("SESSION_COMMIT_FAILED", str(exc))
@@ -1686,6 +1749,47 @@ class SessionStore:
                 if gate is not None:
                     gate.unlink(missing_ok=True)
             writer.value.close()
+
+    def _prune_superseded_generations(self, session: Path, current: Path) -> None:
+        generations = session / "generations"
+        candidates = tuple(
+            path
+            for path in sorted(generations.iterdir(), key=lambda item: item.name.encode("utf-8"))
+            if path.is_dir() and path != current
+        )
+        gates: list[tuple[Path, GateHandle]] = []
+        try:
+            for candidate in candidates:
+                manifest, _ = self._manifest(candidate)
+                gate_path = self._gate_path(manifest.session_id, manifest.generation_id)
+                locked = self._existing_lock(
+                    gate_path,
+                    exclusive=True,
+                    busy="GENERATION_PRUNE_RETRY_REQUIRED",
+                )
+                if isinstance(locked, Err):
+                    raise OSError(f"{candidate.name} generation이 사용 중입니다.")
+                gates.append((gate_path, locked.value))
+            prune_root = session / ".staging" / "prune"
+            prune_root.mkdir(parents=True, exist_ok=True)
+            moved: list[Path] = []
+            for candidate in candidates:
+                target = prune_root / candidate.name
+                if target.exists():
+                    shutil.rmtree(target)
+                os.replace(candidate, target)
+                moved.append(target)
+            for target in moved:
+                shutil.rmtree(target)
+            try:
+                prune_root.rmdir()
+                prune_root.parent.rmdir()
+            except OSError:
+                pass
+        finally:
+            for gate_path, gate in reversed(gates):
+                gate.close()
+                gate_path.unlink(missing_ok=True)
 
     def soft_delete(self, request: SessionMutationRequest) -> Result[SoftDeleteResult]:
         return self._move_session(request, to_trash=True)

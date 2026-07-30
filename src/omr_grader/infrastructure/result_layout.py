@@ -10,6 +10,7 @@ OCR_IMAGE_DIR = "01_인식결과_이미지"
 SCORE_IMAGE_DIR = "02_채점결과_이미지"
 COORDINATE_DIR = "좌표데이터"
 REVIEW_DIR = "수동확인필요"
+SOURCE_IMAGE_DIR = "00_원본스캔"
 
 _KST = ZoneInfo("Asia/Seoul")
 _UNSAFE = re.compile(r"""[\s<>:"/\\|?*\x00-\x1f]+""")
@@ -43,11 +44,17 @@ def ocr_filename(exam_name: str, created_at: str) -> str:
     return f"01_ocr_{result_base_name(exam_name, created_at)}_응답결과.xlsx"
 
 
+def answer_key_filename(exam_name: str, created_at: str) -> str:
+    return f"정답표_{result_base_name(exam_name, created_at)}.xlsx"
+
+
 __all__ = [
     "COORDINATE_DIR",
     "OCR_IMAGE_DIR",
     "REVIEW_DIR",
     "SCORE_IMAGE_DIR",
+    "SOURCE_IMAGE_DIR",
+    "answer_key_filename",
     "ocr_filename",
     "result_base_name",
     "result_timestamp",

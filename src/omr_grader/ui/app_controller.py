@@ -64,7 +64,7 @@ from omr_grader.infrastructure.dashboard_repository import DashboardListing
 from omr_grader.infrastructure.profile_store import ProfileCatalogItem
 from omr_grader.resources.messages import MESSAGE_CATALOG, get_message
 from omr_grader.ui.dashboard_model import DashboardSelection
-from omr_grader.ui.dashboard_page import DashboardPage, DashboardRequest
+from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardPage, DashboardRequest
 from omr_grader.ui.detail_page import DetailPage
 from omr_grader.ui.grading_page import GradingPage
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
@@ -143,9 +143,9 @@ class ServicePorts:
     dashboard_load: Callable[[], Result[DashboardListing]] | None = None
     dashboard_detail: Callable[[DashboardSelection], Result[DetailPageDisplay]] | None = None
     dashboard_delete: Callable[[DashboardSelection], Result[SoftDeleteResult]] | None = None
-    dashboard_backup: Callable[[DashboardSelection], Result[BackupExportResult]] | None = None
-    dashboard_restore: Callable[[], Result[BackupRestoreResult]] | None = None
-    dashboard_combined: Callable[[DashboardSelection], Result[CombinedReportResult]] | None = None
+    dashboard_backup: Callable[[DashboardRequest], Result[BackupExportResult]] | None = None
+    dashboard_restore: Callable[[DashboardGlobalRequest], Result[BackupRestoreResult]] | None = None
+    dashboard_combined: Callable[[DashboardRequest], Result[CombinedReportResult]] | None = None
     dashboard_trash: (
         Callable[[DashboardRequest], Result[TrashRestoreResult | PermanentDeleteResult]] | None
     ) = None
@@ -311,8 +311,13 @@ class AppController(QObject):
         self.dashboard_page.set_entries(result.entries)
         self._present_warnings(result.warnings)
 
-    def _handle_dashboard_request(self, request: DashboardRequest) -> None:
+    def _handle_dashboard_request(
+        self, request: DashboardRequest | DashboardGlobalRequest
+    ) -> None:
         if request.action == "detail":
+            if not isinstance(request, DashboardRequest):
+                self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+                return
             detail_handler = self.services.dashboard_detail
             detail_operation = (
                 None if detail_handler is None else partial(detail_handler, request.selection)
@@ -348,11 +353,14 @@ class AppController(QObject):
         operation: Callable[[], object] | None
         if action_handler is None:
             operation = None
-        elif request.action == "restore":
-            operation = action_handler
+        elif request.action in {"backup", "restore", "combined"}:
+            operation = partial(action_handler, request)
         elif request.action.startswith("trash_"):
             operation = partial(action_handler, request)
         else:
+            if not isinstance(request, DashboardRequest):
+                self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+                return
             operation = partial(action_handler, request.selection)
         self._start_desktop_action(
             self.dashboard_page,
