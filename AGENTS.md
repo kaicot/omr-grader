@@ -11,6 +11,7 @@
 - EXE가 있는 폴더 자체가 포터블 루트입니다.
 - `%APPDATA%`, `%LOCALAPPDATA%`, 사용자 문서 폴더로 데이터를 자동 이전하지 않습니다.
 - 소스 실행 시에는 `main.py`가 있는 저장소 루트가 포터블 루트가 됩니다.
+- 현재 제품 버전은 `2.1.0`입니다.
 
 ## 권장 설치 위치
 
@@ -19,7 +20,7 @@ EXE 하나만 바탕 화면이나 다운로드 폴더에 두기보다, 쓰기 �
 
 ```text
 D:\OMR-Grader\
-└─ OMR_Grader.exe
+└─ OMR Grader.exe
 ```
 
 다음 위치는 피합니다.
@@ -40,39 +41,30 @@ D:\OMR-Grader\
 
 ```text
 D:\OMR-Grader\
-├─ OMR_Grader.exe
+├─ OMR Grader.exe
 ├─ config.json
 ├─ Profiles\
 │  └─ *.omrtemplate
-├─ OMR_Grader\
+├─ Data\
 │  ├─ dashboard_index.json
 │  ├─ <시험별 세션 폴더>\
-│  │  ├─ IDENTITY.json
-│  │  ├─ CURRENT.json
-│  │  ├─ LOCATION.json
-│  │  ├─ generations\
-│  │  ├─ 00_원본스캔\
-│  │  ├─ 01_인식결과_이미지\
-│  │  ├─ 02_채점결과_이미지\
-│  │  ├─ 좌표데이터\
-│  │  └─ 수동확인필요\
+│  │  ├─ 01원본스캔\
+│  │  ├─ 02채점결과이미지\
+│  │  ├─ 정답표원본\
+│  │  └─ generations\
 │  ├─ _휴지통\
-│  │  └─ 세션\
-│  ├─ .locks\
-│  ├─ .reservations\
-│  └─ .deleting\
 ├─ logs\
-│  ├─ app_YYYYMMDD.log
-│  └─ app_YYYYMMDD.log.1
 └─ .locks\
-   └─ config.lock
 ```
 
 주요 항목의 의미:
 
 - `config.json`: 기본 프로필, 인식 감도, 다중 처리 설정
 - `Profiles/`: 프로그램으로 가져온 OMR 프로필
-- `OMR_Grader/`: 시험 세션, 응답, 채점 결과, 내부 인덱스와 휴지통
+- `Data/`: 시험 세션, 응답, 채점 결과, 내부 인덱스와 휴지통
+- `Data/<시험별 세션 폴더>/01원본스캔/`: 원본 PDF와 정규화 스캔 이미지
+- `Data/<시험별 세션 폴더>/02채점결과이미지/`: 수동 검토용 채점 이미지
+- `Data/<시험별 세션 폴더>/정답표원본/`: 보존된 원본 정답표가 있는 경우
 - `logs/`: 날짜별 실행 로그이며 크기에 따라 순환 파일이 생길 수 있음
 - `.locks/`, `.reservations/`, `.deleting/`: 동시 실행과 원자적 저장을 위한 내부 상태
 
@@ -92,11 +84,11 @@ D:\OMR-Grader\
 ## 이동, 복사, 백업
 
 1. 실행 중인 OMR Grader를 완전히 종료합니다.
-2. `OMR_Grader.exe`만 복사하지 말고 포터블 루트 폴더 전체를 복사합니다.
+2. `OMR Grader.exe`만 복사하지 말고 포터블 루트 폴더 전체를 복사합니다.
 3. 새 위치가 쓰기 가능한 일반 폴더인지 확인합니다.
 4. 새 위치의 EXE를 실행합니다.
 
-`config.json`, `Profiles/`, `OMR_Grader/`, `logs/`를 함께 옮겨야 기존 설정과 시험
+`config.json`, `Profiles/`, `Data/`, `logs/`를 함께 옮겨야 기존 설정과 시험
 기록이 유지됩니다. 실행 중인 상태에서 데이터 폴더를 동기화하거나 부분 복사하지
 마세요. 개별 시험 이동에는 프로그램의 백업/복구 기능을 우선 사용합니다.
 
