@@ -273,12 +273,10 @@ def run(
     )
     from omr_grader.application.dashboard_use_case import (
         DashboardApplicationService,
-        DashboardUseCase,
     )
     from omr_grader.application.detail_presenter import (
         DetailAnswerDisplay,
         DetailAnswerEdit,
-        DetailIdEdit,
         DetailLoadRequest,
         DetailLoadResult,
         DetailPageDisplay,
@@ -294,8 +292,6 @@ def run(
         BackupRestoreResult,
         BackupValidateRequest,
         CollisionPolicy,
-        CombinedReportRequest,
-        CombinedReportResult,
         CommitGenerationResult,
         CorrectionBatch,
         ImportResponseCommand,
@@ -323,7 +319,6 @@ def run(
     from omr_grader.domain.enums import (
         AnswerStatus,
         ExamTerm,
-        FieldStatus,
         SnapshotPurpose,
         TargetKind,
     )
@@ -332,7 +327,6 @@ def run(
         AnswerKeySnapshot,
         AnswerValue,
         CorrectionDraft,
-        IdCorrectionValue,
     )
     from omr_grader.infrastructure.config_store import config_revision
     from omr_grader.infrastructure.dashboard_repository import DashboardRepository
@@ -419,7 +413,6 @@ def run(
     dashboard_delete = None
     dashboard_backup = None
     dashboard_restore = None
-    dashboard_combined = None
     dashboard_trash = None
     dashboard_trash_load = None
     detail_load = None
@@ -456,7 +449,6 @@ def run(
         dashboard_service = DashboardApplicationService(
             coordinator, repository, write_enabled=write_enabled
         )
-        report_service = DashboardUseCase(coordinator, write_enabled=write_enabled)
         detail_repository = DetailRepository(coordinator)
         dashboard_load = dashboard_service.list_exams
         dashboard_trash_load = repository.list_trash
@@ -825,26 +817,6 @@ def run(
                     RestoreCommand(validated.value, str(store.root), uuid4().hex)
                 )
 
-            def combined_dashboard(request: DashboardRequest) -> Result[CombinedReportResult]:
-                if not request.selection.session_ids:
-                    return unavailable("DASHBOARD_SELECTION_INVALID")
-                options = file_payload(request.payload_json, collision_required=True)
-                if options is None:
-                    return unavailable("REPORT_DESTINATION_REQUIRED")
-                destination, collision_or_none = options
-                if collision_or_none is None:
-                    return unavailable("REPORT_DESTINATION_REQUIRED")
-                collision = collision_or_none
-                return report_service.build_combined_report(
-                    CombinedReportRequest(
-                        request.selection.session_ids,
-                        True,
-                        destination,
-                        collision,
-                        uuid4().hex,
-                    )
-                )
-
             def trash_dashboard(
                 request: DashboardRequest,
             ) -> Result[TrashRestoreResult | PermanentDeleteResult]:
@@ -867,7 +839,6 @@ def run(
             dashboard_delete = delete_dashboard
             dashboard_backup = backup_dashboard
             dashboard_restore = restore_dashboard
-            dashboard_combined = combined_dashboard
             dashboard_trash = trash_dashboard
 
             correction_service = CorrectionApplicationService(detail_repository, coordinator)
@@ -902,27 +873,6 @@ def run(
                                 edit.question,
                                 before,
                                 after,
-                                "detail_page",
-                            )
-                        )
-                    elif isinstance(edit, DetailIdEdit):
-                        before_id = (
-                            IdCorrectionValue(None, FieldStatus.BLANK)
-                            if edit.before is None
-                            else IdCorrectionValue(str(edit.before), FieldStatus.NORMAL)
-                        )
-                        after_id = (
-                            IdCorrectionValue(None, FieldStatus.BLANK)
-                            if edit.after is None
-                            else IdCorrectionValue(str(edit.after), FieldStatus.NORMAL)
-                        )
-                        drafts.append(
-                            CorrectionDraft(
-                                edit.work_item_id,
-                                TargetKind.ID_CELL,
-                                edit.position - 1,
-                                before_id,
-                                after_id,
                                 "detail_page",
                             )
                         )
@@ -1138,7 +1088,6 @@ def run(
             dashboard_delete = None
             dashboard_backup = None
             dashboard_restore = None
-            dashboard_combined = None
             dashboard_trash = None
             detail_preview = None
             detail_save = None
@@ -1190,7 +1139,6 @@ def run(
         dashboard_delete=dashboard_delete,
         dashboard_backup=dashboard_backup,
         dashboard_restore=dashboard_restore,
-        dashboard_combined=dashboard_combined,
         dashboard_trash=dashboard_trash,
         dashboard_trash_load=dashboard_trash_load,
         detail_load=detail_load,

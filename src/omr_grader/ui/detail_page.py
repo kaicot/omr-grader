@@ -9,7 +9,6 @@ from PySide6.QtCore import QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSplitter,
     QTableView,
@@ -20,7 +19,6 @@ from PySide6.QtWidgets import (
 from omr_grader.application.detail_presenter import (
     DetailAnswerEdit,
     DetailEdit,
-    DetailIdEdit,
     DetailLoadRequest,
     DetailLoadResult,
     DetailPageDisplay,
@@ -57,7 +55,6 @@ class DetailPage(QWidget):
         self._display: DetailPageDisplay | None = None
         self._selected: DetailStudentDisplay | None = None
         self._answer_original: dict[tuple[str, int], int | None] = {}
-        self._id_original: dict[tuple[str, int], int | None] = {}
         self._edits: dict[tuple[str, str, int], DetailEdit] = {}
         self._lazy_authorized_work_items: set[str] = set()
         self._load_correlations: dict[str, str] = {}
@@ -136,24 +133,11 @@ class DetailPage(QWidget):
         self.graphics_view.setMinimumSize(320, 240)
         self.graphics_view.cell_activated.connect(self._activate_cell)
         right_layout.addWidget(self.graphics_view)
-        self.no_image_label = QLabel("선택한 학생의 OMR 원본 이미지가 없습니다.")
+        self.no_image_label = QLabel("엑셀로 채점된 결과로 OMR 이미지가 없습니다")
         self.no_image_label.setObjectName("detailNoImageLabel")
         self.no_image_label.setAccessibleName("OMR 원본 이미지 없음")
         self.no_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right_layout.addWidget(self.no_image_label)
-        id_row = QHBoxLayout()
-        id_row.addWidget(QLabel("학번 수정:"))
-        self.id_inputs: list[QLineEdit] = []
-        for position in range(8):
-            field = QLineEdit()
-            field.setMaxLength(1)
-            field.setFixedWidth(28)
-            field.setAccessibleName(f"학번 {position + 1}번째 자리")
-            field.setInputMask("9;_")
-            field.editingFinished.connect(lambda position=position: self._edit_id_digit(position))
-            self.id_inputs.append(field)
-            id_row.addWidget(field)
-        right_layout.addLayout(id_row)
         self.zoom_in_button.clicked.connect(self.graphics_view.zoom_in)
         self.zoom_out_button.clicked.connect(self.graphics_view.zoom_out)
         self.fit_button.clicked.connect(self.graphics_view.fit_image)
@@ -276,16 +260,14 @@ class DetailPage(QWidget):
     def _set_originals(self) -> None:
         """Listing and preview projections cannot authorize correction before-values."""
         self._answer_original.clear()
-        self._id_original.clear()
+
     def _record_lazy_baselines(self, student: DetailStudentDisplay) -> None:
         self._lazy_authorized_work_items.add(student.work_item_id)
         for answer in student.answers:
             key = (student.work_item_id, answer.question)
             if ("answer", student.work_item_id, answer.question) not in self._edits:
                 self._answer_original[key] = answer.answer
-        for position, digit in enumerate(student.id_digits, 1):
-            if ("id", student.work_item_id, position) not in self._edits:
-                self._id_original[(student.work_item_id, position)] = digit
+
     def _with_drafts(self, student: DetailStudentDisplay) -> DetailStudentDisplay:
         answers = tuple(
             replace(answer, answer=edit.after)
@@ -298,16 +280,7 @@ class DetailPage(QWidget):
             else answer
             for answer in student.answers
         )
-        digits = tuple(
-            edit.after
-            if isinstance(
-                edit := self._edits.get(("id", student.work_item_id, position)),
-                DetailIdEdit,
-            )
-            else digit
-            for position, digit in enumerate(student.id_digits, 1)
-        )
-        return replace(student, answers=answers, id_digits=digits)
+        return replace(student, answers=answers)
 
     def _matches_display(
         self, display: DetailPageDisplay, work_item_id: str | None = None
@@ -375,13 +348,6 @@ class DetailPage(QWidget):
         self.conflict_label.setText(
             "" if student is None or student.id_conflict is None else student.id_conflict
         )
-        digits = () if student is None else student.id_digits
-        for position, field in enumerate(self.id_inputs):
-            field.blockSignals(True)
-            field.setText(
-                "" if position >= len(digits) or digits[position] is None else str(digits[position])
-            )
-            field.blockSignals(False)
         self._refresh_actions()
 
     def _activate_cell(self, cell: NormalizedCell) -> None:
@@ -403,46 +369,8 @@ class DetailPage(QWidget):
                 self._edits.pop(key, None)
             else:
                 self._edits[key] = DetailAnswerEdit(work_item_id, question, before, after)
-        elif cell.kind == "id" and type(cell.option) is int and 0 <= cell.option <= 9:
-            positions = sorted(
-                {candidate.left for candidate in self._selected.cells if candidate.kind == "id"}
-            )
-            if cell.left not in positions:
-                return
-            position = positions.index(cell.left) + 1
-            if position > 8:
-                return
-            work_item_id = self._selected.work_item_id
-            baseline_key = (work_item_id, position)
-            if baseline_key not in self._id_original:
-                return
-            before = self._id_original[baseline_key]
-            key = ("id", work_item_id, position)
-            if cell.option == before:
-                self._edits.pop(key, None)
-            else:
-                self._edits[key] = DetailIdEdit(work_item_id, position, before, cell.option)
         else:
             return
-        self._edit_generation += 1
-        self._request_preview()
-        self._refresh_actions()
-
-    def _edit_id_digit(self, zero_position: int) -> None:
-        if not self._write_enabled or self._save_in_progress or self._selected is None:
-            return
-        text = self.id_inputs[zero_position].text()
-        after = int(text) if text else None
-        work_item_id, position = self._selected.work_item_id, zero_position + 1
-        baseline_key = (work_item_id, position)
-        if baseline_key not in self._id_original:
-            return
-        before = self._id_original[baseline_key]
-        key = ("id", work_item_id, position)
-        if after == before:
-            self._edits.pop(key, None)
-        else:
-            self._edits[key] = DetailIdEdit(work_item_id, position, before, after)
         self._edit_generation += 1
         self._request_preview()
         self._refresh_actions()
@@ -541,14 +469,3 @@ class DetailPage(QWidget):
             and self.is_dirty
         )
         self.graphics_view.set_editable(self._write_enabled and not self._save_in_progress)
-        ids_editable = (
-            self._write_enabled
-            and not self._save_in_progress
-            and self._selected is not None
-            and all(
-                (self._selected.work_item_id, position) in self._id_original
-                for position in range(1, 9)
-            )
-        )
-        for field in getattr(self, "id_inputs", []):
-            field.setEnabled(ids_editable)

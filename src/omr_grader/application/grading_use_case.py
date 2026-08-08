@@ -74,6 +74,17 @@ class GradingUseCase:
         scores = score_effective(
             ScoreInput(snapshot.responses, validated.value.snapshot), progress
         )
+        source_artifacts = (
+            (
+                (
+                    f"sources/answer_keys/{validated.value.source_name}",
+                    validated.value.source_bytes,
+                ),
+            )
+            if validated.value.source_name is not None
+            and validated.value.source_bytes is not None
+            else ()
+        )
         mutation = GenerationMutation(
             command.session_id,
             command.operation_id,
@@ -82,6 +93,7 @@ class GradingUseCase:
             SessionState.GRADED,
             GradingSemanticView(validated.value.snapshot, snapshot.state, scores),
             None,
+            source_artifacts,
         )
         return self._coordinator.commit_generation(mutation)
 

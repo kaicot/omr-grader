@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import cast
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.infrastructure.io_retry import retry_io
 
 
 def _error(code: str, message: str, exc: BaseException | None = None) -> Err:
@@ -90,7 +91,7 @@ def atomic_write_bytes(destination: Path, payload: bytes) -> Result[None]:
             os.fsync(stream.fileno())
         if _is_reparse_point(target):
             raise OSError("refusing to replace a link or reparse point")
-        _replace_durably(temporary, target)
+        retry_io(lambda: _replace_durably(temporary, target))
     except OSError as exc:
         try:
             temporary.unlink(missing_ok=True)

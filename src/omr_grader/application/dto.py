@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from typing import cast
@@ -590,6 +590,7 @@ class GenerationMutation:
     target_state: SessionState
     semantic_inputs: GenerationSemanticInputs
     projection_request: EffectiveResponseProjection | None
+    source_artifacts: tuple[tuple[str, bytes], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         _session_id(self.session_id)
@@ -601,6 +602,16 @@ class GenerationMutation:
             raise ValueError("GenerationMutation does not support CREATE")
         if self.operation_kind is OperationKind.IMPORT_RESPONSES:
             raise ValueError("IMPORT_RESPONSES is a revision-zero session creation operation")
+        paths: set[str] = set()
+        for path, payload in self.source_artifacts:
+            parts = path.split("/")
+            if not path or any(part in {"", ".", ".."} for part in parts):
+                raise ValueError("source artifact path is invalid")
+            for part in parts:
+                validate_portable_component(part)
+            if path in paths or type(payload) is not bytes or not payload:
+                raise ValueError("source artifacts must contain unique pinned bytes")
+            paths.add(path)
         if not isinstance(self.target_state, SessionState):
             raise TypeError("target_state must be SessionState")
         if not isinstance(
@@ -738,10 +749,18 @@ class AnswerKeyRequest:
 @dataclass(frozen=True, slots=True)
 class AnswerKeyValidation:
     snapshot: AnswerKeySnapshot
+    source_name: str | None = None
+    source_bytes: bytes | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.snapshot, AnswerKeySnapshot):
             raise TypeError("snapshot must be AnswerKeySnapshot")
+        if (self.source_name is None) != (self.source_bytes is None):
+            raise ValueError("answer-key source name and bytes must be provided together")
+        if self.source_name is not None:
+            validate_portable_component(self.source_name)
+            if type(self.source_bytes) is not bytes or not self.source_bytes:
+                raise ValueError("answer-key source bytes must be nonempty")
 
 
 @dataclass(frozen=True, slots=True)

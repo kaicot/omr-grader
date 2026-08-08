@@ -65,8 +65,10 @@ class GradingPage(QWidget):
         root.addWidget(self.session_label)
         cards = QHBoxLayout()
         cards.setSpacing(16)
-        cards.addWidget(self._answer_key_card(), 1)
-        cards.addWidget(self._validation_card(), 1)
+        self.answer_key_card = self._answer_key_card()
+        self.validation_card = self._validation_card()
+        cards.addWidget(self.answer_key_card, 1)
+        cards.addWidget(self.validation_card, 1)
         root.addLayout(cards)
         self.regrade_label = QLabel()
         self.regrade_label.setObjectName("regradeWarningLabel")
@@ -100,6 +102,11 @@ class GradingPage(QWidget):
         root.addWidget(self.progress_frame)
         self.progress_frame.setVisible(False)
         actions = QHBoxLayout()
+        self.reset_button = QPushButton("초기화 / 재설정")
+        self.reset_button.setObjectName("gradingResetButton")
+        self.reset_button.setAccessibleName("정답 및 채점 작업 초기화")
+        self.reset_button.clicked.connect(self._reset_workflow)
+        actions.addWidget(self.reset_button)
         actions.addStretch()
         self.grade_button = QPushButton("채점 실행")
         self.grade_button.setObjectName("primaryActionButton")
@@ -397,6 +404,15 @@ class GradingPage(QWidget):
             ):
                 self.result_navigation_requested.emit(request)
 
+    def _reset_workflow(self) -> None:
+        if self._busy:
+            return
+        self._result_identity = None
+        self._history_text = ""
+        self.set_answer_key_selection(None, None)
+        self._set_history_label()
+        self._refresh_state()
+
     def _emit_intent(self, intent: str) -> None:
         if not self._can_mutate():
             return
@@ -442,10 +458,15 @@ class GradingPage(QWidget):
         result_available = (
             self._result_identity is not None and self._result_identity == self._session_identity()
         )
+        self.answer_key_card.setVisible(not result_available)
+        self.validation_card.setVisible(not result_available)
+        self.regrade_label.setVisible(not result_available)
+        self.error_label.setVisible(not result_available)
         self.sample_button.setEnabled(can_mutate)
         self.answer_key_drop_widget.setEnabled(can_mutate)
         self.upload_button.setEnabled(can_mutate)
         self.grade_button.setEnabled(can_grade)
+        self.grade_button.setVisible(not result_available)
         self.grade_button.setText(
             "채점 실행"
             if can_grade
@@ -454,6 +475,7 @@ class GradingPage(QWidget):
         self.cancel_button.setEnabled(
             self._busy and self._session is not None and self._operation_id is not None
         )
+        self.reset_button.setEnabled(not self._busy and self._session is not None)
         self.result_button.setVisible(result_available)
         self.result_button.setEnabled(
             result_available

@@ -15,6 +15,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from functools import partial
 from pathlib import Path
 
 from omr_grader.application.dto import (
@@ -60,20 +61,30 @@ from omr_grader.domain.models import (
     SessionReservation,
     validate_portable_component,
 )
-from omr_grader.infrastructure.atomic_io import atomic_write_json
+from omr_grader.infrastructure.atomic_io import atomic_write_bytes, atomic_write_json
 from omr_grader.infrastructure.backup_archive import ExtractedBackup, _path_identity
 from omr_grader.infrastructure.generation_materializer import (
     GenerationMaterializationInput,
     GenerationMaterializer,
     StagingToken,
 )
+from omr_grader.infrastructure.io_retry import (
+    retry_copy2,
+    retry_io,
+    retry_mkdir,
+    retry_replace,
+    retry_touch,
+    retry_unlink,
+)
 from omr_grader.infrastructure.paths import ManagedPaths
 from omr_grader.infrastructure.result_layout import (
+    ANSWER_KEY_SOURCE_DIR,
     COORDINATE_DIR,
     OCR_IMAGE_DIR,
     REVIEW_DIR,
     SCORE_IMAGE_DIR,
     SOURCE_IMAGE_DIR,
+    external_artifact_relpath,
 )
 from omr_grader.infrastructure.session_lease import (
     CommittedSnapshotLease,
@@ -622,13 +633,15 @@ _LIFECYCLE_OPERATIONS = frozenset(
 _CONTROL_FILES = frozenset(("session.json", "manifest.json"))
 _RESULT_VIEW_DIRS = (
     ("images", SOURCE_IMAGE_DIR),
+    ("sources/scans", SOURCE_IMAGE_DIR),
+    ("sources/answer_keys", ANSWER_KEY_SOURCE_DIR),
     (OCR_IMAGE_DIR, OCR_IMAGE_DIR),
     (SCORE_IMAGE_DIR, SCORE_IMAGE_DIR),
     (COORDINATE_DIR, COORDINATE_DIR),
     (REVIEW_DIR, REVIEW_DIR),
 )
 _RESULT_VIEW_NAMES = frozenset(target for _, target in _RESULT_VIEW_DIRS)
-_RESULT_VIEW_PREFIXES = ("01_ocr_", "02_score_", "03_final_")
+_RESULT_VIEW_PREFIXES = ("01_ocr_", "02_score_", "03_final_", "정답표_")
 
 
 def _is_control_file(path: str) -> bool:
@@ -640,24 +653,75 @@ def _refresh_result_view(session: Path, generation: Path) -> None:
     for _, target_name in _RESULT_VIEW_DIRS:
         target = session / target_name
         if target.exists():
-            shutil.rmtree(target)
+            retry_io(partial(shutil.rmtree, target))
     for child in tuple(session.iterdir()):
         if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
-            child.unlink()
+            retry_unlink(child)
     for source_name, target_name in _RESULT_VIEW_DIRS:
         source = generation / source_name
         if source.is_dir():
-            shutil.copytree(source, session / target_name, copy_function=os.link)
+            target = session / target_name
+            if not target.exists():
+                retry_io(partial(shutil.copytree, source, target, copy_function=os.link))
+                continue
+            for child in source.rglob("*"):
+                relative = child.relative_to(source)
+                destination = target / relative
+                if child.is_dir():
+                    retry_mkdir(destination, parents=True, exist_ok=True)
+                elif child.is_file():
+                    retry_mkdir(destination.parent, parents=True, exist_ok=True)
+                    retry_io(partial(os.link, child, destination))
     for child in generation.iterdir():
         if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
-            os.link(child, session / child.name)
+            retry_io(partial(os.link, child, session / child.name))
+
+
+def _artifact_path(session: Path, generation: Path, relative: str) -> Path:
+    internal = generation.joinpath(*relative.split("/"))
+    if internal.is_file():
+        return internal
+    external = external_artifact_relpath(relative)
+    return (
+        session.joinpath(*external.split("/"))
+        if external is not None
+        else internal
+    )
+
+
+def _externalize_generation_artifacts(session: Path, generation: Path) -> None:
+    """Remove heavy generation entries after verifying their root hard links."""
+    for directory_name in ("images", "sources", SCORE_IMAGE_DIR):
+        directory = generation / directory_name
+        if not directory.is_dir():
+            continue
+        for source in directory.rglob("*"):
+            if not source.is_file():
+                continue
+            relative = source.relative_to(generation).as_posix()
+            external = external_artifact_relpath(relative)
+            if external is None:
+                raise OSError(f"external artifact mapping is missing: {relative}")
+            target = session.joinpath(*external.split("/"))
+            if (
+                not target.is_file()
+                or target.is_symlink()
+                or target.stat().st_size != source.stat().st_size
+                or _sha(target) != _sha(source)
+            ):
+                raise OSError(f"external artifact verification failed: {relative}")
+        retry_io(partial(shutil.rmtree, directory))
 
 
 def _preserved_artifact(path: str, operation: OperationKind) -> bool:
     """Carry only compact, user-recoverable inputs into a lifecycle generation."""
     if operation not in _LIFECYCLE_OPERATIONS:
         return True
-    if path.startswith("images/") or path.startswith("01_ocr_"):
+    if (
+        path.startswith("images/")
+        or path.startswith("sources/")
+        or path.startswith("01_ocr_")
+    ):
         return True
     return operation is OperationKind.FINALIZE and path.startswith(
         "02_score_"
@@ -758,12 +822,12 @@ class SessionStore:
             self._root / ".reservations",
             self._deleting(),
         ):
-            directory.mkdir(parents=True, exist_ok=True)
-        self._root_lock().touch(exist_ok=True)
+            retry_mkdir(directory, parents=True, exist_ok=True)
+        retry_touch(self._root_lock())
 
     def _lock(self, path: Path, *, exclusive: bool, busy: str) -> Result[GateHandle]:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch(exist_ok=True)
+        retry_mkdir(path.parent, parents=True, exist_ok=True)
+        retry_touch(path)
         handle = self._gates.acquire(path, exclusive=exclusive, blocking=False)
         if handle is None:
             return _error(busy, "다른 작업이 같은 세션을 사용 중입니다.", retryable=True)
@@ -845,7 +909,7 @@ class SessionStore:
         if any(_is_control_file(entry.path) for entry in manifest.files):
             raise ValueError("manifest must not allowlist generation control files")
         for entry in manifest.files:
-            file = generation.joinpath(*entry.path.split("/"))
+            file = _artifact_path(session, generation, entry.path)
             if (
                 not file.is_file()
                 or file.is_symlink()
@@ -853,7 +917,11 @@ class SessionStore:
                 or _sha(file) != entry.sha256
             ):
                 raise ValueError("manifest file validation failed")
-        expected_files = {entry.path for entry in manifest.files}
+        expected_files = {
+            entry.path
+            for entry in manifest.files
+            if generation.joinpath(*entry.path.split("/")).is_file()
+        }
         expected_dirs = {
             parent.as_posix()
             for path in expected_files | {"manifest.json", "session.json"}
@@ -1418,27 +1486,29 @@ class SessionStore:
             if self._identity_exists(identity.session_id):
                 return _error("SESSION_ID_CONFLICT", "session_id가 이미 존재합니다.")
             reservation = self._reservation(identity.session_id)
-            reservation.write_text(
-                json.dumps(
-                    SessionReservation(
-                        1,
-                        identity.session_id,
-                        manifest.operation_id,
-                        identity.creation_kind,
-                        identity.created_at,
-                        display_name,
-                    ).to_dict(),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
+            retry_io(
+                lambda: reservation.write_text(
+                    json.dumps(
+                        SessionReservation(
+                            1,
+                            identity.session_id,
+                            manifest.operation_id,
+                            identity.creation_kind,
+                            identity.created_at,
+                            display_name,
+                        ).to_dict(),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                    encoding="utf-8",
                 )
-                + "\n",
-                encoding="utf-8",
             )
             self._barrier("after_reservation")
             staging = self._root / f".{display_name}.{manifest.operation_id}.staging"
-            staging.mkdir()
-            (staging / "generations").mkdir()
+            retry_mkdir(staging)
+            retry_mkdir(staging / "generations")
             atomic_write_json(staging / "IDENTITY.json", identity.to_dict())
             atomic_write_json(
                 staging / "LOCATION.json",
@@ -1450,14 +1520,16 @@ class SessionStore:
             )
             generation_name = f"g{manifest.revision:08d}_{manifest.generation_id}"
             generation = staging / "generations" / generation_name
-            generation.mkdir()
+            retry_mkdir(generation)
             atomic_write_json(generation / "session.json", session.to_dict())
             for relative, payload in artifacts.items():
                 target = generation.joinpath(*relative.split("/"))
                 if target.parent != generation and generation not in target.parents:
                     raise ValueError("artifact path escapes generation")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(payload)
+                retry_mkdir(target.parent, parents=True, exist_ok=True)
+                written = atomic_write_bytes(target, payload)
+                if isinstance(written, Err):
+                    raise OSError(written.errors[0].context.get("reason", "artifact write failed"))
             atomic_write_json(generation / "manifest.json", manifest.to_dict())
             digest = _sha(generation / "manifest.json")
             pointer = CurrentPointer(
@@ -1471,17 +1543,17 @@ class SessionStore:
             )
             atomic_write_json(staging / "CURRENT.json", pointer.to_dict())
             _refresh_result_view(staging, generation)
+            _externalize_generation_artifacts(staging, generation)
             self._validate_current(staging)
             gate_created = self._gate_path(identity.session_id, manifest.generation_id)
-            gate_created.parent.mkdir(parents=True, exist_ok=True)
-            with gate_created.open("x", encoding="ascii"):
-                pass
+            retry_mkdir(gate_created.parent, parents=True, exist_ok=True)
+            retry_io(lambda: gate_created.touch(exist_ok=False))
             self._barrier("after_gate_create")
             if self._identity_exists(identity.session_id) and reservation != self._reservation(
                 identity.session_id
             ):
                 return _error("SESSION_ID_CONFLICT", "session_id가 이미 존재합니다.")
-            os.replace(staging, self._display_path(display_name))
+            retry_replace(staging, self._display_path(display_name))
             result = SessionCreateResult(
                 True,
                 identity.session_id,
@@ -1492,7 +1564,7 @@ class SessionStore:
             )
             try:
                 self._barrier("after_session_rename")
-                reservation.unlink(missing_ok=True)
+                retry_unlink(reservation, missing_ok=True)
             except OSError as exc:
                 return Ok(
                     result,
@@ -1566,14 +1638,14 @@ class SessionStore:
                 return _error(
                     "SESSION_STAGING_CONFLICT", "동일 operation staging이 이미 존재합니다."
                 )
-            staging.mkdir(parents=True)
+            retry_mkdir(staging, parents=True)
             for entry in parent.files:
                 if not _preserved_artifact(entry.path, mutation.operation_kind):
                     continue
-                source = parent_dir.joinpath(*entry.path.split("/"))
+                source = _artifact_path(session, parent_dir, entry.path)
                 destination = staging.joinpath(*entry.path.split("/"))
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination)
+                retry_mkdir(destination.parent, parents=True, exist_ok=True)
+                retry_copy2(source, destination)
             written = atomic_write_json(staging / "session.json", record.to_dict())
             if isinstance(written, Err):
                 return written
@@ -1646,9 +1718,8 @@ class SessionStore:
                 return written
             self._manifest(staging)
             gate = self._gate_path(mutation.session_id, generation_id)
-            gate.parent.mkdir(parents=True, exist_ok=True)
-            with gate.open("x", encoding="ascii"):
-                pass
+            retry_mkdir(gate.parent, parents=True, exist_ok=True)
+            retry_touch(gate, exist_ok=False)
             self._barrier("after_gate_create")
             current_again, _, _ = self._validate_current(session)
             if (
@@ -1659,7 +1730,7 @@ class SessionStore:
             target = session / "generations" / name
             if target.exists():
                 return _error("SESSION_GENERATION_CONFLICT", "generation ID가 이미 존재합니다.")
-            os.replace(staging, target)
+            retry_replace(staging, target)
             final = target
             self._barrier("after_generation_rename")
             pointer = CurrentPointer(
@@ -1678,7 +1749,6 @@ class SessionStore:
                         return written
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     return written
-            _refresh_result_view(session, final)
             published = True
             result = CommitGenerationResult(
                 True,
@@ -1688,6 +1758,19 @@ class SessionStore:
                 IndexState.STALE,
                 mutation.operation_id,
             )
+            try:
+                _refresh_result_view(session, final)
+                _externalize_generation_artifacts(session, final)
+            except OSError as exc:
+                return Ok(
+                    result,
+                    (
+                        _warning(
+                            "POSTCOMMIT_RECOVERY_REQUIRED",
+                            f"commit 결과 보기를 갱신하지 못했습니다: {exc}",
+                        ),
+                    ),
+                )
             try:
                 self._barrier("after_pointer_replace")
             except OSError as exc:
@@ -1747,7 +1830,10 @@ class SessionStore:
                 if final is not None:
                     shutil.rmtree(final, ignore_errors=True)
                 if gate is not None:
-                    gate.unlink(missing_ok=True)
+                    try:
+                        retry_unlink(gate, missing_ok=True)
+                    except OSError:
+                        pass
             writer.value.close()
 
     def _prune_superseded_generations(self, session: Path, current: Path) -> None:
@@ -1771,13 +1857,13 @@ class SessionStore:
                     raise OSError(f"{candidate.name} generation이 사용 중입니다.")
                 gates.append((gate_path, locked.value))
             prune_root = session / ".staging" / "prune"
-            prune_root.mkdir(parents=True, exist_ok=True)
+            retry_mkdir(prune_root, parents=True, exist_ok=True)
             moved: list[Path] = []
             for candidate in candidates:
                 target = prune_root / candidate.name
                 if target.exists():
                     shutil.rmtree(target)
-                os.replace(candidate, target)
+                retry_replace(candidate, target)
                 moved.append(target)
             for target in moved:
                 shutil.rmtree(target)
@@ -1789,7 +1875,7 @@ class SessionStore:
         finally:
             for gate_path, gate in reversed(gates):
                 gate.close()
-                gate_path.unlink(missing_ok=True)
+                retry_unlink(gate_path, missing_ok=True)
 
     def soft_delete(self, request: SessionMutationRequest) -> Result[SoftDeleteResult]:
         return self._move_session(request, to_trash=True)
@@ -1850,7 +1936,7 @@ class SessionStore:
             if destination.exists():
                 return _error("SESSION_ID_CONFLICT", "대상 세션 위치가 이미 존재합니다.")
             self._barrier("before_directory_rename")
-            os.replace(source, destination)
+            retry_replace(source, destination)
             result = SoftDeleteResult(
                 True,
                 "trash" if to_trash else "active",
@@ -1930,14 +2016,17 @@ class SessionStore:
             )
             if isinstance(written, Err):
                 return written
-            os.replace(source, tomb)
+            retry_replace(source, tomb)
             warnings: tuple[ErrorInfo, ...] = ()
             cleanup = CleanupState.COMPLETE
             try:
                 self._barrier("before_delete_cleanup")
                 shutil.rmtree(tomb)
                 for generation_id in generation_ids:
-                    self._gate_path(request.session_id, generation_id).unlink(missing_ok=True)
+                    retry_unlink(
+                        self._gate_path(request.session_id, generation_id),
+                        missing_ok=True,
+                    )
             except OSError as exc:
                 cleanup = CleanupState.PENDING
                 warnings = (_warning("DELETE_CLEANUP_PENDING", str(exc)),)
@@ -2191,8 +2280,9 @@ class SessionStore:
                             if request.cleanup_orphans:
                                 shutil.rmtree(deleting)
                                 for generation_id in tombstone.generation_ids:
-                                    self._gate_path(tombstone.session_id, generation_id).unlink(
-                                        missing_ok=True
+                                    retry_unlink(
+                                        self._gate_path(tombstone.session_id, generation_id),
+                                        missing_ok=True,
                                     )
                                 cleaned.append(
                                     RecoveryIssue(
@@ -2349,9 +2439,8 @@ class _SessionStoreRestorePublisher:
                 gate_path = store._gate_path(
                     extracted.identity.session_id, extracted.manifest.generation_id
                 )
-                gate_path.parent.mkdir(parents=True, exist_ok=True)
-                with gate_path.open("x", encoding="ascii"):
-                    pass
+                retry_mkdir(gate_path.parent, parents=True, exist_ok=True)
+                retry_touch(gate_path, exist_ok=False)
                 gate_created = True
                 gate_identity = _file_identity(gate_path)
                 store._barrier("after_restore_gate_create")
@@ -2405,6 +2494,10 @@ class _SessionStoreRestorePublisher:
                     if _path_identity(target) != prepared_identity:
                         raise ValueError("published restore changed")
                     store._barrier("after_restore_session_rename")
+                    _, _, restored_generation = store._validate_current(target)
+                    _refresh_result_view(target, restored_generation)
+                    _externalize_generation_artifacts(target, restored_generation)
+                    store._validate_current(target)
                 except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
                     postcommit_warnings.append(
                         _warning(
@@ -2456,7 +2549,7 @@ class _SessionStoreRestorePublisher:
                     try:
                         if gate_identity is None or _file_identity(gate_path) != gate_identity:
                             raise OSError("restore gate ownership changed")
-                        gate_path.unlink()
+                        retry_unlink(gate_path)
                     except FileNotFoundError:
                         cleanup_errors.append(
                             ErrorInfo(

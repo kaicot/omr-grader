@@ -53,6 +53,7 @@ from omr_grader.domain.models import (
 )
 from omr_grader.domain.profile import Profile
 from omr_grader.domain.session import build_page_ref
+from omr_grader.infrastructure.io_retry import retry_io
 from omr_grader.infrastructure.profile_store import ProfileStore
 from omr_grader.infrastructure.result_layout import (
     COORDINATE_DIR,
@@ -482,6 +483,12 @@ class ScanRuntime:
         created_at: str,
     ) -> Result[tuple[dict[str, bytes], tuple[EffectiveResponse, ...], tuple[AutomaticPage, ...]]]:
         output: dict[str, bytes] = {"recognition/roster.json": _json_bytes(roster.to_dict())}
+        for ordinal, source in enumerate(command.source.paths, start=1):
+            candidate = Path(source)
+            if candidate.is_file() and candidate.suffix.lower() == ".pdf":
+                output[f"sources/scans/{ordinal:03}_{safe_exam_name(candidate.name)}"] = retry_io(
+                    candidate.read_bytes
+                )
         automatic_pages = tuple(item.page for item in results if isinstance(item, PipelineSuccess))
         projected = project_effective_responses(
             EffectiveResponseProjection(automatic_pages, (), ()),

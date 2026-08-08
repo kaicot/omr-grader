@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 import cv2
@@ -10,7 +11,12 @@ from numpy.typing import NDArray
 
 from omr_grader.domain.enums import CellStatus
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
-from omr_grader.domain.models import AnswerKeyEntry, AnswerRecognition, CellEvidence
+from omr_grader.domain.models import (
+    AnswerKeyEntry,
+    AnswerRecognition,
+    CellEvidence,
+    PixelRect,
+)
 
 # BGR values are intentionally distinct for exported OpenCV images.
 NORMAL_COLOR: Final = (0, 170, 0)
@@ -82,17 +88,95 @@ def render_overlay(
         )
         text = _label(cell)
         baseline = min(output.shape[0] - 1, rect.y + max(10, rect.h // 2))
+        font_scale = max(0.30, min(0.80, min(rect.w, rect.h) / 36))
         cv2.putText(
             output,
             text,
             (rect.x + 1, baseline),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.30,
+            font_scale,
             color,
-            1,
+            max(1, thickness // 2),
             cv2.LINE_AA,
         )
     return Ok(output)
+
+
+def scale_overlay_evidence(
+    evidence: tuple[CellEvidence, ...],
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+) -> tuple[CellEvidence, ...]:
+    """Scale normalized-image pixel rectangles to one output raster size."""
+    source_width, source_height = source_size
+    target_width, target_height = target_size
+    if (
+        any(type(value) is not int for value in (*source_size, *target_size))
+        or min(source_width, source_height, target_width, target_height) <= 0
+    ):
+        raise ValueError("overlay sizes must contain positive integers")
+    scale_x = target_width / source_width
+    scale_y = target_height / source_height
+    scaled: list[CellEvidence] = []
+    for cell in evidence:
+        rect = cell.pixel_rect
+        if rect is None:
+            raise ValueError("overlay evidence requires pixel rectangles")
+        left = min(target_width - 1, max(0, round(rect.x * scale_x)))
+        top = min(target_height - 1, max(0, round(rect.y * scale_y)))
+        right = min(target_width, max(left + 1, round((rect.x + rect.w) * scale_x)))
+        bottom = min(target_height, max(top + 1, round((rect.y + rect.h) * scale_y)))
+        scaled.append(
+            replace(
+                cell,
+                pixel_rect=PixelRect(left, top, right - left, bottom - top),
+            )
+        )
+    return tuple(scaled)
+
+
+def render_scored_overlay_scaled(
+    image: NDArray[np.generic],
+    evidence: tuple[CellEvidence, ...],
+    answers: tuple[AnswerRecognition, ...],
+    key_entries: tuple[AnswerKeyEntry, ...],
+    target_size: tuple[int, int],
+) -> Result[NDArray[np.uint8]]:
+    """Resize first, then redraw all overlays using scaled destination coordinates."""
+    if not isinstance(image, np.ndarray) or image.ndim not in (2, 3) or image.size == 0:
+        return _error("INVALID_OVERLAY_IMAGE", "image")
+    target_width, target_height = target_size
+    if (
+        any(type(value) is not int for value in target_size)
+        or target_width <= 0
+        or target_height <= 0
+    ):
+        return _error("INVALID_OVERLAY_IMAGE", "target_size")
+    source_height, source_width = image.shape[:2]
+    try:
+        scaled_evidence = scale_overlay_evidence(
+            evidence,
+            (source_width, source_height),
+            target_size,
+        )
+    except (TypeError, ValueError):
+        return _error("INVALID_OVERLAY_EVIDENCE", "evidence")
+    by_index = {cell.index: cell for cell in scaled_evidence}
+    scaled_answers = tuple(
+        replace(
+            answer,
+            cells=tuple(by_index.get(cell.index, cell) for cell in answer.cells),
+        )
+        for answer in answers
+    )
+    prepared = np.clip(
+        image.astype(np.float32, copy=False), np.float32(0), np.float32(255)
+    ).astype(np.uint8, copy=False)
+    resized = np.asarray(
+        cv2.resize(prepared, target_size, interpolation=cv2.INTER_AREA),
+        dtype=np.uint8,
+    )
+    return render_scored_overlay(resized, scaled_evidence, scaled_answers, key_entries)
 
 
 def render_scored_overlay(
@@ -156,3 +240,16 @@ def _label(cell: CellEvidence) -> str:
 
 def _error(code: str, field_path: str) -> Err:
     return Err((ErrorInfo(code, f"error.{code.lower()}", field_path),))
+
+
+__all__ = [
+    "BLANK_COLOR",
+    "CORRECT_COLOR",
+    "INCORRECT_COLOR",
+    "NORMAL_COLOR",
+    "REVIEW_COLOR",
+    "render_overlay",
+    "render_scored_overlay",
+    "render_scored_overlay_scaled",
+    "scale_overlay_evidence",
+]

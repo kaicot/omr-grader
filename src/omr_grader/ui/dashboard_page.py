@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 
 from PySide6.QtCore import QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -27,9 +29,10 @@ from omr_grader.ui.dashboard_model import DashboardSelection, DashboardTableMode
 from omr_grader.ui.trash_dialog import TrashDialog, TrashRequest
 
 _DASHBOARD_ACTIONS = frozenset(
-    {"detail", "delete", "backup", "restore", "combined", "trash", "trash_restore", "trash_delete"}
+    {"detail", "delete", "backup", "restore", "trash", "trash_restore", "trash_delete"}
 )
 _GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash"})
+_LOGGER = logging.getLogger("omr_grader.ui.dashboard")
 
 
 def _validate_payload_json(payload_json: str | None) -> None:
@@ -88,6 +91,11 @@ class DashboardPage(QWidget):
         self.setObjectName("dashboardPage")
         self._write_enabled = True
         self._busy = False
+        self._file_dialog: QFileDialog | None = None
+        self._collision_dialog: QMessageBox | None = None
+        self._error_dialog: QMessageBox | None = None
+        self._pending_file_request: tuple[str, DashboardSelection | None] | None = None
+        self._pending_collision_request: tuple[str, DashboardSelection, str] | None = None
         self._build_ui()
         self._refresh_state()
 
@@ -125,14 +133,10 @@ class DashboardPage(QWidget):
         actions = QHBoxLayout()
         self.backup_button = self._button("백업하기", "dashboardBackupButton", "backup")
         self.restore_button = self._button("백업 복구하기", "dashboardRestoreButton", "restore")
-        self.combined_button = self._button(
-            "통합 성적표 생성", "dashboardCombinedButton", "combined"
-        )
         self.trash_button = self._button("휴지통 보기", "dashboardTrashButton", "trash")
         for button in (
             self.backup_button,
             self.restore_button,
-            self.combined_button,
             self.trash_button,
         ):
             actions.addWidget(button)
@@ -300,14 +304,14 @@ class DashboardPage(QWidget):
         if action not in _DASHBOARD_ACTIONS:
             raise ValueError("unsupported dashboard action")
         if self._busy or (
-            action in {"delete", "backup", "restore", "combined"} and not self._write_enabled
+            action in {"delete", "backup", "restore"} and not self._write_enabled
         ):
             return
+        if action == "restore":
+            self._open_file_dialog(action, None)
+            return
         if action in _GLOBAL_DASHBOARD_ACTIONS:
-            payload_json = self._select_file_payload(action) if action == "restore" else None
-            if action == "restore" and payload_json is None:
-                return
-            self.request_emitted.emit(DashboardGlobalRequest(action, payload_json))
+            self.request_emitted.emit(DashboardGlobalRequest(action))
             return
         selection = self._selection()
         if action == "detail":
@@ -334,68 +338,195 @@ class DashboardPage(QWidget):
             return
         if action == "backup" and len(selection.session_ids) != 1:
             return
-        payload_json = (
-            self._select_file_payload(action) if action in {"backup", "combined"} else None
-        )
-        if action in {"backup", "combined"} and payload_json is None:
+        if action == "backup":
+            self._open_file_dialog(action, selection)
             return
-        self.request_emitted.emit(DashboardRequest(action, selection, payload_json))
+        self.request_emitted.emit(DashboardRequest(action, selection))
 
-    def _select_file_payload(self, action: str) -> str | None:
+    def _open_file_dialog(
+        self, action: str, selection: DashboardSelection | None
+    ) -> None:
+        if (
+            action not in {"backup", "restore"}
+            or self._file_dialog is not None
+            or self._collision_dialog is not None
+        ):
+            return
+        opened = False
+        try:
+            dialog = QFileDialog(self)
+            dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            if action == "restore":
+                dialog.setWindowTitle("백업 파일 선택")
+                dialog.setNameFilter("OMR 백업 (*.omrbak)")
+                dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+                dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+            else:
+                dialog.setWindowTitle("백업 파일 저장")
+                dialog.setNameFilter("OMR 백업 (*.omrbak)")
+                dialog.setDefaultSuffix("omrbak")
+                dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+                dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+                dialog.setOption(QFileDialog.Option.DontConfirmOverwrite, True)
+            self._file_dialog = dialog
+            self._pending_file_request = (action, selection)
+            dialog.fileSelected.connect(self._file_selected)
+            dialog.rejected.connect(self._file_dialog_rejected)
+            dialog.finished.connect(self._file_dialog_finished)
+            self._refresh_state()
+            dialog.open()
+            opened = True
+        except Exception:
+            _LOGGER.exception("dashboard_file_dialog_open_failed action=%s", action)
+            self._show_file_dialog_error("파일 선택 창을 열지 못했습니다.")
+        finally:
+            if not opened:
+                self._clear_file_dialog()
+
+    def _file_selected(self, path: str) -> None:
+        pending = self._pending_file_request
+        try:
+            if pending is None or not isinstance(path, str) or not path.strip():
+                _LOGGER.info("dashboard_file_dialog_empty_selection")
+                return
+            action, selection = pending
+        except Exception:
+            _LOGGER.exception("dashboard_file_selection_failed")
+            self._show_file_dialog_error("선택한 파일을 처리하지 못했습니다.")
+            return
+        finally:
+            self._clear_file_dialog()
         try:
             if action == "restore":
-                path, _ = QFileDialog.getOpenFileName(
-                    self, "백업 파일 선택", filter="OMR 백업 (*.omrbak)"
-                )
-                return None if not path else json.dumps({"path": path}, ensure_ascii=False)
-            title, file_filter = (
-                ("백업 파일 저장", "OMR 백업 (*.omrbak)")
-                if action == "backup"
-                else ("통합 성적표 저장", "Excel 파일 (*.xlsx)")
-            )
-            path, _ = QFileDialog.getSaveFileName(self, title, filter=file_filter)
-            if not path:
-                return None
-            choice = QMessageBox.question(
-                self,
-                "파일 충돌",
-                "같은 이름의 파일이 있으면 바꾸시겠습니까?",
+                payload_json = json.dumps({"path": path}, ensure_ascii=False, sort_keys=True)
+                self.request_emitted.emit(DashboardGlobalRequest(action, payload_json))
+                return
+            if selection is None:
+                _LOGGER.error("dashboard_file_selection_missing_selection action=%s", action)
+                return
+            self._open_collision_dialog(action, selection, path)
+        except Exception:
+            _LOGGER.exception("dashboard_file_request_emit_failed action=%s", action)
+            self._show_file_dialog_error("파일 작업을 시작하지 못했습니다.")
+
+    def _file_dialog_rejected(self) -> None:
+        _LOGGER.info("dashboard_file_dialog_cancelled")
+        self._clear_file_dialog()
+
+    def _file_dialog_finished(self, result: int) -> None:
+        if self._file_dialog is None:
+            return
+        if result != QDialog.DialogCode.Accepted:
+            _LOGGER.info("dashboard_file_dialog_closed result=%s", result)
+        self._clear_file_dialog()
+
+    def _clear_file_dialog(self) -> None:
+        dialog = self._file_dialog
+        self._file_dialog = None
+        self._pending_file_request = None
+        if dialog is not None:
+            dialog.deleteLater()
+        self._refresh_state()
+
+    def _open_collision_dialog(
+        self, action: str, selection: DashboardSelection, path: str
+    ) -> None:
+        opened = False
+        try:
+            dialog = QMessageBox(self)
+            dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            dialog.setIcon(QMessageBox.Icon.Question)
+            dialog.setWindowTitle("파일 충돌")
+            dialog.setText("같은 이름의 파일이 있으면 바꾸시겠습니까?")
+            dialog.setStandardButtons(
                 QMessageBox.StandardButton.Yes
                 | QMessageBox.StandardButton.No
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
+                | QMessageBox.StandardButton.Cancel
             )
-            if choice == QMessageBox.StandardButton.Cancel:
-                return None
-            collision = "replace" if choice == QMessageBox.StandardButton.Yes else "error"
-            return json.dumps(
+            dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            self._collision_dialog = dialog
+            self._pending_collision_request = (action, selection, path)
+            dialog.finished.connect(self._collision_dialog_finished)
+            self._refresh_state()
+            dialog.open()
+            opened = True
+        except Exception:
+            _LOGGER.exception("dashboard_collision_dialog_open_failed action=%s", action)
+            self._show_file_dialog_error("파일 충돌 확인 창을 열지 못했습니다.")
+        finally:
+            if not opened:
+                self._clear_collision_dialog()
+
+    def _collision_dialog_finished(self, result: int) -> None:
+        pending = self._pending_collision_request
+        try:
+            button = QMessageBox.StandardButton(result)
+            if pending is None or button in {
+                QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.NoButton,
+            }:
+                _LOGGER.info("dashboard_collision_dialog_cancelled")
+                return
+            action, selection, path = pending
+            if not path:
+                _LOGGER.info("dashboard_collision_dialog_empty_path")
+                return
+            collision = "replace" if button == QMessageBox.StandardButton.Yes else "error"
+            payload_json = json.dumps(
                 {"collision": collision, "path": path},
                 ensure_ascii=False,
                 sort_keys=True,
             )
-        except Exception as error:
-            QMessageBox.warning(
-                self,
-                "파일 선택 오류",
-                f"파일 선택을 완료하지 못했습니다: {error}",
-            )
-            return None
+            self.request_emitted.emit(DashboardRequest(action, selection, payload_json))
+        except Exception:
+            _LOGGER.exception("dashboard_collision_result_failed")
+            self._show_file_dialog_error("파일 작업을 시작하지 못했습니다.")
+        finally:
+            self._clear_collision_dialog()
+
+    def _clear_collision_dialog(self) -> None:
+        dialog = self._collision_dialog
+        self._collision_dialog = None
+        self._pending_collision_request = None
+        if dialog is not None:
+            dialog.deleteLater()
+        self._refresh_state()
+
+    def _show_file_dialog_error(self, message: str) -> None:
+        previous = self._error_dialog
+        if previous is not None:
+            previous.deleteLater()
+        dialog = QMessageBox(self)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("파일 선택 오류")
+        dialog.setText(message)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        self._error_dialog = dialog
+        dialog.finished.connect(lambda _result, current=dialog: self._clear_error_dialog(current))
+        dialog.open()
+
+    def _clear_error_dialog(self, dialog: QMessageBox) -> None:
+        if self._error_dialog is dialog:
+            self._error_dialog = None
+        dialog.deleteLater()
 
     def _open_detail(self, index: QModelIndex) -> None:
         if not self._busy:
             self._request("detail")
 
     def _refresh_state(self) -> None:
-        writable = self._write_enabled and not self._busy
+        dialog_pending = self._file_dialog is not None or self._collision_dialog is not None
+        available = not self._busy and not dialog_pending
+        writable = self._write_enabled and available
         one = self._current_entry() is not None
         selection = self._selection()
         selected_count = 0 if selection is None else len(selection.session_ids)
-        self.detail_button.setEnabled(not self._busy and one)
+        self.detail_button.setEnabled(available and one)
         self.delete_button.setEnabled(writable and one)
         self.backup_button.setEnabled(writable and selected_count == 1)
-        self.combined_button.setEnabled(writable and selected_count > 0)
         self.restore_button.setEnabled(writable)
-        self.trash_button.setEnabled(not self._busy)
+        self.trash_button.setEnabled(available)
 
     def create_trash_dialog(self, entries: tuple[DashboardIndexEntry, ...]) -> TrashDialog:
         dialog = TrashDialog(self)

@@ -13,7 +13,7 @@ from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 
 _CONFIG_NAME = "config.json"
 _PROFILES_NAME = "Profiles"
-_DATA_NAME = "OMR_Grader"
+_DATA_NAME = "Data"
 _LOGS_NAME = "logs"
 _RESERVED_WINDOWS_NAMES = {
     "CON",

@@ -172,7 +172,7 @@ class ScanPage(QWidget):
         self.profile_summary = QLabel("검증된 OMR 프로필을 선택하거나 불러오세요.", exam_card)
         self.profile_summary.setObjectName("profileSummary")
         self.profile_summary.setAccessibleName("선택한 OMR 프로필 검증 정보")
-        self.profile_summary.setWordWrap(True)
+        self.profile_summary.setWordWrap(False)
         exam_form.addRow("1. 시험명 입력 *", self.exam_name_edit)
         exam_form.addRow("인식 프로필 *", profile_row)
         exam_form.addRow("프로필 끌어놓기", self.profile_widget)
@@ -389,7 +389,10 @@ class ScanPage(QWidget):
         if not isinstance(source_path, str) or not source_path:
             raise ValueError("source_path must be a non-empty string")
         self._profile_importing = True
-        self.profile_summary.setText(f"OMR 프로필을 불러오는 중입니다.\n{source_path}")
+        self.profile_summary.setText(
+            "프로필명: 확인 중  |  상태: 불러오는 중  |  정상유무: 확인 중"
+        )
+        self.profile_summary.setToolTip(source_path)
         self.progress_label.setText("OMR 프로필을 검증하고 안전하게 저장하는 중입니다.")
         self._update_gating()
 
@@ -413,7 +416,10 @@ class ScanPage(QWidget):
         if not isinstance(message, str) or not message:
             raise ValueError("message must be a non-empty string")
         self._profile_importing = False
-        self.profile_summary.setText(f"프로필 불러오기 실패: {message}")
+        self.profile_summary.setText(
+            "프로필명: -  |  상태: 불러오기 실패  |  정상유무: 비정상"
+        )
+        self.profile_summary.setToolTip(message)
         self.progress_label.setText(message)
         self._update_gating()
 
@@ -562,6 +568,7 @@ class ScanPage(QWidget):
         profile = self._selected_profile()
         if profile is None:
             self.profile_summary.setText("검증된 OMR 프로필을 선택하거나 불러오세요.")
+            self.profile_summary.setToolTip("")
         else:
             dimensions = (
                 f"기준 크기 {profile.dimensions[0]} × {profile.dimensions[1]}"
@@ -574,14 +581,25 @@ class ScanPage(QWidget):
                 if profile.duplicate_outcome is not None
                 else ""
             )
-            validation = (
+            normal = profile.validated and not profile.validation_errors
+            status = (
                 "검증 완료"
-                if profile.validated
-                else f"검증 실패: {' / '.join(profile.validation_errors) or '검증되지 않음'}"
+                if normal
+                else "검증 실패"
+                if profile.validation_errors
+                else "검증되지 않음"
             )
             self.profile_summary.setText(
-                f"{profile.name}\n{dimensions} · {profile.grid_summary}\n"
-                f"{validation}{default}{duplicate}"
+                f"프로필명: {profile.name}  |  상태: {status}  |  "
+                f"정상유무: {'정상' if normal else '비정상'}"
+            )
+            errors = (
+                f" · 오류: {' / '.join(profile.validation_errors)}"
+                if profile.validation_errors
+                else ""
+            )
+            self.profile_summary.setToolTip(
+                f"{dimensions} · {profile.grid_summary}{default}{duplicate}{errors}"
             )
         self._update_gating()
 

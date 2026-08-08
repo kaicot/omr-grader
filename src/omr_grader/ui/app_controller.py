@@ -27,7 +27,6 @@ from omr_grader.application.dto import (
     BackupRestoreResult,
     CancelOperationCommand,
     CollisionPolicy,
-    CombinedReportResult,
     CommitGenerationResult,
     ImportResponseCommand,
     PermanentDeleteResult,
@@ -145,7 +144,6 @@ class ServicePorts:
     dashboard_delete: Callable[[DashboardSelection], Result[SoftDeleteResult]] | None = None
     dashboard_backup: Callable[[DashboardRequest], Result[BackupExportResult]] | None = None
     dashboard_restore: Callable[[DashboardGlobalRequest], Result[BackupRestoreResult]] | None = None
-    dashboard_combined: Callable[[DashboardRequest], Result[CombinedReportResult]] | None = None
     dashboard_trash: (
         Callable[[DashboardRequest], Result[TrashRestoreResult | PermanentDeleteResult]] | None
     ) = None
@@ -341,7 +339,6 @@ class AppController(QObject):
             "delete": (self.services.dashboard_delete, SoftDeleteResult, True),
             "backup": (self.services.dashboard_backup, BackupExportResult, False),
             "restore": (self.services.dashboard_restore, BackupRestoreResult, True),
-            "combined": (self.services.dashboard_combined, CombinedReportResult, False),
             "trash_restore": (self.services.dashboard_trash, TrashRestoreResult, True),
             "trash_delete": (self.services.dashboard_trash, PermanentDeleteResult, True),
         }
@@ -353,7 +350,7 @@ class AppController(QObject):
         operation: Callable[[], object] | None
         if action_handler is None:
             operation = None
-        elif request.action in {"backup", "restore", "combined"}:
+        elif request.action in {"backup", "restore"}:
             operation = partial(action_handler, request)
         elif request.action.startswith("trash_"):
             operation = partial(action_handler, request)

@@ -14,6 +14,7 @@ from typing import BinaryIO, Protocol, runtime_checkable
 from omr_grader.application.dto import SnapshotRef
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import ManifestFile, SessionManifest
+from omr_grader.infrastructure.result_layout import external_artifact_relpath
 
 
 def _error(code: str, reason: str, *, retryable: bool = False) -> Err:
@@ -173,9 +174,15 @@ class CommittedSnapshotLease:
         if entry is None:
             return _error("SNAPSHOT_PATH_FORBIDDEN", "manifest allowlist 밖의 파일입니다.")
         candidate = self._root.joinpath(*relpath.split("/"))
+        containment_root = self._root
+        if not candidate.is_file():
+            external = external_artifact_relpath(relpath)
+            if external is not None:
+                containment_root = self._root.parent.parent
+                candidate = containment_root.joinpath(*external.split("/"))
         try:
             resolved = candidate.resolve(strict=True)
-            resolved.relative_to(self._root.resolve(strict=True))
+            resolved.relative_to(containment_root.resolve(strict=True))
             if not resolved.is_file() or resolved.is_symlink():
                 return _error("SNAPSHOT_FILE_INVALID", "스냅샷 파일이 안전하지 않습니다.")
             stream = resolved.open("rb")

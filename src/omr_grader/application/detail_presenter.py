@@ -161,23 +161,7 @@ class DetailAnswerEdit:
                 raise ValueError("answer values must be 1 through 5 or None")
 
 
-@dataclass(frozen=True, slots=True)
-class DetailIdEdit:
-    work_item_id: str
-    position: int
-    before: int | None
-    after: int | None
-
-    def __post_init__(self) -> None:
-        _text(self.work_item_id, "work_item_id")
-        if type(self.position) is not int or not 1 <= self.position <= 8:
-            raise ValueError("id position must be 1 through 8")
-        for value in (self.before, self.after):
-            if value is not None and (type(value) is not int or not 0 <= value <= 9):
-                raise ValueError("id values must be 0 through 9 or None")
-
-
-DetailEdit = DetailAnswerEdit | DetailIdEdit
+DetailEdit = DetailAnswerEdit
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,7 +205,7 @@ class DetailPageRequest:
         ):
             raise ValueError("invalid request")
         if not isinstance(self.edits, tuple) or not all(
-            isinstance(edit, DetailAnswerEdit | DetailIdEdit) for edit in self.edits
+            isinstance(edit, DetailAnswerEdit) for edit in self.edits
         ):
             raise TypeError("edits must be typed detail edits")
 

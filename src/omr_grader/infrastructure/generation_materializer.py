@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -38,19 +39,67 @@ from omr_grader.domain.models import (
     RosterSnapshot,
     SessionRecord,
 )
-from omr_grader.infrastructure.atomic_io import atomic_write_json
+from omr_grader.infrastructure.atomic_io import atomic_write_bytes, atomic_write_json
+from omr_grader.infrastructure.io_retry import retry_mkdir, retry_unlink
 from omr_grader.infrastructure.result_layout import (
     SCORE_IMAGE_DIR,
     answer_key_filename,
     ocr_filename,
 )
-from omr_grader.recognition.overlay import render_scored_overlay
+from omr_grader.recognition.overlay import render_scored_overlay_scaled
 from omr_grader.workbooks.answer_key import answer_key_snapshot_bytes
 from omr_grader.workbooks.response_book import write_effective_response_projection
 from omr_grader.workbooks.score_book import write_final_book, write_score_book
 
 if TYPE_CHECKING:
     from omr_grader.domain.models import SessionManifest
+
+MAX_REVIEW_LONG_EDGE = 1600
+MAX_REVIEW_BYTES = 500_000
+REVIEW_JPEG_QUALITY = 75
+MIN_REVIEW_LONG_EDGE = 320
+
+
+def _encode_review_image(
+    raster: NDArray[np.uint8],
+    evidence: tuple[CellEvidence, ...],
+    answers: tuple[AnswerRecognition, ...],
+    answer_key: AnswerKeySnapshot,
+) -> bytes:
+    source_height, source_width = raster.shape[:2]
+    edge = min(MAX_REVIEW_LONG_EDGE, max(source_width, source_height))
+    while True:
+        scale = min(1.0, edge / max(source_width, source_height))
+        target_size = (
+            max(1, round(source_width * scale)),
+            max(1, round(source_height * scale)),
+        )
+        scored = render_scored_overlay_scaled(
+            raster,
+            evidence,
+            answers,
+            answer_key.entries,
+            target_size,
+        )
+        if isinstance(scored, Err):
+            raise ValueError("scored detail overlay cannot be rendered")
+        encoded, encoded_payload = cv2.imencode(
+            ".jpg",
+            scored.value,
+            [
+                cv2.IMWRITE_JPEG_QUALITY,
+                REVIEW_JPEG_QUALITY,
+                cv2.IMWRITE_JPEG_OPTIMIZE,
+                1,
+            ],
+        )
+        if not encoded:
+            raise ValueError("scored detail overlay cannot be encoded")
+        payload = encoded_payload.tobytes()
+        if len(payload) <= MAX_REVIEW_BYTES or edge <= MIN_REVIEW_LONG_EDGE:
+            return payload
+        ratio = math.sqrt(MAX_REVIEW_BYTES / len(payload)) * 0.95
+        edge = max(MIN_REVIEW_LONG_EDGE, min(edge - 1, int(edge * ratio)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +164,7 @@ class StagingToken:
 
     def write_json(self, relative: str, value: object) -> None:
         target = self.path(relative)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        retry_mkdir(target.parent, parents=True, exist_ok=True)
         result = atomic_write_json(target, value)
         if isinstance(result, Err):
             raise OSError(result.errors[0].context.get("reason", "JSON write failed"))
@@ -124,8 +173,10 @@ class StagingToken:
         if type(value) is not bytes:
             raise TypeError("artifact bytes must be pinned bytes")
         target = self.path(relative)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(value)
+        retry_mkdir(target.parent, parents=True, exist_ok=True)
+        result = atomic_write_bytes(target, value)
+        if isinstance(result, Err):
+            raise OSError(result.errors[0].context.get("reason", "byte write failed"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +200,8 @@ class GenerationMaterializer:
 
     def materialize(self, request: GenerationMaterializationInput) -> None:
         mutation = request.mutation
+        for relative, payload in mutation.source_artifacts:
+            request.token.write_bytes(relative, payload)
         parent = _read_combined(request.parent_generation)
         if parent is not None:
             _validate_parent_combined(parent, request.parent_manifest)
@@ -269,7 +322,7 @@ class GenerationMaterializer:
             )
         _validate_xlsx(output)
         request.token.write_bytes(output.name, output.read_bytes())
-        output.unlink()
+        retry_unlink(output)
         output.parent.rmdir()
 
     def _write_details(
@@ -337,41 +390,17 @@ class GenerationMaterializer:
                     )
                     if raster is None:
                         raise ValueError("committed detail image cannot be decoded")
-                    scored = render_scored_overlay(
-                        raster,
-                        page.evidence,
-                        page.answers,
-                        answer_key.entries,
-                    )
-                    if isinstance(scored, Err):
-                        raise ValueError("scored detail overlay cannot be rendered")
-                    review_image = scored.value
-                    height, width = review_image.shape[:2]
-                    long_edge = max(height, width)
-                    if long_edge > 2000:
-                        scale = 2000 / long_edge
-                        review_image = cast(
-                            NDArray[np.uint8],
-                            cv2.resize(
-                                review_image,
-                                (round(width * scale), round(height * scale)),
-                                interpolation=cv2.INTER_AREA,
-                            ),
-                        )
-                    encoded, encoded_payload = cv2.imencode(
-                        ".jpg",
-                        review_image,
-                        [
-                            cv2.IMWRITE_JPEG_QUALITY,
-                            80,
-                            cv2.IMWRITE_JPEG_OPTIMIZE,
-                            1,
-                        ],
-                    )
-                    if not encoded:
-                        raise ValueError("scored detail overlay cannot be encoded")
+                    review_raster: NDArray[np.uint8] = np.asarray(raster, dtype=np.uint8)
                     image_path = f"{SCORE_IMAGE_DIR}/{response.work_item_id}.jpg"
-                    request.token.write_bytes(image_path, encoded_payload.tobytes())
+                    request.token.write_bytes(
+                        image_path,
+                        _encode_review_image(
+                            review_raster,
+                            page.evidence,
+                            page.answers,
+                            answer_key,
+                        ),
+                    )
             score, rank = scores.get(response.work_item_id, (None, None))
             detail_path = f"details/{response.work_item_id}.json"
             payload: dict[str, object] = {"response": response.to_dict()}

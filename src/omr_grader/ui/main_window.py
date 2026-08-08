@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QKeyEvent
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -28,7 +28,7 @@ from .detail_page import DetailPage
 from .grading_page import GradingPage
 from .scan_page import ScanPage
 from .settings_page import SettingsPage
-from .theme import Theme, apply_theme
+from .theme import Theme, apply_theme, tokens_for
 
 
 class MainWindow(QMainWindow):
@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self._close_requires_controller = False
         self._close_requested = False
         self._close_permitted = False
+        self._full_session_name = ""
         self.diagnostic_log_path: str | None = None
         self.setObjectName("mainWindow")
         self.setWindowTitle("OMR Grader")
@@ -142,6 +143,7 @@ class MainWindow(QMainWindow):
         self.session_status_label = QLabel(status_bar)
         self.session_status_label.setObjectName("sessionStatusLabel")
         self.session_status_label.setAccessibleName("현재 세션 상태")
+        self.session_status_label.setMaximumWidth(320)
         status_bar.addWidget(self.status_label, 1)
         status_bar.addPermanentWidget(self.session_status_label)
         self.setStatusBar(status_bar)
@@ -274,8 +276,8 @@ class MainWindow(QMainWindow):
             <p>스캔이 완료되면 정답표 엑셀을 불러와 검증한 뒤 채점을 실행합니다.
                공란·복수 마킹 등은 확인 대상으로 표시됩니다.</p>
             <h2>3. 시험 관리</h2>
-            <p>저장된 시험을 열어 학생별 응답을 확인·수정하고, 백업·복원 및
-               통합 성적표 기능을 사용할 수 있습니다.</p>
+            <p>저장된 시험을 열어 학생별 응답을 확인·수정하고,
+               시험별 백업과 복원을 수행할 수 있습니다.</p>
             <h2>4. 환경 설정</h2>
             <p>기본 OMR 프로필, 인식 감도와 다중 처리 설정을 저장할 수 있습니다.</p>
             <h2>문제 해결 및 Q&amp;A</h2>
@@ -386,8 +388,23 @@ class MainWindow(QMainWindow):
         display_name = session_name.strip() or "진행 중인 세션이 없습니다"
         self.session_name_label.setText(display_name)
         self.session_name_label.setToolTip(display_name)
-        self.session_status_label.setText(f"세션: {display_name}")
+        self._full_session_name = display_name
+        self._render_session_status()
         self.session_status_label.setToolTip(display_name)
+
+    def _render_session_status(self) -> None:
+        text = f"세션: {self._full_session_name}"
+        width = max(80, self.session_status_label.maximumWidth() - 12)
+        self.session_status_label.setText(
+            self.session_status_label.fontMetrics().elidedText(
+                text, Qt.TextElideMode.ElideRight, width
+            )
+        )
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "session_status_label"):
+            self._render_session_status()
 
     def set_session_progress(self, message: str) -> None:
         if not isinstance(message, str) or not message.strip():
@@ -515,7 +532,7 @@ class MainWindow(QMainWindow):
         application = QApplication.instance()
         if isinstance(application, QApplication):
             apply_theme(application, self._theme)
-        link_color = "#93C5FD" if self._theme is Theme.DARK else "#1D4ED8"
+        link_color = tokens_for(self._theme).link_color
         self.help_browser.document().setDefaultStyleSheet(
             f"a {{ color: {link_color}; font-weight: 700; text-decoration: underline; }}"
         )
