@@ -85,6 +85,26 @@ py -m venv .venv
 
 소스 실행 시에는 `main.py`가 있는 저장소 루트가 포터블 루트가 됩니다.
 
+## 포터블 릴리즈 빌드와 검증
+
+PyInstaller onedir 빌드와 검증은 같은 포터블 계약을 사용합니다. 빌드 결과의
+`OMR Grader\` 폴더 전체(`OMR Grader.exe`와 `_internal\`)를 배포 단위로 취급하며,
+EXE만 따로 복사하지 않습니다.
+
+```powershell
+& .\tools\build-portable-folder.ps1
+& .\tools\verify-portable-folder.ps1 `
+    -ReleaseRoot .\dist\OMR-Grader-fixed14-YYYYMMDD `
+    -Smoke Both
+```
+
+빌드 폴더에는 `release-receipt.json`이 생성됩니다. 영수증은 제품 버전, Git HEAD,
+포함 파일 목록과 각 파일의 SHA-256을 묶으며, 검증기는 ZIP 내용과 실제 포터블 실행을
+함께 확인합니다. `packaging\verify_release.py`의 단일 EXE 릴리즈 계약과는 별개로,
+현재 제품의 공식 검증 기준은 이 onedir 검증 명령입니다. 정상 종료까지 엄격하게
+확인하려면 `-StrictShutdown`을 추가합니다. 기본 검증에서는 창 표시와 임시 프로세스
+정리 결과를 기록하고, 종료 신호의 불확실성은 별도 진단으로 남깁니다.
+
 ## LLM에게 도움 요청하기
 
 설치, 이동, 백업 또는 복구 방법을 LLM에게 질문할 때는 저장소의

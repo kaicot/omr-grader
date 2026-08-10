@@ -101,3 +101,18 @@ D:\OMR-Grader\
 - 소스 실행과 배포 EXE 실행을 구분합니다.
 - 저장소 구조나 동작을 변경할 때는 `src/omr_grader/infrastructure/paths.py`의
   `resolve_portable_root()` 및 `ManagedPaths` 계약을 기준으로 문서를 함께 갱신합니다.
+
+## 릴리즈 검증 기준
+
+- 현재 공식 배포 형식은 PyInstaller onedir인 `OMR Grader\` 폴더 전체입니다.
+- 빌드는 `tools/build-portable-folder.ps1`을 사용하며, 결과 폴더의
+  `release-receipt.json`과 ZIP SHA-256 파일을 보존합니다.
+- 빌드 후에는 `tools/verify-portable-folder.ps1 -Smoke Both`를 실행합니다.
+- 종료 신호까지 릴리즈 게이트로 강제할 때만 `-StrictShutdown`을 추가합니다.
+- 기본 smoke 결과의 `graceful_close=inconclusive`는 제품 실행·포터블 저장 검증과
+  분리된 종료 진단으로 기록합니다.
+- 검증기는 `OMR Grader.exe`, `_internal\`, 현재 `Data/` 포터블 계약, receipt의 파일
+  해시와 Git HEAD를 확인합니다.
+- 단일 EXE와 `release-receipt.json`을 릴리즈 루트에 직접 두는 이전
+  `packaging/verify_release.py` 계약을 현재 onedir 릴리즈의 판정 기준으로 사용하지
+  않습니다.

@@ -51,7 +51,20 @@ $RECYCLE.BIN/
 # Local development, verification, and task material
 fix*/
 tests/
+!tests/
+tests/*
+!tests/integration/
+tests/integration/*
+!tests/integration/test_portable_relocation.py
+!tests/packaged/
+tests/packaged/*
+!tests/packaged/test_release_orchestration_scripts.py
 tools/
+!tools/
+tools/*
+!tools/build-portable-folder.ps1
+!tools/verify-portable-folder.ps1
+!tools/smoke-portable-onedir.py
 packaging/
 constraints/
 requirements/
