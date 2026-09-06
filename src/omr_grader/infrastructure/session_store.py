@@ -721,6 +721,7 @@ def _preserved_artifact(path: str, operation: OperationKind) -> bool:
         path.startswith("images/")
         or path.startswith("sources/")
         or path.startswith("01_ocr_")
+        or path in {"correction_state.json", "correction_events.json", "review_geometry.json"}
     ):
         return True
     return operation is OperationKind.FINALIZE and path.startswith(
@@ -1784,8 +1785,9 @@ class SessionStore:
                     ),
                 )
             try:
-                retained = atomic_write_json(
-                    session / "RETENTION.json",
+                self._prune_superseded_generations(
+                    session,
+                    final,
                     {
                         "schema_version": 1,
                         "session_id": manifest.session_id,
@@ -1800,10 +1802,6 @@ class SessionStore:
                         "retained_at": _utc(),
                     },
                 )
-                if isinstance(retained, Err):
-                    raise OSError("retention boundary를 기록하지 못했습니다.")
-                self._barrier("before_generation_prune")
-                self._prune_superseded_generations(session, final)
             except OSError as exc:
                 return Ok(
                     result,
@@ -1815,6 +1813,8 @@ class SessionStore:
                     ),
                 )
             return Ok(result)
+        except PermissionError as exc:
+            return _error("ROOT_WRITE_DENIED", str(exc))
         except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
             return _error("SESSION_COMMIT_FAILED", str(exc))
         finally:
@@ -1836,7 +1836,15 @@ class SessionStore:
                         pass
             writer.value.close()
 
-    def _prune_superseded_generations(self, session: Path, current: Path) -> None:
+    def _prune_superseded_generations(
+        self, session: Path, current: Path, retention: Mapping[str, object]
+    ) -> None:
+        """Compact all obsolete generations only after their locks are acquired.
+
+        The target retention record binds the current generation directly to its
+        omitted parent.  It is written *after* lock preflight, so a live CAS
+        correction lease leaves the previous authenticated boundary intact.
+        """
         generations = session / "generations"
         candidates = tuple(
             path
@@ -1844,6 +1852,7 @@ class SessionStore:
             if path.is_dir() and path != current
         )
         gates: list[tuple[Path, GateHandle]] = []
+        completed = False
         try:
             for candidate in candidates:
                 manifest, _ = self._manifest(candidate)
@@ -1856,6 +1865,10 @@ class SessionStore:
                 if isinstance(locked, Err):
                     raise OSError(f"{candidate.name} generation이 사용 중입니다.")
                 gates.append((gate_path, locked.value))
+            self._barrier("before_generation_prune")
+            retained = atomic_write_json(session / "RETENTION.json", dict(retention))
+            if isinstance(retained, Err):
+                raise OSError("retention boundary를 기록하지 못했습니다.")
             prune_root = session / ".staging" / "prune"
             retry_mkdir(prune_root, parents=True, exist_ok=True)
             moved: list[Path] = []
@@ -1867,6 +1880,7 @@ class SessionStore:
                 moved.append(target)
             for target in moved:
                 shutil.rmtree(target)
+            completed = True
             try:
                 prune_root.rmdir()
                 prune_root.parent.rmdir()
@@ -1875,7 +1889,8 @@ class SessionStore:
         finally:
             for gate_path, gate in reversed(gates):
                 gate.close()
-                retry_unlink(gate_path, missing_ok=True)
+                if completed:
+                    retry_unlink(gate_path, missing_ok=True)
 
     def soft_delete(self, request: SessionMutationRequest) -> Result[SoftDeleteResult]:
         return self._move_session(request, to_trash=True)

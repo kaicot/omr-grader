@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Protocol
 
 from omr_grader.application.dto import (
     CommitGenerationResult,
     CorrectionBatch,
     CorrectionSemanticView,
-    EffectiveResponseProjection,
     GenerationMutation,
     ScoreInput,
     ScoreSet,
     SnapshotRef,
 )
 from omr_grader.application.ports import CommittedSnapshotLease, InternalSessionCoordinator
-from omr_grader.domain.corrections import apply_correction_batch, project_effective_responses
+from omr_grader.domain.corrections import (
+    CorrectionState,
+    apply_correction_batch,
+    project_correction_state,
+)
 from omr_grader.domain.enums import OperationKind, SessionState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.grading import score_effective
@@ -30,7 +33,7 @@ class CommittedCorrectionSnapshot:
     state: SessionState
     responses: tuple[EffectiveResponse, ...]
     answer_key: AnswerKeySnapshot
-    projection_request: EffectiveResponseProjection
+    correction_state: CorrectionState
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,15 +90,11 @@ class CorrectionApplicationService:
             or snapshot.state not in (SessionState.GRADED, SessionState.FINALIZED)
         ):
             return _error("SESSION_STATE_INVALID", "session_id")
-        authoritative = project_effective_responses(
-            snapshot.projection_request,
-            session_id=batch.session_id,
-            expected_base_revision=batch.expected_revision,
-        )
+        authoritative = project_correction_state(snapshot.correction_state, session_id=batch.session_id)
         if isinstance(authoritative, Err):
             return authoritative
         if authoritative.value != snapshot.responses:
-            return _error("CORRECTION_PROJECTION_MISMATCH", "projection_request")
+            return _error("CORRECTION_STATE_MISMATCH", "correction_state")
         responses = apply_correction_batch(
             authoritative.value,
             batch.edits,
@@ -121,10 +120,6 @@ class CorrectionApplicationService:
         if isinstance(preview, Err):
             cleanup = self._close_error(snapshot)
             return Err(preview.errors + (() if cleanup is None else (cleanup,)))
-        projection = replace(
-            snapshot.projection_request,
-            corrections=snapshot.projection_request.corrections + batch.edits,
-        )
         mutation = GenerationMutation(
             batch.session_id,
             batch.operation_id,
@@ -132,7 +127,7 @@ class CorrectionApplicationService:
             batch.expected_revision,
             SessionState.GRADED,
             CorrectionSemanticView(batch.edits, snapshot.state),
-            projection,
+            None,
         )
         commit_result = self._coordinator.commit_generation(mutation)
         cleanup = self._close_error(snapshot)

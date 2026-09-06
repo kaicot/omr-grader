@@ -248,6 +248,7 @@ def run(
 
         freeze_support()
 
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication, QFileDialog
 
     existing = application if application is not None else QApplication.instance()
@@ -279,6 +280,7 @@ def run(
         DetailAnswerEdit,
         DetailLoadRequest,
         DetailLoadResult,
+        NormalizedCell,
         DetailPageDisplay,
         DetailPageRequest,
         DetailPreviewResult,
@@ -317,16 +319,17 @@ def run(
     from omr_grader.application.response_import_use_case import ResponseImportUseCase
     from omr_grader.application.settings_use_case import SettingsApplicationService, SettingsState
     from omr_grader.domain.enums import (
-        AnswerStatus,
         ExamTerm,
+        SessionState,
         SnapshotPurpose,
         TargetKind,
     )
     from omr_grader.domain.grading import CORRECT, INCORRECT, question_outcomes
     from omr_grader.domain.models import (
         AnswerKeySnapshot,
-        AnswerValue,
+        CellEvidence,
         CorrectionDraft,
+        EffectiveResponse,
     )
     from omr_grader.infrastructure.config_store import config_revision
     from omr_grader.infrastructure.dashboard_repository import DashboardRepository
@@ -438,6 +441,7 @@ def run(
         [SessionCreateResult | CommitGenerationResult], Result[ConnectedSessionDisplay]
     ] | None = None
     displays: dict[str, DetailPageDisplay] = {}
+    detail_answer_keys: dict[str, AnswerKeySnapshot | None] = {}
 
     if runtime_paths is not None:
         store = SessionStore(runtime_paths)
@@ -482,6 +486,17 @@ def run(
             if entry is None:
                 detail_repository.close_detail(handle.handle_id)
                 return unavailable("DASHBOARD_SESSION_NOT_FOUND")
+            answer_key: AnswerKeySnapshot | None = None
+            if entry.state in {SessionState.GRADED, SessionState.FINALIZED}:
+                correction_snapshot = detail_repository.read_correction_snapshot(session_id, revision)
+                if isinstance(correction_snapshot, Err):
+                    detail_repository.close_detail(handle.handle_id)
+                    return correction_snapshot
+                closed_snapshot = correction_snapshot.value.lease.close()
+                if isinstance(closed_snapshot, Err):
+                    detail_repository.close_detail(handle.handle_id)
+                    return closed_snapshot
+                answer_key = correction_snapshot.value.answer_key
             students = tuple(
                 DetailStudentDisplay(
                     row.work_item_id,
@@ -507,6 +522,7 @@ def run(
                 handle.handle_id,
             )
             displays[handle.handle_id] = display
+            detail_answer_keys[handle.handle_id] = answer_key
             return Ok(display)
 
         dashboard_detail = open_detail
@@ -523,6 +539,9 @@ def run(
                 or display.revision != request.revision
             ):
                 return unavailable("DETAIL_HANDLE_INVALID")
+            if request.detail_handle not in detail_answer_keys:
+                return unavailable("DETAIL_HANDLE_INVALID")
+            answer_key = detail_answer_keys[request.detail_handle]
             loaded = detail_repository.load_work_item(request.detail_handle, request.work_item_id)
             if isinstance(loaded, Err):
                 return loaded
@@ -533,19 +552,47 @@ def run(
             if student is None:
                 return unavailable("DETAIL_WORK_ITEM_NOT_FOUND")
             payload = loaded.value.payload
-            answers_value = payload.get("answers")
-            answers: tuple[DetailAnswerDisplay, ...] = ()
-            if isinstance(answers_value, list):
-                try:
-                    answers = tuple(
-                        DetailAnswerDisplay(
-                            value["question"], value.get("answer"), value.get("correct")
-                        )
-                        for value in answers_value
-                        if isinstance(value, dict)
+            try:
+                response_value = payload.get("response")
+                if not isinstance(response_value, dict):
+                    raise ValueError("detail response is invalid")
+                response = EffectiveResponse.from_dict(response_value)
+                geometry = payload.get("review_geometry", payload.get("recognition"))
+                geometry_value = geometry if isinstance(geometry, dict) else {}
+                evidence_value = geometry_value.get("evidence", [])
+                evidence = tuple(
+                    CellEvidence.from_dict(value)
+                    for value in evidence_value
+                    if isinstance(value, dict)
+                )
+                if len(evidence) != len(evidence_value):
+                    raise ValueError("invalid review geometry")
+                cells = tuple(
+                    NormalizedCell(
+                        "answer" if item.question is not None else "id",
+                        item.question,
+                        item.choice if item.question is not None else item.digit,
+                        float(item.ratio_rect.x),
+                        float(item.ratio_rect.y),
+                        float(item.ratio_rect.w),
+                        float(item.ratio_rect.h),
                     )
-                except (TypeError, ValueError, KeyError):
-                    return unavailable("DETAIL_MATERIALIZATION_INVALID")
+                    for item in evidence
+                    if item.ratio_rect is not None
+                )
+                outcomes = (
+                    question_outcomes(response, answer_key)
+                    if answer_key is not None
+                    else (None,) * len(response.answers)
+                )
+                answers = tuple(
+                    DetailAnswerDisplay(question, value, True if outcome == CORRECT else False if outcome == INCORRECT else None)
+                    for question, (value, outcome) in enumerate(
+                        zip(response.answers, outcomes, strict=True), 1
+                    )
+                )
+            except (TypeError, ValueError, KeyError):
+                return unavailable("DETAIL_MATERIALIZATION_INVALID")
             return Ok(
                 DetailLoadResult(
                     request.correlation_id,
@@ -557,6 +604,7 @@ def run(
                         student.score,
                         answers,
                         loaded.value.image,
+                        cells,
                     ),
                 )
             )
@@ -576,6 +624,7 @@ def run(
             closed = detail_repository.close_detail(request.detail_handle)
             if isinstance(closed, Ok):
                 displays.pop(request.detail_handle, None)
+                detail_answer_keys.pop(request.detail_handle, None)
                 return Ok(None, closed.warnings + warnings)
             return closed
 
@@ -856,23 +905,13 @@ def run(
                 drafts: list[CorrectionDraft] = []
                 for edit in request.edits:
                     if isinstance(edit, DetailAnswerEdit):
-                        before = (
-                            AnswerValue((), AnswerStatus.BLANK)
-                            if edit.before is None
-                            else AnswerValue((edit.before,), AnswerStatus.NORMAL)
-                        )
-                        after = (
-                            AnswerValue((), AnswerStatus.BLANK)
-                            if edit.after is None
-                            else AnswerValue((edit.after,), AnswerStatus.NORMAL)
-                        )
                         drafts.append(
                             CorrectionDraft(
                                 edit.work_item_id,
                                 TargetKind.ANSWER_CELL,
                                 edit.question,
-                                before,
-                                after,
+                                edit.before,
+                                edit.after,
                                 "detail_page",
                             )
                         )
@@ -906,9 +945,7 @@ def run(
                     return tuple(
                         DetailAnswerDisplay(
                             question,
-                            value.choices[0]
-                            if value.status is AnswerStatus.NORMAL and len(value.choices) == 1
-                            else None,
+                            value,
                             True if outcome == CORRECT else False if outcome == INCORRECT else None,
                         )
                         for question, (value, outcome) in enumerate(
@@ -1067,6 +1104,7 @@ def run(
                     new_handle.handle_id,
                 )
                 displays[new_handle.handle_id] = new_display
+                detail_answer_keys[new_handle.handle_id] = answer_key
                 return Ok(
                     DetailSaveResult(request.correlation_id or batch.idempotency_key, new_display),
                     warnings + opened.warnings,
@@ -1176,6 +1214,32 @@ def run(
     window.show()
     if splash is not None:
         splash.finish(window)
+    if isinstance(outcome, Ok):
+        from omr_grader.infrastructure.smoke_observer import observe_main_ready
+
+        def smoke_settings_command(
+            current: object, revision: int, sensitivity: int
+        ) -> SettingsSaveCommand:
+            assert isinstance(current, Settings)
+            return SettingsSaveCommand(
+                Settings(current.default_profile, sensitivity, current.use_multiprocessing),
+                revision,
+                f"smoke-settings-{uuid4().hex}",
+            )
+
+        # Queued delivery makes this observation occur after ``show`` and after
+        # ``app.exec`` has entered the event loop, never on the startup splash.
+        QTimer.singleShot(
+            0,
+            lambda: observe_main_ready(
+                outcome.value.paths.root,
+                write_enabled=controller.write_enabled,
+                settings_load=settings_load,
+                settings_save=settings_save,
+                settings_command=smoke_settings_command,
+                session_persistence_available=store is not None,
+            ),
+        )
     return app.exec()
 
 

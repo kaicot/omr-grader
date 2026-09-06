@@ -7,7 +7,7 @@ import math
 import uuid
 import zipfile
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,12 +24,14 @@ from omr_grader.application.dto import (
     ScoreInput,
     ScoreSet,
 )
-from omr_grader.domain.enums import OperationKind
+from omr_grader.domain.enums import AnswerStatus, CellStatus, OperationKind
 from omr_grader.domain.errors import Err
+from omr_grader.domain.corrections import CorrectionState, project_correction_state, project_effective_responses, validate_correction_event_history
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
     AnswerRecognition,
+    AnswerValue,
     AutomaticPage,
     CellEvidence,
     CorrectionDraft,
@@ -64,8 +66,45 @@ def _encode_review_image(
     raster: NDArray[np.uint8],
     evidence: tuple[CellEvidence, ...],
     answers: tuple[AnswerRecognition, ...],
+    effective_answers: tuple[AnswerValue, ...],
     answer_key: AnswerKeySnapshot,
 ) -> bytes:
+    if len(effective_answers) != 100:
+        raise ValueError("effective review answers are incomplete")
+    rendered_evidence = tuple(
+        cell
+        if cell.question is None
+        else replace(
+            cell,
+            selected=(
+                effective_answers[cell.question - 1].status is AnswerStatus.ALL
+                or cell.choice in effective_answers[cell.question - 1].choices
+            ),
+            status=_render_cell_status(
+                effective_answers[cell.question - 1],
+                effective_answers[cell.question - 1].status is AnswerStatus.ALL
+                or cell.choice in effective_answers[cell.question - 1].choices,
+            ),
+        )
+        for cell in evidence
+    )
+    rendered: list[AnswerRecognition] = []
+    for answer in answers:
+        value = effective_answers[answer.question - 1]
+        cells = tuple(
+            replace(
+                cell,
+                selected=(value.status is AnswerStatus.ALL or cell.choice in value.choices),
+            )
+            for cell in answer.cells
+        )
+        try:
+            rendered.append(AnswerRecognition(answer.question, value, cells))
+        except ValueError as error:
+            raise ValueError(
+                f"effective review answer is inconsistent at question {answer.question}"
+            ) from error
+    rendered_answers = tuple(rendered)
     source_height, source_width = raster.shape[:2]
     edge = min(MAX_REVIEW_LONG_EDGE, max(source_width, source_height))
     while True:
@@ -76,8 +115,8 @@ def _encode_review_image(
         )
         scored = render_scored_overlay_scaled(
             raster,
-            evidence,
-            answers,
+            rendered_evidence,
+            rendered_answers,
             answer_key.entries,
             target_size,
         )
@@ -100,6 +139,14 @@ def _encode_review_image(
             return payload
         ratio = math.sqrt(MAX_REVIEW_BYTES / len(payload)) * 0.95
         edge = max(MIN_REVIEW_LONG_EDGE, min(edge - 1, int(edge * ratio)))
+
+
+def _render_cell_status(value: AnswerValue, selected: bool) -> CellStatus:
+    if value.status is AnswerStatus.UNCERTAIN:
+        return CellStatus.UNCERTAIN
+    if value.status is AnswerStatus.MULTIPLE and selected:
+        return CellStatus.MULTIPLE
+    return CellStatus.NORMAL if selected else CellStatus.BLANK
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,19 +255,44 @@ class GenerationMaterializer:
         parent_projection = _read_parent_projection(
             request.parent_generation, request.parent_manifest
         )
-        parent_review_geometry = _read_review_geometry(request.parent_generation)
+        parent_review_geometry = _read_review_geometry(
+            request.parent_generation, request.parent_manifest
+        )
         _validate_parent_projection(request, parent, parent_projection)
         projection = _projection(request)
         _validate_projection_lineage(request, parent_projection, projection)
+        parent_correction_state = _read_parent_correction_state(
+            request, parent, parent_projection
+        )
+        correction_state = _target_correction_state(
+            request, parent_correction_state, parent, parent_projection
+        )
+        if correction_state is not None:
+            correction_state = replace(
+                correction_state,
+                snapshot_revision=request.record.revision,
+                snapshot_generation_id=request.generation_id,
+            )
         if projection is not None:
             request.token.write_json(
                 "projection_request.json",
                 _projection_envelope(request, projection),
             )
-        _materialize_correction_events(request, parent_projection, projection)
-        combined = _combined(request, parent, projection)
+        _materialize_correction_events(request, correction_state)
+        combined = _combined(request, parent, projection, correction_state)
         if combined is not None:
             request.token.write_json("semantic_inputs.json", {"combined": combined})
+            if correction_state is not None:
+                current = project_correction_state(
+                    correction_state, session_id=request.mutation.session_id
+                )
+                canonical = tuple(
+                    EffectiveResponse.from_dict(_mapping(value))
+                    for value in _array(combined, "responses")
+                )
+                if isinstance(current, Err) or current.value != canonical:
+                    raise ValueError("correction state does not reproduce canonical responses")
+                request.token.write_json("correction_state.json", correction_state.to_dict())
             compact = mutation.operation_kind in (
                 OperationKind.REGRADE,
                 OperationKind.FINALIZE,
@@ -368,9 +440,7 @@ class GenerationMaterializer:
             page = pages.get(response.work_item_id)
             image_path: str | None = None
             if page is not None:
-                if persist_recognition:
-                    if not isinstance(page, AutomaticPage):
-                        raise ValueError("recognition detail requires an automatic page")
+                if persist_recognition and isinstance(page, AutomaticPage):
                     request.token.write_json(
                         f"evidence/{response.work_item_id}.json", page.to_dict()
                     )
@@ -398,15 +468,22 @@ class GenerationMaterializer:
                             review_raster,
                             page.evidence,
                             page.answers,
+                            response.answers,
                             answer_key,
                         ),
                     )
             score, rank = scores.get(response.work_item_id, (None, None))
             detail_path = f"details/{response.work_item_id}.json"
             payload: dict[str, object] = {"response": response.to_dict()}
-            if page is not None and persist_recognition:
-                if not isinstance(page, AutomaticPage):
-                    raise ValueError("recognition detail requires an automatic page")
+            if page is not None:
+                payload["review_geometry"] = (
+                    page.to_dict()
+                    if isinstance(page, _ReviewGeometryPage)
+                    else _ReviewGeometryPage(
+                        page.page_ref.work_item_id, page.evidence, page.answers
+                    ).to_dict()
+                )
+            if page is not None and persist_recognition and isinstance(page, AutomaticPage):
                 payload["recognition"] = page.to_dict()
                 payload["evidence_path"] = f"evidence/{response.work_item_id}.json"
             request.token.write_json(
@@ -463,8 +540,6 @@ def _projection(request: GenerationMaterializationInput) -> EffectiveResponsePro
             (),
             (),
         )
-    if projection is None and request.mutation.operation_kind is OperationKind.CORRECT:
-        raise ValueError("correction generation requires a projection request")
     return projection
 
 
@@ -489,11 +564,192 @@ def _projection_envelope(
     }
 
 
+def _manifest_declares(manifest: SessionManifest, path: str) -> bool:
+    return any(item.path == path for item in manifest.files)
+
+
+def _read_parent_correction_state(
+    request: GenerationMaterializationInput,
+    parent: dict[str, object] | None,
+    projection: EffectiveResponseProjection | None,
+) -> CorrectionState | None:
+    """Read new correction authority or adapt only a verified older format.
+
+    A missing file named by the manifest is corruption, not an invitation to
+    manufacture legacy history.  The adapter is intentionally limited to the
+    compact fixed20 shape: canonical graded responses without an old projection
+    or correction-event authority.
+    """
+    path = request.parent_generation / "correction_state.json"
+    declared = _manifest_declares(request.parent_manifest, "correction_state.json")
+    if declared != path.is_file():
+        raise ValueError("declared correction state is missing or unlisted")
+    if declared:
+        try:
+            state = CorrectionState.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("committed correction state is corrupt") from error
+        if (
+            state.snapshot_revision != request.parent_manifest.revision
+            or state.snapshot_generation_id != request.parent_manifest.generation_id
+            or state.baseline_snapshot_revision > request.parent_manifest.revision
+            or (
+                state.baseline_snapshot_revision == request.parent_manifest.revision
+                and state.baseline_snapshot_generation_id != request.parent_manifest.generation_id
+            )
+            or any(
+                event.session_id != request.parent_manifest.session_id
+                or event.expected_base_revision < state.baseline_snapshot_revision
+                or event.expected_base_revision >= event.committed_revision
+                or event.committed_revision > request.parent_manifest.revision
+                for event in state.events
+            )
+        ):
+            raise ValueError("committed correction state binding is invalid")
+        return state
+    if parent is None:
+        return None
+    if projection is not None:
+        base_projection = EffectiveResponseProjection(
+            projection.automatic_pages, projection.imported_responses, ()
+        )
+        baseline = project_effective_responses(
+            base_projection,
+            session_id=request.parent_manifest.session_id,
+            expected_base_revision=request.parent_manifest.revision,
+        )
+        if isinstance(baseline, Err):
+            raise ValueError("legacy correction baseline is invalid")
+        events = _read_correction_events(request.parent_generation, request.parent_manifest)
+        if projection.corrections and not events:
+            raise ValueError("legacy correction authority events are absent")
+        state = CorrectionState(
+            1,
+            request.parent_manifest.revision,
+            request.parent_manifest.generation_id,
+            request.parent_manifest.revision,
+            request.parent_manifest.generation_id,
+            baseline.value,
+            events,
+            True,
+            "effective-baseline",
+        )
+        current = project_correction_state(state, session_id=request.parent_manifest.session_id)
+        canonical = tuple(
+            EffectiveResponse.from_dict(_mapping(value)) for value in _array(parent, "responses")
+        )
+        if isinstance(current, Err) or current.value != canonical:
+            raise ValueError("legacy correction state does not match canonical responses")
+        return state
+    events = _read_correction_events(request.parent_generation, request.parent_manifest)
+    if events:
+        raise ValueError("compact legacy correction events lack their declared baseline")
+    if request.parent_manifest.state.value not in {"graded", "finalized"}:
+        return None
+    compact_baseline = tuple(
+        EffectiveResponse.from_dict(_mapping(value)) for value in _array(parent, "responses")
+    )
+    return CorrectionState(
+        1,
+        request.parent_manifest.revision,
+        request.parent_manifest.generation_id,
+        request.parent_manifest.revision,
+        request.parent_manifest.generation_id,
+        compact_baseline,
+        (),
+        False,
+        "legacy-fixed20",
+    )
+
+
+def _target_correction_state(
+    request: GenerationMaterializationInput,
+    parent: CorrectionState | None,
+    combined_parent: dict[str, object] | None,
+    parent_projection: EffectiveResponseProjection | None,
+) -> CorrectionState | None:
+    operation = request.mutation.operation_kind
+    if operation is OperationKind.RECOGNIZE:
+        return None
+    state = parent
+    if state is None and operation in (OperationKind.REGRADE, OperationKind.FINALIZE):
+        # A newly graded recognised generation receives the first explicit
+        # effective baseline.  If no projection existed, the compact adapter
+        # above would already have supplied a fixed20 baseline.
+        if combined_parent is None or parent_projection is None:
+            raise ValueError("grading generation lacks correction baseline authority")
+        state = _read_parent_correction_state(request, combined_parent, parent_projection)
+    if state is None:
+        return None
+    if operation is not OperationKind.CORRECT:
+        return state
+    semantic = request.mutation.semantic_inputs
+    if not isinstance(semantic, CorrectionSemanticView):
+        raise ValueError("correction mutation lacks typed edits")
+    events = state.events + tuple(
+        CorrectionEvent(
+            1,
+            str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{request.mutation.session_id}:{request.mutation.operation_id}:{position}",
+                )
+            ),
+            request.mutation.session_id,
+            draft.work_item_id,
+            draft.target_kind,
+            draft.target_key,
+            request.parent_manifest.revision,
+            draft.before,
+            draft.after,
+            draft.reason,
+            "local",
+            request.record.updated_at,
+            request.record.revision,
+            f"{request.mutation.operation_id}:{position}",
+        )
+        for position, draft in enumerate(semantic.corrections)
+    )
+    drafts = tuple(
+        CorrectionDraft(
+            event.work_item_id,
+            event.target_kind,
+            event.target_key,
+            event.before,
+            event.after,
+            event.reason,
+        )
+        for event in events
+    )
+    validated = validate_correction_event_history(
+        events,
+        drafts,
+        session_id=request.mutation.session_id,
+        expected_new_base_revision=request.parent_manifest.revision,
+    )
+    if isinstance(validated, Err):
+        raise ValueError("correction state event authority is invalid")
+    return CorrectionState(
+        state.schema_version,
+        state.snapshot_revision,
+        state.snapshot_generation_id,
+        state.baseline_snapshot_revision,
+        state.baseline_snapshot_generation_id,
+        state.baseline_responses,
+        events,
+        state.history_complete,
+        state.source_kind,
+    )
+
+
 def _read_parent_projection(
     generation: Path, manifest: SessionManifest
 ) -> EffectiveResponseProjection | None:
     path = generation / "projection_request.json"
-    if not path.is_file():
+    declared = _manifest_declares(manifest, "projection_request.json")
+    if declared != path.is_file():
+        raise ValueError("declared projection inputs are missing or unlisted")
+    if not declared:
         return None
     try:
         document = _mapping(json.loads(path.read_text(encoding="utf-8")))
@@ -559,9 +815,14 @@ def _read_parent_projection(
         raise ValueError("committed projection inputs are corrupt") from error
 
 
-def _read_review_geometry(generation: Path) -> tuple[_ReviewGeometryPage, ...]:
+def _read_review_geometry(
+    generation: Path, manifest: SessionManifest
+) -> tuple[_ReviewGeometryPage, ...]:
     path = generation / "review_geometry.json"
-    if not path.is_file():
+    declared = _manifest_declares(manifest, "review_geometry.json")
+    if declared != path.is_file():
+        raise ValueError("declared review geometry is missing or unlisted")
+    if not declared:
         return ()
     try:
         document = _mapping(json.loads(path.read_text(encoding="utf-8")))
@@ -620,8 +881,13 @@ def _validate_projection_lineage(
         return
     if operation in (OperationKind.CORRECT, OperationKind.REGRADE, OperationKind.FINALIZE):
         if operation is OperationKind.CORRECT:
-            if parent is None or projection is None:
-                raise ValueError("correction generation requires a complete parent projection")
+            # New correction-state generations deliberately avoid recreating a
+            # discarded AutomaticPage projection.  Retained legacy projections,
+            # when supplied, still receive their old lineage validation.
+            if projection is None:
+                return
+            if parent is None:
+                raise ValueError("correction projection lacks parent authority")
             semantic = request.mutation.semantic_inputs
             prefix = len(parent.corrections)
             delta = projection.corrections[prefix:]
@@ -638,9 +904,14 @@ def _validate_projection_lineage(
             raise ValueError("lifecycle projection must exactly preserve parent authority")
 
 
-def _read_correction_events(generation: Path) -> tuple[CorrectionEvent, ...]:
+def _read_correction_events(
+    generation: Path, manifest: SessionManifest
+) -> tuple[CorrectionEvent, ...]:
     path = generation / "correction_events.json"
-    if not path.is_file():
+    declared = _manifest_declares(manifest, "correction_events.json")
+    if declared != path.is_file():
+        raise ValueError("declared correction events are missing or unlisted")
+    if not declared:
         return ()
     try:
         document = _mapping(json.loads(path.read_text(encoding="utf-8")))
@@ -655,68 +926,27 @@ def _read_correction_events(generation: Path) -> tuple[CorrectionEvent, ...]:
 
 def _materialize_correction_events(
     request: GenerationMaterializationInput,
-    parent_projection: EffectiveResponseProjection | None,
-    projection: EffectiveResponseProjection | None,
+    state: CorrectionState | None,
 ) -> None:
-    parent_events = _read_correction_events(request.parent_generation)
-    parent_drafts = parent_projection.corrections if parent_projection is not None else ()
-    from omr_grader.domain.corrections import validate_correction_event_history
-
-    validated = validate_correction_event_history(
-        parent_events, parent_drafts, session_id=request.mutation.session_id
-    )
-    if isinstance(validated, Err):
-        raise ValueError("parent correction event authority is invalid")
-    if any(event.committed_revision > request.parent_manifest.revision for event in parent_events):
-        raise ValueError("parent correction event exceeds authoritative revision")
-    if request.mutation.operation_kind is not OperationKind.CORRECT:
+    if state is None or not state.events:
         return
-    if parent_projection is None:
-        raise ValueError("lifecycle generation requires parent projection authority")
-    events = parent_events
-    drafts = parent_drafts
-    expected_new_base_revision: int | None = None
-    if request.mutation.operation_kind is OperationKind.CORRECT:
-        if projection is None:
-            raise ValueError("correction generation requires projection authority")
-        drafts = projection.corrections
-        delta = drafts[len(parent_drafts) :]
-        events = parent_events + tuple(
-            CorrectionEvent(
-                1,
-                str(
-                    uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"{request.mutation.session_id}:{request.mutation.operation_id}:{position}",
-                    )
-                ),
-                request.mutation.session_id,
-                draft.work_item_id,
-                draft.target_kind,
-                draft.target_key,
-                request.parent_manifest.revision,
-                draft.before,
-                draft.after,
-                draft.reason,
-                "local",
-                request.record.updated_at,
-                request.record.revision,
-                f"{request.mutation.operation_id}:{position}",
-            )
-            for position, draft in enumerate(delta)
+    drafts = tuple(
+        CorrectionDraft(
+            event.work_item_id,
+            event.target_kind,
+            event.target_key,
+            event.before,
+            event.after,
+            event.reason,
         )
-        expected_new_base_revision = request.parent_manifest.revision
-    validated = validate_correction_event_history(
-        events,
-        drafts,
-        session_id=request.mutation.session_id,
-        expected_new_base_revision=expected_new_base_revision,
+        for event in state.events
     )
+    validated = validate_correction_event_history(state.events, drafts, session_id=request.mutation.session_id)
     if isinstance(validated, Err):
         raise ValueError("correction event authority does not match target projection")
     request.token.write_json(
         "correction_events.json",
-        {"schema_version": 1, "events": [event.to_dict() for event in events]},
+        {"schema_version": 1, "events": [event.to_dict() for event in state.events]},
     )
 
 
@@ -724,13 +954,21 @@ def _combined(
     request: GenerationMaterializationInput,
     parent: dict[str, object] | None,
     projection: EffectiveResponseProjection | None,
+    correction_state: CorrectionState | None,
 ) -> dict[str, object] | None:
     semantic = request.mutation.semantic_inputs
     if request.mutation.operation_kind is OperationKind.FINALIZE and (
         parent is None or parent.get("scores") is None
     ):
         raise ValueError("score-bearing lifecycle generation requires canonical parent scores")
-    if projection is None:
+    if request.mutation.operation_kind is OperationKind.CORRECT:
+        if correction_state is None:
+            raise ValueError("correction generation lacks correction state authority")
+        corrected = project_correction_state(correction_state, session_id=request.mutation.session_id)
+        if isinstance(corrected, Err):
+            raise ValueError("correction state cannot reproduce effective responses")
+        effective_responses = corrected.value
+    elif projection is None:
         if parent is None:
             return None
         effective_responses = tuple(
