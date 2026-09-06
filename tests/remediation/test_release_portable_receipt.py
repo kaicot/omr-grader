@@ -195,7 +195,7 @@ def test_source_input_hash_change_is_rejected_when_provenance_is_requested(tmp_p
     ):
         target = repository / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(relative, encoding="utf-8")
+        target.write_text('version = "2.1.0"' if relative == "pyproject.toml" else relative, encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repository)], check=True)
     subprocess.run(["git", "-C", str(repository), "config", "user.email", "test@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(repository), "config", "user.name", "test"], check=True)
