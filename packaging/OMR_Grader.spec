@@ -6,7 +6,7 @@ from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-PROJECT_ROOT = Path(SPECPATH).resolve().parent.parent
+PROJECT_ROOT = Path(SPECPATH).resolve().parent
 SRC_ROOT = PROJECT_ROOT / "src"
 
 datas = collect_data_files("omr_grader") + collect_data_files("tzdata")
