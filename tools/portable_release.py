@@ -432,18 +432,29 @@ def _verify_archive(archive_path: Path, release: Path, receipt_bytes: bytes, rec
         names = _archive_names(archive)
         if set(names) != expected:
             _fail("ZIP inventory differs from release receipt")
-        inside_receipt = archive.read(f"{prefix}/release-receipt.json")
+        receipt_info = archive.getinfo(f"{prefix}/release-receipt.json")
+        if receipt_info.file_size != len(receipt_bytes):
+            _fail("ZIP receipt size differs from external receipt")
+        with archive.open(receipt_info) as receipt_stream:
+            inside_receipt = receipt_stream.read(len(receipt_bytes) + 1)
         if inside_receipt != receipt_bytes:
             _fail("ZIP receipt bytes differ from external receipt")
         for record in receipt["payload_files"]:
             name = f"{prefix}/{PAYLOAD_ROOT}/{record['path']}"
             info = archive.getinfo(name)
-            data = archive.read(info)
-            if (
-                info.file_size != record["size"]
-                or (info.CRC & 0xFFFFFFFF) != (binascii.crc32(data) & 0xFFFFFFFF)
-                or sha256_bytes(data) != record["sha256"]
-            ):
+            if info.file_size != record["size"]:
+                _fail(f"ZIP payload size differs: {record['path']}")
+            digest = hashlib.sha256()
+            crc = 0
+            total = 0
+            with archive.open(info) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    total += len(chunk)
+                    if total > record["size"]:
+                        _fail(f"ZIP payload exceeds declared size: {record['path']}")
+                    digest.update(chunk)
+                    crc = binascii.crc32(chunk, crc)
+            if total != record["size"] or (info.CRC & 0xFFFFFFFF) != (crc & 0xFFFFFFFF) or digest.hexdigest() != record["sha256"]:
                 _fail(f"ZIP payload bytes differ: {record['path']}")
     return archive_hash
 
