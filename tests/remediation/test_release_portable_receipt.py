@@ -92,7 +92,7 @@ def test_extra_unrecorded_dll_is_rejected(tmp_path: Path) -> None:
     _expect_rejected(release, archive, "payload inventory differs")
 
 
-@pytest.mark.parametrize("mutation, expected", [("zip-exe", "ZIP payload bytes differ"), ("zip-receipt", "ZIP receipt bytes differ")])
+@pytest.mark.parametrize("mutation, expected", [("zip-exe", "ZIP payload (size|bytes) differs"), ("zip-receipt", "ZIP receipt (size|bytes) differs")])
 def test_zip_bytes_and_internal_receipt_are_not_trusted_by_name(
     tmp_path: Path, mutation: str, expected: str
 ) -> None:
