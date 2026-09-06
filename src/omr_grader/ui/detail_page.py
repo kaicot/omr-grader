@@ -28,6 +28,8 @@ from omr_grader.application.detail_presenter import (
     DetailStudentDisplay,
     NormalizedCell,
 )
+from omr_grader.domain.enums import AnswerStatus
+from omr_grader.domain.models import AnswerValue
 from omr_grader.ui.detail_model import DetailTableModel
 from omr_grader.ui.omr_graphics_view import OmrGraphicsView
 
@@ -54,7 +56,7 @@ class DetailPage(QWidget):
         super().__init__(parent)
         self._display: DetailPageDisplay | None = None
         self._selected: DetailStudentDisplay | None = None
-        self._answer_original: dict[tuple[str, int], int | None] = {}
+        self._answer_original: dict[tuple[str, int], AnswerValue] = {}
         self._edits: dict[tuple[str, str, int], DetailEdit] = {}
         self._lazy_authorized_work_items: set[str] = set()
         self._load_correlations: dict[str, str] = {}
@@ -363,7 +365,17 @@ class DetailPage(QWidget):
             before = self._answer_original[baseline_key]
             existing = self._edits.get(("answer", work_item_id, question))
             current = before if existing is None else existing.after
-            after = None if current == cell.option else cell.option
+            choices = tuple(choice for choice in current.choices if choice != cell.option)
+            if cell.option not in current.choices:
+                choices = tuple(sorted((*current.choices, cell.option)))
+            after = AnswerValue(
+                choices,
+                AnswerStatus.BLANK
+                if not choices
+                else AnswerStatus.NORMAL
+                if len(choices) == 1
+                else AnswerStatus.MULTIPLE,
+            )
             key = ("answer", work_item_id, question)
             if after == before:
                 self._edits.pop(key, None)

@@ -1000,6 +1000,13 @@ class AppController(QObject):
             return
         code = _error_code(error)
         context = _error_context(error)
+        if code == "ROOT_WRITE_DENIED" or getattr(error, "cause_type", None) in {
+            "PermissionError",
+            "UnauthorizedAccessException",
+        }:
+            diagnostic = _error_text(error)
+            self.set_write_authority(False)
+            self.main_window.show_diagnostic(diagnostic)
         _LOGGER.error(
             f"operation_failed kind={self._active_kind or 'unknown'} "
             f"operation_id={self._active_operation_id or 'none'} code={code} "

@@ -27,6 +27,108 @@ _DIGITS = re.compile(r"^[0-9]{1,8}$")
 
 
 @dataclass(frozen=True, slots=True)
+class CorrectionState:
+    """Immutable effective baseline plus the correction history we actually know.
+
+    Compact generations intentionally do not retain an ``AutomaticPage`` just so a
+    later correction can be made.  This state is the durable authority for that
+    case.  ``history_complete`` is deliberately explicit: a fixed20 generation
+    may be editable from its verified current responses, but it must never claim
+    to know correction events which were not retained by that older format.
+    """
+
+    schema_version: int
+    snapshot_revision: int
+    snapshot_generation_id: str
+    baseline_snapshot_revision: int
+    baseline_snapshot_generation_id: str
+    baseline_responses: tuple[EffectiveResponse, ...]
+    events: tuple[CorrectionEvent, ...]
+    history_complete: bool
+    source_kind: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("unsupported correction state schema")
+        if type(self.snapshot_revision) is not int or self.snapshot_revision < 1:
+            raise ValueError("correction snapshot revision is invalid")
+        if not isinstance(self.snapshot_generation_id, str) or not self.snapshot_generation_id:
+            raise ValueError("correction snapshot generation ID is invalid")
+        if type(self.baseline_snapshot_revision) is not int or self.baseline_snapshot_revision < 1:
+            raise ValueError("correction baseline revision is invalid")
+        if not isinstance(self.baseline_snapshot_generation_id, str) or not self.baseline_snapshot_generation_id:
+            raise ValueError("correction baseline generation ID is invalid")
+        if not self.baseline_responses or not all(
+            isinstance(item, EffectiveResponse) for item in self.baseline_responses
+        ):
+            raise ValueError("correction baseline responses are invalid")
+        if len({item.work_item_id for item in self.baseline_responses}) != len(
+            self.baseline_responses
+        ):
+            raise ValueError("correction baseline work items are duplicated")
+        if not all(isinstance(item, CorrectionEvent) for item in self.events):
+            raise TypeError("correction history must contain committed events")
+        if type(self.history_complete) is not bool:
+            raise TypeError("correction history completeness must be bool")
+        if self.source_kind not in {"effective-baseline", "legacy-fixed20"}:
+            raise ValueError("correction state source kind is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "snapshot": {
+                "revision": self.snapshot_revision,
+                "generation_id": self.snapshot_generation_id,
+            },
+            "baseline_snapshot": {
+                "revision": self.baseline_snapshot_revision,
+                "generation_id": self.baseline_snapshot_generation_id,
+            },
+            "baseline_responses": [item.to_dict() for item in self.baseline_responses],
+            "events": [item.to_dict() for item in self.events],
+            "history_complete": self.history_complete,
+            "source_kind": self.source_kind,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> CorrectionState:
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version",
+            "snapshot",
+            "baseline_snapshot",
+            "baseline_responses",
+            "events",
+            "history_complete",
+            "source_kind",
+        }:
+            raise ValueError("correction state fields are invalid")
+        snapshot = value["snapshot"]
+        baseline_snapshot = value["baseline_snapshot"]
+        responses = value["baseline_responses"]
+        events = value["events"]
+        if (
+            not isinstance(snapshot, dict)
+            or set(snapshot) != {"revision", "generation_id"}
+            or not isinstance(baseline_snapshot, dict)
+            or set(baseline_snapshot) != {"revision", "generation_id"}
+            or not isinstance(responses, list)
+            or not isinstance(events, list)
+        ):
+            raise ValueError("correction state payload is invalid")
+        return cls(
+            value["schema_version"],
+            snapshot["revision"],
+            snapshot["generation_id"],
+            baseline_snapshot["revision"],
+            baseline_snapshot["generation_id"],
+            tuple(EffectiveResponse.from_dict(item) for item in responses),
+            tuple(CorrectionEvent.from_dict(item) for item in events),
+            value["history_complete"],
+            value["source_kind"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _ResponseState:
     """Internal projection retaining ID-cell detail absent from EffectiveResponse."""
 
@@ -335,6 +437,45 @@ def project_effective_responses(
     return Ok(tuple(state.response for state in applied.value))
 
 
+def project_correction_state(
+    state: CorrectionState, *, session_id: str
+) -> Result[tuple[EffectiveResponse, ...]]:
+    """Replay the retained correction history over its immutable effective baseline."""
+    if not isinstance(state, CorrectionState):
+        return _error("INVALID_CORRECTION_STATE", "correction state is invalid", "correction_state")
+    if any(event.session_id != session_id for event in state.events):
+        return _error(
+            "CORRECTION_SESSION_MISMATCH",
+            "committed correction session does not match the authoritative session",
+            "session_id",
+        )
+    drafts = tuple(
+        CorrectionDraft(
+            event.work_item_id,
+            event.target_kind,
+            event.target_key,
+            event.before,
+            event.after,
+            event.reason,
+        )
+        for event in state.events
+    )
+    authority = validate_correction_event_history(
+        state.events, drafts, session_id=session_id
+    )
+    if isinstance(authority, Err):
+        return authority
+    # Replay drafts after validating the immutable event authority.  Their commit
+    # revisions are historical and therefore must not be compared with the
+    # revision of the snapshot currently being opened.
+    return apply_correction_batch(
+        state.baseline_responses,
+        drafts,
+        session_id=session_id,
+        expected_base_revision=state.baseline_snapshot_revision,
+    )
+
+
 def _from_automatic(page: AutomaticPage) -> _ResponseState:
     values = tuple(
         IdCorrectionValue(cell.selected_digit, cell.status) for cell in page.student_id.cells
@@ -617,7 +758,9 @@ def _valid_id_counts(responses: Sequence[EffectiveResponse]) -> dict[str, int]:
 
 
 __all__ = [
+    "CorrectionState",
     "apply_correction_batch",
+    "project_correction_state",
     "project_effective_responses",
     "validate_correction_batch",
     "validate_correction_event_history",

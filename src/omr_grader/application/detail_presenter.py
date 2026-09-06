@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from omr_grader.domain.models import AnswerValue
+
 
 def _text(value: object, name: str) -> None:
     if not isinstance(value, str) or not value.strip():
@@ -47,14 +49,14 @@ class NormalizedCell:
 @dataclass(frozen=True, slots=True)
 class DetailAnswerDisplay:
     question: int
-    answer: int | None
+    answer: AnswerValue
     correct: bool | None
 
     def __post_init__(self) -> None:
         if type(self.question) is not int or self.question < 1:
             raise ValueError("question must be positive int")
-        if self.answer is not None and (type(self.answer) is not int or not 1 <= self.answer <= 5):
-            raise ValueError("answer must be 1 through 5 or None")
+        if not isinstance(self.answer, AnswerValue):
+            raise TypeError("answer must be an AnswerValue")
         if self.correct is not None and type(self.correct) is not bool:
             raise TypeError("correct must be bool or None")
 
@@ -149,16 +151,15 @@ class DetailPageDisplay:
 class DetailAnswerEdit:
     work_item_id: str
     question: int
-    before: int | None
-    after: int | None
+    before: AnswerValue
+    after: AnswerValue
 
     def __post_init__(self) -> None:
         _text(self.work_item_id, "work_item_id")
         if type(self.question) is not int or self.question < 1:
             raise ValueError("question must be positive int")
-        for value in (self.before, self.after):
-            if value is not None and (type(value) is not int or not 1 <= value <= 5):
-                raise ValueError("answer values must be 1 through 5 or None")
+        if not isinstance(self.before, AnswerValue) or not isinstance(self.after, AnswerValue):
+            raise TypeError("answer values must be AnswerValue")
 
 
 DetailEdit = DetailAnswerEdit

@@ -721,6 +721,7 @@ def _preserved_artifact(path: str, operation: OperationKind) -> bool:
         path.startswith("images/")
         or path.startswith("sources/")
         or path.startswith("01_ocr_")
+        or path in {"correction_state.json", "correction_events.json", "review_geometry.json"}
     ):
         return True
     return operation is OperationKind.FINALIZE and path.startswith(
@@ -1784,24 +1785,25 @@ class SessionStore:
                     ),
                 )
             try:
-                retained = atomic_write_json(
-                    session / "RETENTION.json",
-                    {
-                        "schema_version": 1,
-                        "session_id": manifest.session_id,
-                        "boundary_revision": manifest.revision,
-                        "boundary_generation_id": manifest.generation_id,
-                        "boundary_manifest_sha256": pointer.manifest_sha256,
-                        "omitted_parent": {
-                            "revision": manifest.parent_revision,
-                            "generation_id": manifest.parent_generation_id,
-                            "manifest_sha256": manifest.parent_manifest_sha256,
+                if parent.parent_revision is not None:
+                    retained = atomic_write_json(
+                        session / "RETENTION.json",
+                        {
+                            "schema_version": 1,
+                            "session_id": parent.session_id,
+                            "boundary_revision": parent.revision,
+                            "boundary_generation_id": parent.generation_id,
+                            "boundary_manifest_sha256": current.manifest_sha256,
+                            "omitted_parent": {
+                                "revision": parent.parent_revision,
+                                "generation_id": parent.parent_generation_id,
+                                "manifest_sha256": parent.parent_manifest_sha256,
+                            },
+                            "retained_at": _utc(),
                         },
-                        "retained_at": _utc(),
-                    },
-                )
-                if isinstance(retained, Err):
-                    raise OSError("retention boundary를 기록하지 못했습니다.")
+                    )
+                    if isinstance(retained, Err):
+                        raise OSError("retention boundary를 기록하지 못했습니다.")
                 self._barrier("before_generation_prune")
                 self._prune_superseded_generations(session, final)
             except OSError as exc:
@@ -1815,6 +1817,8 @@ class SessionStore:
                     ),
                 )
             return Ok(result)
+        except PermissionError as exc:
+            return _error("ROOT_WRITE_DENIED", str(exc))
         except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
             return _error("SESSION_COMMIT_FAILED", str(exc))
         finally:
@@ -1837,11 +1841,18 @@ class SessionStore:
             writer.value.close()
 
     def _prune_superseded_generations(self, session: Path, current: Path) -> None:
+        # Retain the direct parent as the authenticated boundary.  Older
+        # ancestors may be removed only after RETENTION.json binds that exact
+        # parent to the omitted predecessor.
+        current_manifest, _ = self._manifest(current)
+        parent_id = current_manifest.parent_generation_id
         generations = session / "generations"
         candidates = tuple(
             path
             for path in sorted(generations.iterdir(), key=lambda item: item.name.encode("utf-8"))
-            if path.is_dir() and path != current
+            if path.is_dir()
+            and path != current
+            and path.name != f"g{current_manifest.parent_revision:08d}_{parent_id}"
         )
         gates: list[tuple[Path, GateHandle]] = []
         try:

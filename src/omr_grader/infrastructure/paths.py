@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.infrastructure.windows_access import effective_write_access
 
 _CONFIG_NAME = "config.json"
 _PROFILES_NAME = "Profiles"
@@ -211,8 +212,5 @@ class ManagedPaths:
 
 
 def is_path_writable(path: Path) -> bool:
-    """Inspect access only; this deliberately never creates a probe file."""
-    try:
-        return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
-    except OSError:
-        return False
+    """Check the effective token without creating a normal-startup probe file."""
+    return effective_write_access(path) is True

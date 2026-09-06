@@ -41,10 +41,8 @@ def _has_external_relationship(archive: ZipFile, member: ZipInfo) -> Result[bool
     return validate_opc_relationships(payload)
 
 
-def _package(path: str) -> Result[tuple[bytes, str]]:
-    try:
-        data = Path(path).read_bytes()
-    except OSError:
+def _package_bytes(data: bytes) -> Result[tuple[bytes, str]]:
+    if type(data) is not bytes:
         return Err((_error("XLSX_READ_FAILED", "path"),))
     if not data or len(data) > MAX_PACKAGE_BYTES:
         return Err((_error("XLSX_PACKAGE_QUOTA", "path"),))
@@ -93,6 +91,13 @@ def _package(path: str) -> Result[tuple[bytes, str]]:
     return Ok((data, sha256(data).hexdigest()))
 
 
+def _package(path: str) -> Result[tuple[bytes, str]]:
+    try:
+        return _package_bytes(Path(path).read_bytes())
+    except OSError:
+        return Err((_error("XLSX_READ_FAILED", "path"),))
+
+
 def _canonical_points(value: object, field: str) -> Result[str]:
     if type(value) not in (int, float) or isinstance(value, bool):
         return Err((_error("XLSX_CELL_TYPE", field),))
@@ -133,7 +138,20 @@ def _answer(value: str, field: str) -> Result[tuple[AnswerValue, KeyQuestionStat
 
 def import_answer_key(path: str, sheet_name: str) -> Result[AnswerKeySnapshot]:
     """Validate an answer key without executing formulas or trusting workbook metadata."""
-    package = _package(path)
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return Err((_error("XLSX_READ_FAILED", "path"),))
+    return import_answer_key_bytes(data, Path(path).name, sheet_name)
+
+
+def import_answer_key_bytes(
+    data: bytes, source_name: str, sheet_name: str
+) -> Result[AnswerKeySnapshot]:
+    """Parse one pinned workbook byte snapshot used for both scoring and preservation."""
+    if not isinstance(source_name, str) or not source_name:
+        return Err((_error("XLSX_READ_FAILED", "path"),))
+    package = _package_bytes(data)
     if isinstance(package, Err):
         return package
     data, digest = package.value
@@ -207,7 +225,7 @@ def import_answer_key(path: str, sheet_name: str) -> Result[AnswerKeySnapshot]:
         AnswerKeySnapshot(
             SCHEMA_VERSION,
             AnswerKeySnapshotKind.WORKBOOK,
-            Path(path).name,
+            source_name,
             digest,
             sheet_name,
             NORMALIZATION_VERSION,
