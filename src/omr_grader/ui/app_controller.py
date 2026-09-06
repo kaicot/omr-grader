@@ -59,6 +59,7 @@ from omr_grader.application.ports import (
 from omr_grader.application.settings_use_case import SettingsState
 from omr_grader.domain.enums import ExamTerm
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
 from omr_grader.infrastructure.profile_store import ProfileCatalogItem
 from omr_grader.resources.messages import MESSAGE_CATALOG, get_message
@@ -154,6 +155,32 @@ class ServicePorts:
     detail_close: Callable[[DetailPageRequest], Result[None]] | None = None
     settings_load: Callable[[], Result[SettingsState]] | None = None
     settings_save: Callable[[SettingsSaveCommand], Result[SettingsSaveResult]] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DashboardWorkerValue:
+    """Dashboard entries and diagnostic snapshots safe for a queued Qt signal."""
+
+    entries: tuple[DashboardIndexEntry, ...]
+    warnings: tuple[WorkerError, ...]
+
+
+def _dashboard_worker_value(result: object) -> object:
+    """Adapt only dashboard results, before they leave their worker thread."""
+    listing = result.value if isinstance(result, Ok) else result
+    if not isinstance(listing, DashboardListing):
+        return result
+    warnings = tuple(WorkerError.from_error_info(item) for item in listing.warnings)
+    outer = (
+        tuple(WorkerError.from_error_info(item) for item in result.warnings)
+        if isinstance(result, Ok)
+        else ()
+    )
+    # Repository results also expose the same diagnostics on Ok.warnings.
+    # Preserve distinct outer warnings without presenting that duplicate twice.
+    return _DashboardWorkerValue(
+        listing.entries, warnings + tuple(item for item in outer if item not in warnings)
+    )
 
 
 def _error_text(error: object) -> str:
@@ -303,7 +330,7 @@ class AppController(QObject):
             self.settings_page.set_settings_unavailable(_error_text(error))
 
     def _finish_dashboard_load(self, result: object) -> None:
-        if not isinstance(result, DashboardListing):
+        if not isinstance(result, DashboardListing | _DashboardWorkerValue):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
         self.dashboard_page.set_entries(result.entries)
@@ -376,9 +403,10 @@ class AppController(QObject):
         self.main_window.show_detail()
 
     def _show_trash(self, result: object) -> None:
-        if not isinstance(result, DashboardListing):
+        if not isinstance(result, DashboardListing | _DashboardWorkerValue):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
+        self._present_warnings(result.warnings)
         dialog = self.dashboard_page.create_trash_dialog(result.entries)
         dialog.exec()
 
@@ -403,7 +431,7 @@ class AppController(QObject):
         self._start(
             page,
             operation_id or uuid4().hex,
-            lambda _cancelled, _progress: operation(),
+            lambda _cancelled, _progress: _dashboard_worker_value(operation()),
             kind=kind,
         )
 
@@ -1339,20 +1367,25 @@ class AppController(QObject):
     def _finish_result_navigation(
         self, result: object, request: GradingPageRequest
     ) -> None:
-        if not isinstance(result, DashboardListing):
+        if not isinstance(result, DashboardListing | _DashboardWorkerValue):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
         self.dashboard_page.set_entries(result.entries)
-        self._present_warnings(result.warnings)
         navigation = self.services.result_navigation
         if navigation is not None:
             navigation(request)
+        self._present_warnings(result.warnings)
 
     def _reset_scan(self) -> None:
         self.main_window.set_status("입력 항목을 초기화했습니다.")
 
-    def _present_warnings(self, warnings: tuple[ErrorInfo, ...]) -> None:
+    def _present_warnings(self, warnings: tuple[ErrorInfo | WorkerError, ...]) -> None:
         for warning in warnings:
+            _LOGGER.warning(
+                f"operation_warning kind={self._active_kind or 'synchronous'} "
+                f"code={warning.code} context={_error_context(warning)} "
+                f"cause={warning.cause_type}"
+            )
             self.main_window.show_diagnostic(_error_text(warning))
 
     @staticmethod
