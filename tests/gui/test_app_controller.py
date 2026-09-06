@@ -37,8 +37,9 @@ from omr_grader.application.grading_presenter import (
 )
 from omr_grader.application.settings_use_case import SettingsState
 from omr_grader.bootstrap import _canonical_response_workbook_selection
-from omr_grader.domain.enums import IndexState
+from omr_grader.domain.enums import AnswerStatus, IndexState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok
+from omr_grader.domain.models import AnswerValue
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
 from omr_grader.infrastructure.logging_setup import configure_logging
 from omr_grader.ui.app_controller import AppController, FreshResponseIntent, ServicePorts
@@ -191,7 +192,7 @@ def test_detail_save_accepts_advanced_revision_with_replaced_handle(qtbot) -> No
         "홍길동",
         1,
         "0",
-        (DetailAnswerDisplay(1, 1, False),),
+        (DetailAnswerDisplay(1, AnswerValue((1,), AnswerStatus.NORMAL), False),),
         cells=(NormalizedCell("answer", 1, 2, 0.1, 0.1, 0.1, 0.1),),
         id_digits=(0, 0, 0, 0, 0, 0, 0, 1),
     )
@@ -231,7 +232,12 @@ def test_detail_cancel_clears_pending_sidebar_navigation(qtbot, monkeypatch) -> 
     controller = AppController(window, scan, grading, ServicePorts(), write_enabled=True)
     window.detail_page.set_display(display)
     window.show_detail()
-    window.detail_page._edits[("answer", "work-item", 1)] = DetailAnswerEdit("work-item", 1, 1, 2)
+    window.detail_page._edits[("answer", "work-item", 1)] = DetailAnswerEdit(
+        "work-item",
+        1,
+        AnswerValue((1,), AnswerStatus.NORMAL),
+        AnswerValue((2,), AnswerStatus.NORMAL),
+    )
     monkeypatch.setattr(window, "confirm_detail_exit", lambda: "cancel")
 
     controller._detail_navigation_requested(2)
@@ -248,7 +254,14 @@ def test_malformed_detail_save_result_preserves_edits_and_allows_retry(qtbot) ->
         "session",
         1,
         "save",
-        (DetailAnswerEdit("work-item", 1, 1, 2),),
+        (
+            DetailAnswerEdit(
+                "work-item",
+                1,
+                AnswerValue((1,), AnswerStatus.NORMAL),
+                AnswerValue((2,), AnswerStatus.NORMAL),
+            ),
+        ),
         "handle",
         "correlation",
     )
@@ -478,7 +491,7 @@ def test_fresh_response_busy_blocks_double_submit(qtbot) -> None:
     controller.close()
 
 
-def test_other_response_import_does_not_change_answer_key_and_retries(qtbot):
+def test_other_response_import_write_denial_preserves_key_and_revokes_authority(qtbot):
     window, scan, grading = _window(qtbot)
     request = _grading_request()
     selections: list[tuple[str, str]] = []
@@ -521,18 +534,15 @@ def test_other_response_import_does_not_change_answer_key_and_retries(qtbot):
     qtbot.waitUntil(lambda: "쓸 권한" in grading.error_label.text())
     qtbot.waitUntil(lambda: controller._active_bridge is None)
     assert grading.key_label.text() == "선택한 정답표: answers.xlsx (시트: Sheet1)"
+    assert not controller.write_enabled
 
     controller._pick_other_response(request)
-    qtbot.waitUntil(lambda: "다른 시험" in grading.session_label.text())
-    qtbot.waitUntil(lambda: controller._active_bridge is None)
+    qtbot.waitUntil(lambda: "쓸 권한" in grading.error_label.text())
     assert grading.result_button.isHidden()
     assert grading._operation_id is not None
 
-    assert selections == [
-        ("other-responses.xlsx", "Responses"),
-        ("other-responses.xlsx", "Responses"),
-    ]
-    assert window.session_name_label.text() == "다른 시험"
+    assert selections == [("other-responses.xlsx", "Responses")]
+    assert window.session_name_label.text() == "진행 중인 세션이 없습니다"
     controller.close()
 
 

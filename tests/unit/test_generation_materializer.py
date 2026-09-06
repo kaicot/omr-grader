@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from omr_grader.application.dto import (
@@ -12,10 +13,19 @@ from omr_grader.application.dto import (
     GenerationMutation,
 )
 from omr_grader.domain.corrections import validate_correction_event_history
-from omr_grader.domain.enums import AnswerStatus, OperationKind, SessionState, TargetKind
+from omr_grader.domain.enums import AnswerStatus, CellStatus, OperationKind, SessionState, TargetKind
 from omr_grader.domain.errors import Err, Ok
-from omr_grader.domain.models import AnswerValue, CorrectionDraft, CorrectionEvent
+from omr_grader.domain.models import (
+    AnswerRecognition,
+    AnswerValue,
+    CellEvidence,
+    CorrectionDraft,
+    CorrectionEvent,
+    PixelRect,
+    RatioRect,
+)
 from omr_grader.infrastructure.generation_materializer import (
+    _encode_review_image,
     _read_correction_events,
     _validate_projection_lineage,
 )
@@ -51,6 +61,11 @@ def _event(
         base + 1,
         event_id,
     )
+
+
+def _declaring_manifest(*paths: str) -> SimpleNamespace:
+    """The reader accepts only files explicitly authenticated by a manifest."""
+    return SimpleNamespace(files=tuple(SimpleNamespace(path=path) for path in paths))
 
 
 def test_correct_event_append_requires_exact_new_suffix() -> None:
@@ -96,7 +111,9 @@ def test_lifecycle_event_file_round_trips_cumulative_authority(tmp_path: Path) -
         json.dumps({"schema_version": 1, "events": [event.to_dict() for event in events]}),
         encoding="utf-8",
     )
-    assert _read_correction_events(tmp_path) == events
+    assert _read_correction_events(
+        tmp_path, _declaring_manifest("correction_events.json")
+    ) == events
 
 
 @pytest.mark.parametrize(
@@ -110,7 +127,7 @@ def test_materializer_event_file_is_typed_and_canonical(
     tmp_path: Path, payload: dict[str, object]
 ) -> None:
     (tmp_path / "correction_events.json").write_text(json.dumps(payload), encoding="utf-8")
-    events = _read_correction_events(tmp_path)
+    events = _read_correction_events(tmp_path, _declaring_manifest("correction_events.json"))
     result = validate_correction_event_history(
         events,
         tuple(
@@ -127,6 +144,70 @@ def test_materializer_event_file_is_typed_and_canonical(
         session_id="session",
     )
     assert isinstance(result, Ok)
+
+
+def test_materializer_rejects_declared_missing_or_unlisted_event_authority(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="missing or unlisted"):
+        _read_correction_events(tmp_path, _declaring_manifest("correction_events.json"))
+
+    (tmp_path / "correction_events.json").write_text(
+        json.dumps({"schema_version": 1, "events": []}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="missing or unlisted"):
+        _read_correction_events(tmp_path, _declaring_manifest())
+
+
+def test_review_jpeg_uses_effective_answers_without_mutating_recognition_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    geometry_answer = AnswerRecognition(
+        1,
+        BLANK,
+        tuple(
+            CellEvidence(
+                choice - 1,
+                1,
+                None,
+                choice,
+                PixelRect(choice * 10, 10, 6, 6),
+                RatioRect("0", "0", "0.1", "0.1"),
+                "0",
+                False,
+                CellStatus.BLANK,
+            )
+            for choice in range(1, 6)
+        ),
+    )
+    rendered: list[AnswerValue] = []
+
+    def fake_render(_raster, _evidence, answers, _keys, _size):
+        rendered.append(answers[0].value)
+        shade = 0 if answers[0].value == BLANK else 255
+        return Ok(np.full((12, 12, 3), shade, dtype=np.uint8))
+
+    monkeypatch.setattr(
+        "omr_grader.infrastructure.generation_materializer.render_scored_overlay_scaled",
+        fake_render,
+    )
+    raster = np.zeros((12, 12, 3), dtype=np.uint8)
+    before = _encode_review_image(
+        raster,
+        geometry_answer.cells,
+        (geometry_answer,),
+        (BLANK,) * 100,
+        SimpleNamespace(entries=()),
+    )
+    after = _encode_review_image(
+        raster,
+        geometry_answer.cells,
+        (geometry_answer,),
+        (MARKED,) + (BLANK,) * 99,
+        SimpleNamespace(entries=()),
+    )
+
+    assert before != after
+    assert rendered == [BLANK, MARKED]
+    assert geometry_answer.value == BLANK
 
 
 def test_missing_or_mismatched_event_projection_is_rejected() -> None:

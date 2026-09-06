@@ -68,9 +68,28 @@ def probe_root_capability(paths: ManagedPaths) -> Result[RootCapability]:
     if config.value.exists() and not config.value.is_file():
         return Err((_error("MANAGED_PATH_INVALID", "설정 파일 경로가 올바르지 않습니다."),))
 
-    if is_path_writable(root):
+    write_targets = (
+        root,
+        *(
+            candidate
+            for candidate in (
+                config.value,
+                profiles.value,
+                data.value,
+                logs.value,
+                root / ".locks",
+                data.value / ".locks",
+            )
+            if candidate.exists()
+        ),
+    )
+    if all(is_path_writable(target) for target in write_targets):
         return Ok(RootCapability(resolved_paths, True, CapabilityToken._issue(root), None))
-    reason = "실행 폴더에 쓸 수 없어 읽기 전용으로 실행합니다. 폴더 권한을 확인하세요."
+    denied = next(target for target in write_targets if not is_path_writable(target))
+    reason = (
+        "실행 폴더 또는 관리 파일에 쓸 수 없어 읽기 전용으로 실행합니다. "
+        f"권한을 확인하세요: {denied.name or denied}"
+    )
     warning = ErrorInfo(
         "ROOT_WRITE_DENIED",
         "warning.root_write_denied",

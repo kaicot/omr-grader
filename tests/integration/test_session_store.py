@@ -179,6 +179,13 @@ def test_heavy_artifacts_live_only_in_session_root_and_remain_allowlisted(
 
     committed = store.commit_generation(_mutation())
     assert isinstance(committed, Ok)
+    for generation_path in (session / "generations").iterdir():
+        assert not (generation_path / "images").exists()
+        assert not (generation_path / "sources").exists()
+        assert not (generation_path / "02채점결과이미지").exists()
+    assert (session / "01원본스캔" / "page.png").read_bytes() == b"normalized"
+    assert (session / "01원본스캔" / "001_source.pdf").read_bytes() == b"source-pdf"
+    assert (session / "02채점결과이미지" / "page.jpg").read_bytes() == b"review-jpeg"
 
 
 def test_commit_replaces_current_pointer_and_rejects_stale_cas(tmp_path: Path) -> None:
@@ -283,6 +290,25 @@ def test_generation_prune_failure_preserves_committed_current_and_retries_safely
     assert pointer["revision"] == 3
     assert len(generations) == 1
     assert generations[0].name == Path(pointer["generation_relpath"]).name
+    retention = json.loads((session / "RETENTION.json").read_text(encoding="utf-8"))
+    assert retention["boundary_generation_id"] == pointer["generation_id"]
+    assert retention["omitted_parent"]["generation_id"] != pointer["generation_id"]
+
+
+def test_missing_retention_boundary_cannot_bypass_lineage_validation(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    _create(store)
+    committed = store.commit_generation(_mutation())
+    assert isinstance(committed, Ok)
+    session = tmp_path / "exam-session-1"
+    pointer_before = (session / "CURRENT.json").read_bytes()
+    (session / "RETENTION.json").unlink()
+
+    opened = store.open_committed_snapshot(SnapshotRequest("session-1", 2, SnapshotPurpose.DETAIL))
+
+    assert isinstance(opened, Err)
+    assert opened.errors[0].code == "SESSION_COMMITTED_GENERATION_INVALID"
+    assert (session / "CURRENT.json").read_bytes() == pointer_before
 
 
 def test_result_view_failure_keeps_published_revision_consistent(

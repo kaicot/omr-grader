@@ -19,6 +19,8 @@ from omr_grader.application.dto import (
 )
 from omr_grader.application.ports import CommittedSnapshotLease, InternalSessionCoordinator
 from omr_grader.domain.corrections import (
+    CorrectionState,
+    project_correction_state,
     project_effective_responses,
     validate_correction_event_history,
 )
@@ -27,7 +29,9 @@ from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
+    AnswerRecognition,
     AutomaticPage,
+    CellEvidence,
     CorrectionDraft,
     CorrectionEvent,
     EffectiveResponse,
@@ -63,6 +67,7 @@ class WorkItemDetail:
 class _OpenedDetail:
     lease: CommittedSnapshotLease
     rows: dict[str, dict[str, object]]
+    review_geometry: dict[str, dict[str, object]]
 
 
 def _require_snapshot(value: object, snapshot: SnapshotRef) -> None:
@@ -134,6 +139,156 @@ def _decode_correction_events(value: object) -> tuple[CorrectionEvent, ...]:
     if set(document) != {"schema_version", "events"} or document["schema_version"] != 1:
         raise ValueError("correction event envelope is invalid")
     return tuple(CorrectionEvent.from_dict(_mapping(event)) for event in _list(document["events"]))
+
+
+def _read_review_geometry(lease: CommittedSnapshotLease) -> dict[str, dict[str, object]]:
+    declared = _manifest_declares(lease, "review_geometry.json")
+    source = lease.open_allowlisted("review_geometry.json")
+    if declared != (not isinstance(source, Err)):
+        raise ValueError("declared review geometry is missing or unlisted")
+    if not declared:
+        return {}
+    assert not isinstance(source, Err)
+    with source.value:
+        document = _mapping(json.load(source.value))
+    if set(document) != {"schema_version", "pages"} or document["schema_version"] != 1:
+        raise ValueError("review geometry envelope is invalid")
+    pages = _list(document["pages"])
+    result: dict[str, dict[str, object]] = {}
+    for raw in pages:
+        page = _mapping(raw)
+        if set(page) != {"work_item_id", "evidence", "answers"}:
+            raise ValueError("review geometry page is invalid")
+        work_item_id = page["work_item_id"]
+        evidence = page["evidence"]
+        answers = page["answers"]
+        if (
+            not isinstance(work_item_id, str)
+            or not work_item_id
+            or not isinstance(evidence, list)
+            or not isinstance(answers, list)
+            or work_item_id in result
+        ):
+            raise ValueError("review geometry page is invalid")
+        # Parse every typed value before exposing the raw, manifest-authenticated
+        # geometry to the detail payload; no AutomaticPage is reconstructed.
+        tuple(CellEvidence.from_dict(_mapping(item)) for item in evidence)
+        tuple(AnswerRecognition.from_dict(_mapping(item)) for item in answers)
+        result[work_item_id] = page
+    return result
+
+
+def _manifest_declares(lease: CommittedSnapshotLease, path: str) -> bool:
+    return any(item.path == path for item in lease.manifest.files)
+
+
+def _read_correction_state(
+    lease: CommittedSnapshotLease,
+    responses: tuple[EffectiveResponse, ...],
+    session_id: str,
+) -> CorrectionState:
+    """Read the new immutable authority or a deliberately narrow legacy adapter."""
+    state_declared = _manifest_declares(lease, "correction_state.json")
+    state_file = lease.open_allowlisted("correction_state.json")
+    if state_declared:
+        if isinstance(state_file, Err):
+            raise ValueError("declared correction state is absent")
+        with state_file.value:
+            state = CorrectionState.from_dict(json.load(state_file.value))
+        return state
+    if not isinstance(state_file, Err):
+        raise ValueError("unlisted correction state is present")
+
+    projection_declared = _manifest_declares(lease, "projection_request.json")
+    projection_file = lease.open_allowlisted("projection_request.json")
+    events_declared = _manifest_declares(lease, "correction_events.json")
+    events_file = lease.open_allowlisted("correction_events.json")
+    if projection_declared != (not isinstance(projection_file, Err)):
+        raise ValueError("declared legacy projection is absent")
+    if events_declared != (not isinstance(events_file, Err)):
+        raise ValueError("declared legacy correction events are absent")
+    if projection_declared:
+        assert not isinstance(projection_file, Err)
+        with projection_file.value:
+            projection = _decode_projection(_mapping(json.load(projection_file.value)), lease)
+        events: tuple[CorrectionEvent, ...] = ()
+        if events_declared:
+            assert not isinstance(events_file, Err)
+            with events_file.value:
+                events = _decode_correction_events(json.load(events_file.value))
+        if projection.corrections and not events_declared:
+            raise ValueError("legacy correction event authority is absent")
+        validated = validate_correction_event_history(
+            events, projection.corrections, session_id=session_id
+        )
+        if isinstance(validated, Err) or any(
+            event.committed_revision > lease.snapshot_ref.revision for event in events
+        ):
+            raise ValueError("legacy correction history is invalid")
+        baseline = project_effective_responses(
+            EffectiveResponseProjection(
+                projection.automatic_pages, projection.imported_responses, ()
+            ),
+            session_id=session_id,
+            expected_base_revision=lease.manifest.parent_revision or lease.snapshot_ref.revision,
+        )
+        if isinstance(baseline, Err):
+            raise ValueError("legacy correction baseline is invalid")
+        return CorrectionState(
+            1,
+            lease.snapshot_ref.revision,
+            lease.snapshot_ref.generation_id,
+            lease.manifest.parent_revision or lease.snapshot_ref.revision,
+            lease.manifest.parent_generation_id or lease.snapshot_ref.generation_id,
+            baseline.value,
+            events,
+            True,
+            "effective-baseline",
+        )
+    if events_declared:
+        raise ValueError("legacy compact generation declares unattached correction events")
+    if lease.manifest.state.value not in {"graded", "finalized"}:
+        raise ValueError("legacy compact generation is not correction eligible")
+    # Valid fixed20 compact manifests preserved the effective response set but not
+    # a projection or historical events.  Treat that fact as explicit, read-only
+    # compatibility metadata; no file is written simply by opening it.
+    return CorrectionState(
+        1,
+        lease.snapshot_ref.revision,
+        lease.snapshot_ref.generation_id,
+        lease.snapshot_ref.revision,
+        lease.snapshot_ref.generation_id,
+        responses,
+        (),
+        False,
+        "legacy-fixed20",
+    )
+
+
+def _validate_correction_state_binding(
+    state: CorrectionState, lease: CommittedSnapshotLease, session_id: str
+) -> None:
+    """Bind state and history to this exact opened immutable generation."""
+    snapshot = lease.snapshot_ref
+    if (
+        state.snapshot_revision != snapshot.revision
+        or state.snapshot_generation_id != snapshot.generation_id
+        or state.baseline_snapshot_revision > snapshot.revision
+    ):
+        raise ValueError("correction state snapshot binding is invalid")
+    if (
+        state.baseline_snapshot_revision == snapshot.revision
+        and state.baseline_snapshot_generation_id != snapshot.generation_id
+    ):
+        raise ValueError("correction baseline generation is orphaned")
+    for event in state.events:
+        if (
+            event.session_id != session_id
+            or event.expected_base_revision < state.baseline_snapshot_revision
+            or event.expected_base_revision >= event.committed_revision
+            or event.committed_revision > snapshot.revision
+        ):
+            raise ValueError("correction history event is outside the opened snapshot")
 
 
 def _score_set_wire(scores: ScoreSet) -> dict[str, object]:
@@ -225,28 +380,9 @@ class DetailRepository:
                 or lease.snapshot_ref.revision != expected_revision
             ):
                 raise ValueError("pinned lease identity mismatch")
-            projection_file = lease.open_allowlisted("projection_request.json")
             combined_file = lease.open_allowlisted("semantic_inputs.json")
-            if isinstance(projection_file, Err) or isinstance(combined_file, Err):
-                raise ValueError("required correction artifacts are absent")
-            with projection_file.value:
-                projection = _decode_projection(
-                    _mapping(json.load(projection_file.value)),
-                    lease,
-                )
-            events_file = lease.open_allowlisted("correction_events.json")
-            if projection.corrections and isinstance(events_file, Err):
-                raise ValueError("correction authority events are absent")
-            if not isinstance(events_file, Err):
-                with events_file.value:
-                    events = _decode_correction_events(json.load(events_file.value))
-                validated = validate_correction_event_history(
-                    events, projection.corrections, session_id=session_id
-                )
-                if isinstance(validated, Err):
-                    raise ValueError("correction events do not match projection authority")
-                if any(event.committed_revision > expected_revision for event in events):
-                    raise ValueError("correction event exceeds snapshot authority")
+            if isinstance(combined_file, Err):
+                raise ValueError("required canonical correction inputs are absent")
             with combined_file.value:
                 combined = _mapping(json.load(combined_file.value))
             if set(combined) != {"combined"}:
@@ -279,13 +415,11 @@ class DetailRepository:
                 score_effective(ScoreInput(responses, answer_key))
             ):
                 raise ValueError("canonical scores do not match recomputed scores")
-            projected = project_effective_responses(
-                projection,
-                session_id=session_id,
-                expected_base_revision=expected_revision,
-            )
+            correction_state = _read_correction_state(lease, responses, session_id)
+            _validate_correction_state_binding(correction_state, lease, session_id)
+            projected = project_correction_state(correction_state, session_id=session_id)
             if isinstance(projected, Err) or projected.value != responses:
-                raise ValueError("projection does not match canonical responses")
+                raise ValueError("correction state does not match canonical responses")
             return Ok(
                 CommittedCorrectionSnapshot(
                     lease.snapshot_ref,
@@ -293,7 +427,7 @@ class DetailRepository:
                     record.state,
                     responses,
                     answer_key,
-                    projection,
+                    correction_state,
                 )
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -335,6 +469,7 @@ class DetailRepository:
             values = raw["work_items"]
             if not isinstance(values, list):
                 raise ValueError("work_items must be list")
+            review_geometry = _read_review_geometry(lease)
             rows: dict[str, dict[str, object]] = {}
             public: list[DetailListRow] = []
             for item in values:
@@ -368,7 +503,7 @@ class DetailRepository:
                 lease,
             )
         handle_id = secrets.token_urlsafe(24)
-        self._opened[handle_id] = _OpenedDetail(lease, rows)
+        self._opened[handle_id] = _OpenedDetail(lease, rows, review_geometry)
         return Ok((DetailHandle(handle_id, lease.snapshot_ref), tuple(public)))
 
     def load_work_item(
@@ -394,6 +529,10 @@ class DetailRepository:
                 raise ValueError("detail document work item is invalid")
             _require_snapshot(document["snapshot"], opened.lease.snapshot_ref)
             payload = _mapping(document["payload"])
+            if "review_geometry" not in payload:
+                geometry = opened.review_geometry.get(work_item_id)
+                if geometry is not None:
+                    payload = {**payload, "review_geometry": geometry}
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return _error("DETAIL_MATERIALIZATION_INVALID", "선택한 상세 자료가 올바르지 않습니다.")
         image: bytes | None = None

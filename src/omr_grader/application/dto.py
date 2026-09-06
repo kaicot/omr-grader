@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
+from hashlib import sha256
 from typing import cast
 
 from omr_grader.domain.enums import (
@@ -761,6 +762,11 @@ class AnswerKeyValidation:
             validate_portable_component(self.source_name)
             if type(self.source_bytes) is not bytes or not self.source_bytes:
                 raise ValueError("answer-key source bytes must be nonempty")
+            if (
+                self.snapshot.source_name != self.source_name
+                or self.snapshot.source_sha256 != sha256(self.source_bytes).hexdigest()
+            ):
+                raise ValueError("answer-key snapshot does not match preserved source bytes")
 
 
 @dataclass(frozen=True, slots=True)

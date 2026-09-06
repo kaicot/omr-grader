@@ -116,6 +116,8 @@ def test_regrade_compacts_to_one_minimal_current_generation() -> None:
     retained = (
         "images/page-1.png",
         "01_ocr_시험_260730_120000_응답결과.xlsx",
+        "correction_events.json",
+        "correction_state.json",
     )
     discarded = (
         "recognition/page-1.json",
@@ -123,7 +125,6 @@ def test_regrade_compacts_to_one_minimal_current_generation() -> None:
         "automatic/page-1.json",
         "좌표데이터/page-1.json",
         "01_인식결과_이미지/page-1.png",
-        "correction_events.json",
         "correction_history.json",
         "details/page-1.json",
         "detail_index.json",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from omr_grader.application.detail_presenter import (
@@ -14,6 +16,8 @@ from omr_grader.application.detail_presenter import (
     DetailSummaryDisplay,
     NormalizedCell,
 )
+from omr_grader.domain.enums import AnswerStatus
+from omr_grader.domain.models import AnswerValue
 from omr_grader.ui.detail_page import DetailPage
 
 _RASTER = (
@@ -22,6 +26,11 @@ _RASTER = (
     b"\x0fa\x01\xa8?\xa7i\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04"
     b"\x00\x01\xa3\n\x15\xe3\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+BLANK = AnswerValue((), AnswerStatus.BLANK)
+ANSWER_2 = AnswerValue((2,), AnswerStatus.NORMAL)
+ANSWER_3 = AnswerValue((3,), AnswerStatus.NORMAL)
+ANSWER_4 = AnswerValue((4,), AnswerStatus.NORMAL)
 
 
 
@@ -39,7 +48,7 @@ def _display(image: bytes | None = None, revision: int = 3) -> DetailPageDisplay
                 "홍길동",
                 1,
                 "90",
-                (DetailAnswerDisplay(1, 2, True),),
+                (DetailAnswerDisplay(1, ANSWER_2, True),),
                 image,
                 (NormalizedCell("answer", 1, 2, 0.1, 0.1, 0.1, 0.1),),
                 (0, 0, 0, 0, 0, 0, 0, 1),
@@ -50,7 +59,7 @@ def _display(image: bytes | None = None, revision: int = 3) -> DetailPageDisplay
                 "김철수",
                 1,
                 "90",
-                (DetailAnswerDisplay(1, 3, True),),
+                (DetailAnswerDisplay(1, ANSWER_3, True),),
                 id_digits=(0, 0, 0, 0, 0, 0, 0, 1),
                 id_conflict="중복 학번",
             ),
@@ -82,7 +91,8 @@ def test_typed_edits_coalesce_and_save_locks_until_correlated_completion(qtbot) 
     )
     cell = _display().students[0].cells[0]
     page._activate_cell(cell)
-    assert page.pending_edits[0].before == 2 and page.pending_edits[0].after is None
+    assert page.pending_edits[0].before == ANSWER_2
+    assert page.pending_edits[0].after == BLANK
     page._activate_cell(cell)
     assert not page.is_dirty
     page._activate_cell(NormalizedCell("answer", 1, 3, 0.2, 0.1, 0.1, 0.1))
@@ -139,7 +149,7 @@ def test_preview_replaces_answer_and_id_display_from_projected_result(qtbot) -> 
         "홍길동",
         2,
         "70",
-        (DetailAnswerDisplay(1, 4, False),),
+        (DetailAnswerDisplay(1, ANSWER_4, False),),
         None,
         (),
         (1, 2, 3, 4, 5, 6, 7, 8),
@@ -154,7 +164,7 @@ def test_preview_replaces_answer_and_id_display_from_projected_result(qtbot) -> 
 
     page.apply_preview(DetailPreviewResult(request.correlation_id or "", projected))
 
-    assert page.model.student_at(0).answers == (DetailAnswerDisplay(1, 4, False),)
+    assert page.model.student_at(0).answers == (DetailAnswerDisplay(1, ANSWER_4, False),)
     assert page.model.student_at(0).student_id == "12345678"
 
 def test_correction_rejects_listing_before_values_until_lazy_authority_arrives(qtbot) -> None:
@@ -163,6 +173,34 @@ def test_correction_rejects_listing_before_values_until_lazy_authority_arrives(q
     page.set_display(_display())
     page._activate_cell(_display().students[0].cells[0])
     assert not page.is_dirty
+
+
+def test_lazy_edit_preserves_multiple_and_uncertain_before_values(qtbot) -> None:
+    page = DetailPage()
+    qtbot.addWidget(page)
+    requested = []
+    page.work_item_load_requested.connect(requested.append)
+    page.set_display(_display())
+    multiple = AnswerValue((2, 3), AnswerStatus.MULTIPLE)
+    loaded = replace(
+        _display(_RASTER).students[0],
+        answers=(DetailAnswerDisplay(1, multiple, None),),
+    )
+    page.apply_loaded_work_item(DetailLoadResult(requested[-1].correlation_id, loaded))
+    page._activate_cell(loaded.cells[0])
+    assert page.pending_edits[0].before == multiple
+    assert page.pending_edits[0].after == ANSWER_3
+
+    uncertain = AnswerValue((2,), AnswerStatus.UNCERTAIN)
+    page.set_display(_display())
+    loaded = replace(
+        _display(_RASTER).students[0],
+        answers=(DetailAnswerDisplay(1, uncertain, None),),
+    )
+    page.apply_loaded_work_item(DetailLoadResult(requested[-1].correlation_id, loaded))
+    page._activate_cell(loaded.cells[0])
+    assert page.pending_edits[0].before == uncertain
+    assert page.pending_edits[0].after == BLANK
 
 
 def test_off_selection_lazy_completion_is_rejected(qtbot) -> None:
