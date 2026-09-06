@@ -80,7 +80,9 @@ class _Job:
             size = ctypes.sizeof(wintypes.DWORD) * 2 + capacity * ctypes.sizeof(ctypes.c_size_t)
             buffer = ctypes.create_string_buffer(size)
             if self.kernel.QueryInformationJobObject(self.handle, 3, buffer, size, None):
-                count = int.from_bytes(buffer.raw[0:4], "little")
+                # JOBOBJECT_BASIC_PROCESS_ID_LIST: assigned count first, then
+                # the number of IDs actually returned in this buffer.
+                count = int.from_bytes(buffer.raw[4:8], "little")
                 offset = ctypes.sizeof(wintypes.DWORD) * 2
                 return {int.from_bytes(buffer.raw[offset + index * ctypes.sizeof(ctypes.c_size_t):offset + (index + 1) * ctypes.sizeof(ctypes.c_size_t)], "little") for index in range(count)}
             if ctypes.get_last_error() != 234:
@@ -453,11 +455,13 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
         report.failed("execution", error)
     finally:
         try:
-            if process is not None and job is not None:
-                _force_tree_cleanup(process, job)
-                report.passed("process_tree_cleanup")
             if job is not None:
-                job.close()
+                try:
+                    if process is not None:
+                        _force_tree_cleanup(process, job)
+                        report.passed("process_tree_cleanup")
+                finally:
+                    job.close()
         except Exception as error:
             report.failed("process_tree_cleanup", error)
         try:
