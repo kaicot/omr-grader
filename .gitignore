@@ -50,24 +50,28 @@ $RECYCLE.BIN/
 
 # Local development, verification, and task material
 fix*/
-tests/
-!tests/
-tests/*
-!tests/integration/
-tests/integration/*
-!tests/integration/test_portable_relocation.py
-!tests/packaged/
-tests/packaged/*
-!tests/packaged/test_release_orchestration_scripts.py
-tools/
-!tools/
-tools/*
-!tools/build-portable-folder.ps1
-!tools/verify-portable-folder.ps1
-!tools/smoke-portable-onedir.py
-packaging/
-constraints/
-requirements/
+
+# Retired wheel/onefile supply-chain experiments. The supported release path is
+# the tracked onedir spec and portable-release tools.
+/tools/build-application-wheel.ps1
+/tools/build_application_wheel.py
+/tools/build-onefile.ps1
+/tools/install-bootstrap.ps1
+/tools/run-packaged-tests.ps1
+/tools/smoke-release.ps1
+/tools/supply_manifest.py
+/tools/validate_canonical_wheel.py
+/tools/verify-release-bundle.ps1
+/tools/verify_installed_distributions_receipt.py
+/tools/write_installed_distributions_receipt.py
+/tools/qa_minimal_storage.py
+/packaging/build_release.py
+/packaging/verify_release.py
+/tests/packaged/test_application_wheel.py
+/tests/packaged/test_installed_receipt.py
+/tests/packaged/test_packaged_app.py
+/tests/packaged/test_release_orchestration_scripts.py
+/tests/packaged/test_supply_bundle_script.py
 CHANGELOG.md
 DESIGN.md
 
@@ -112,6 +116,14 @@ logs/
 scans/
 input/
 results/
+
+# Portable application state.  These are always user/runtime data, never test fixtures.
+/Data/
+/Profiles/
+/config.json
+/.locks/
+/.reservations/
+/.deleting/
 
 # Local release evidence and internal handoff material
 artifacts/

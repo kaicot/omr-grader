@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "omr-grader"
 version = "2.1.0"
 description = "OMR Grader 데스크톱 애플리케이션"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "PySide6==6.9.1",
     "opencv-python==4.11.0.86",
@@ -14,6 +14,20 @@ dependencies = [
     "PyMuPDF==1.26.1",
     "openpyxl==3.1.5",
     "tzdata==2026.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.1",
+    "pytest-qt==4.4.0",
+    "pytest-cov==6.2.1",
+    "hypothesis==6.131.15",
+    "ruff==0.11.13",
+    "mypy==1.16.1",
+]
+build = [
+    "pyinstaller==6.14.1",
+    "pyinstaller-hooks-contrib==2026.6",
 ]
 
 [project.scripts]
@@ -27,3 +41,11 @@ include-package-data = true
 where = ["src"]
 include = ["omr_grader*"]
 namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["packaged: requires a built Windows portable release"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100

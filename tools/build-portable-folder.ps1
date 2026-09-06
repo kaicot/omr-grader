@@ -3,130 +3,128 @@ param(
     [string]$Python = '',
     [string]$DistRoot = '',
     [string]$WorkRoot = '',
-    [string]$ArchivePath = ''
+    [string]$ArchivePath = '',
+    [int]$BuildNumber = 0
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion -lt [version]'7.2') { throw 'PowerShell 7.2 or later is required.' }
 
-$repository = Split-Path $PSScriptRoot -Parent
-if (-not $Python) {
-    $Python = Join-Path $repository '.venv\Scripts\python.exe'
+function Fail([string]$Message) { throw "PORTABLE_RELEASE_BUILD_FAILED: $Message" }
+function FullPath([string]$PathValue) {
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { Fail 'empty path is not allowed' }
+    return [IO.Path]::GetFullPath($PathValue)
 }
-if (-not $DistRoot) {
-    $DistRoot = Join-Path $repository 'dist'
+function Assert-NoReparseAncestor([string]$PathValue, [string]$Label) {
+    $current = FullPath $PathValue
+    while ($true) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Fail "$Label must not be a symbolic-link or junction path: $current"
+            }
+        }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if (-not $parent -or $parent -eq $current) { break }
+        $current = $parent
+    }
 }
+
+$repository = FullPath (Split-Path $PSScriptRoot -Parent)
+if (-not $Python) { $Python = Join-Path $repository '.venv\Scripts\python.exe' }
+$Python = FullPath $Python
+if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { Fail "Python does not exist: $Python" }
+if (-not $DistRoot) { $DistRoot = Join-Path $repository 'dist' }
+if (-not $WorkRoot) { $WorkRoot = Join-Path $repository 'build' }
+$DistRoot = FullPath $DistRoot
+$WorkRoot = FullPath $WorkRoot
 $spec = Join-Path $repository 'packaging\OMR_Grader.spec'
+$releaseTool = Join-Path $repository 'tools\portable_release.py'
+
+# All prerequisites are checked before creating any caller-provided directory or
+# reservation. A WorkRoot is a parent owned by its caller, never a scratch folder
+# that this script may erase.
+Assert-NoReparseAncestor $repository 'repository'
+Assert-NoReparseAncestor $DistRoot 'DistRoot'
+Assert-NoReparseAncestor $WorkRoot 'WorkRoot'
+if (-not (Test-Path -LiteralPath $spec -PathType Leaf)) { Fail "Spec file is missing: $spec" }
+if (-not (Test-Path -LiteralPath $releaseTool -PathType Leaf)) { Fail "Release tool is missing: $releaseTool" }
+& $Python -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version; import PyInstaller'
+if ($LASTEXITCODE -ne 0) { Fail 'Python 3.12 with PyInstaller is required' }
+
 $dateStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd')
+if ($BuildNumber -lt 0) { Fail 'BuildNumber must be a positive integer when supplied' }
+if ($BuildNumber -eq 0) {
+    $numbers = @(
+        if (Test-Path -LiteralPath $DistRoot) {
+            Get-ChildItem -LiteralPath $DistRoot -Force | ForEach-Object {
+                if ($_.Name -match '^OMR-Grader-fixed(\d+)-\d{8}(?:\.zip|\.reserve)?$') { [int]$Matches[1] }
+            }
+        }
+    )
+    $BuildNumber = if ($numbers.Count) { [int](($numbers | Measure-Object -Maximum).Maximum) + 1 } else { 1 }
+}
+$releaseName = "OMR-Grader-fixed$BuildNumber-$dateStamp"
+$versionFolder = Join-Path $DistRoot $releaseName
+$reservation = Join-Path $DistRoot "$releaseName.reserve"
+if (-not $ArchivePath) { $ArchivePath = Join-Path $DistRoot "$releaseName.zip" }
+$ArchivePath = FullPath $ArchivePath
+if ([IO.Path]::GetDirectoryName($ArchivePath) -ne $DistRoot) { Fail 'ArchivePath must be a direct child of DistRoot' }
+if ([IO.Path]::GetFileName($ArchivePath) -ne "$releaseName.zip") { Fail 'ArchivePath must use the selected release name' }
+foreach ($path in @($versionFolder, $ArchivePath, "$ArchivePath.sha256", $reservation)) {
+    if (Test-Path -LiteralPath $path) { Fail "output collision; no existing artifact will be replaced: $path" }
+}
 
+# Only after inputs and every destination have been checked do we create a new,
+# uniquely owned child. This script never deletes WorkRoot or any existing child.
 New-Item -ItemType Directory -Path $DistRoot -Force | Out-Null
-$usedNumbers = @(
-    Get-ChildItem -LiteralPath $DistRoot -Force |
-        ForEach-Object {
-            if ($_.Name -match '^OMR-Grader-fixed(\d+)-\d{8}(?:\.zip)?$') {
-                [int]$Matches[1]
-            }
-        }
-)
-$nextNumber = if ($usedNumbers.Count -eq 0) {
-    1
-} else {
-    [int](($usedNumbers | Measure-Object -Maximum).Maximum) + 1
-}
-do {
-    $versionName = "OMR-Grader-fixed$nextNumber-$dateStamp"
-    $versionFolder = Join-Path $DistRoot $versionName
-    $defaultArchivePath = Join-Path $DistRoot "$versionName.zip"
-    $nextNumber += 1
-} while (
-    (Test-Path -LiteralPath $versionFolder) -or
-    (Test-Path -LiteralPath $defaultArchivePath)
-)
-
-if (-not $WorkRoot) {
-    $WorkRoot = Join-Path $repository "build\$versionName"
-}
-if (-not $ArchivePath) {
-    $ArchivePath = $defaultArchivePath
-}
-$applicationFolder = Join-Path $versionFolder 'OMR Grader'
-$executable = Join-Path $applicationFolder 'OMR Grader.exe'
-$receiptPath = Join-Path $versionFolder 'release-receipt.json'
-$archiveHashPath = "$ArchivePath.sha256"
-
-if (Test-Path -LiteralPath $WorkRoot) {
-    Remove-Item -LiteralPath $WorkRoot -Recurse -Force
-}
-
-& $Python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --distpath $versionFolder `
-    --workpath $WorkRoot `
-    $spec
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-}
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-    throw "PyInstaller did not produce $executable"
-}
-
-$projectMetadata = Get-Content -LiteralPath (Join-Path $repository 'pyproject.toml') -Raw
-$versionMatch = [regex]::Match($projectMetadata, '(?m)^version\s*=\s*"(?<version>[^"]+)"\s*$')
-if (-not $versionMatch.Success) {
-    throw 'Could not read project version from pyproject.toml'
-}
-$gitHead = (& git -C $repository rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $gitHead -notmatch '^[0-9a-f]{40}$') {
-    throw 'Could not resolve the source Git HEAD'
-}
-$workingTreeDiff = (& git -C $repository diff --binary HEAD | Out-String)
-$diffHasher = [Security.Cryptography.SHA256]::Create()
+New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
+$workChild = Join-Path $WorkRoot ("portable-build-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $workChild -ErrorAction Stop | Out-Null
+$reservationToken = [guid]::NewGuid().ToString('N')
 try {
-    $workingTreeDiffSha256 = [Convert]::ToHexString(
-        $diffHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($workingTreeDiff))
-    ).ToLowerInvariant()
-} finally {
-    $diffHasher.Dispose()
+    $stream = [IO.File]::Open($reservation, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes($reservationToken); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+} catch [IO.IOException] { Fail "output reservation collision; no existing artifact will be replaced: $reservation" }
+function Assert-OwnedReservation {
+    if (-not (Test-Path -LiteralPath $reservation -PathType Leaf) -or (Get-Content -LiteralPath $reservation -Raw) -ne $reservationToken) { Fail 'build reservation ownership was lost' }
 }
-$payloadFiles = @(
-    Get-ChildItem -LiteralPath $applicationFolder -File -Recurse | Sort-Object FullName |
-        ForEach-Object {
-            [ordered]@{
-                path = $_.FullName.Substring($applicationFolder.Length + 1).Replace('\', '/')
-                size = $_.Length
-                sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            }
-        }
-)
-$receipt = [ordered]@{
-    format = 1
-    product = 'OMR Grader'
-    version = $versionMatch.Groups['version'].Value
-    git_head = $gitHead
-    working_tree_diff_sha256 = $workingTreeDiffSha256
-    built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-    payload_root = 'OMR Grader'
-    executable = [ordered]@{
-        path = 'OMR Grader/OMR Grader.exe'
-        size = (Get-Item -LiteralPath $executable).Length
-        sha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
-    }
-    payload_files = $payloadFiles
-    build = [ordered]@{
-        script_sha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        spec_sha256 = (Get-FileHash -LiteralPath $spec -Algorithm SHA256).Hash.ToLowerInvariant()
-        python = (& $Python --version 2>&1 | Out-String).Trim()
-        pyinstaller = (& $Python -m PyInstaller --version | Out-String).Trim()
-    }
-}
-$receipt | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $receiptPath -Encoding utf8
 
-Compress-Archive -LiteralPath $versionFolder -DestinationPath $ArchivePath -CompressionLevel Optimal
-"$((Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($ArchivePath))" |
-    Set-Content -LiteralPath $archiveHashPath -Encoding ascii
-Write-Output $versionFolder
-Write-Output $applicationFolder
-Write-Output $ArchivePath
-Write-Output $receiptPath
-Write-Output $archiveHashPath
+$beforeSnapshot = Join-Path $workChild 'build-inputs-before.json'
+$stageRelease = Join-Path $workChild $releaseName
+$stageArchive = Join-Path $workChild "$releaseName.zip"
+try {
+    & $Python $releaseTool snapshot-inputs --repository $repository --output $beforeSnapshot
+    if ($LASTEXITCODE -ne 0) { Fail 'could not capture pre-build input snapshot' }
+    & $Python -m PyInstaller --noconfirm --clean --distpath $stageRelease $spec --workpath (Join-Path $workChild 'pyinstaller-work')
+    if ($LASTEXITCODE -ne 0) { Fail "PyInstaller failed with exit code $LASTEXITCODE" }
+    $applicationFolder = Join-Path $stageRelease 'OMR Grader'
+    if (-not (Test-Path -LiteralPath (Join-Path $applicationFolder 'OMR Grader.exe') -PathType Leaf)) {
+        Fail 'PyInstaller did not produce OMR Grader.exe in the onedir payload'
+    }
+    & $Python $releaseTool create-receipt --release $stageRelease --repository $repository --before-snapshot $beforeSnapshot --python $Python
+    if ($LASTEXITCODE -ne 0) { Fail 'could not create format-2 release receipt' }
+    Compress-Archive -LiteralPath $stageRelease -DestinationPath $stageArchive -CompressionLevel Optimal
+    "$((Get-FileHash -LiteralPath $stageArchive -Algorithm SHA256).Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($ArchivePath))" |
+        Set-Content -LiteralPath "$stageArchive.sha256" -Encoding ascii
+    # Verify staged directory and exact ZIP bytes before publishing either.
+    & $Python $releaseTool verify --release $stageRelease --archive $stageArchive --repository $repository
+    if ($LASTEXITCODE -ne 0) { Fail 'staged release verification failed' }
+    Assert-OwnedReservation
+    foreach ($path in @($versionFolder, $ArchivePath, "$ArchivePath.sha256")) { if (Test-Path -LiteralPath $path) { Fail "output appeared during build: $path" } }
+    [IO.Directory]::Move($stageRelease, $versionFolder)
+    [IO.File]::Move($stageArchive, $ArchivePath)
+    [IO.File]::Move("$stageArchive.sha256", "$ArchivePath.sha256")
+    Assert-OwnedReservation
+    Remove-Item -LiteralPath $reservation -Force -ErrorAction Stop
+    [PSCustomObject]@{
+        result = 'BUILT_NOT_SMOKE_APPROVED'; release = $versionFolder
+        application = (Join-Path $versionFolder 'OMR Grader'); archive = $ArchivePath
+        archive_sha256_sidecar = "$ArchivePath.sha256"; work_child = $workChild
+    } | ConvertTo-Json -Depth 3
+} catch {
+    # Keep the reservation and uniquely owned child as an auditable failed attempt.
+    # Do not touch caller files or a previously published output.
+    throw
+}
