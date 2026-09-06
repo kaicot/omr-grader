@@ -23,7 +23,7 @@ def test_relocated_portable_release_is_writable_and_read_only_safe() -> None:
     else:
         application_dir = release_dir / "OMR Grader"
     assert (application_dir / "OMR Grader.exe").is_file()
-    for arguments in ((), ("--read-only",)):
+    for arguments in (("--mode", "writable"), ("--mode", "readonly")):
         subprocess.run(
             [sys.executable, str(SMOKE), "--release", str(application_dir), *arguments],
             check=True,

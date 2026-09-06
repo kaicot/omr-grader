@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import os
@@ -30,6 +31,56 @@ SHA256_LENGTH = 64
 
 class SmokeError(RuntimeError):
     pass
+
+
+class _ThreadEntry32(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
+
+
+class _Job:
+    """Kill-on-close job: ownership is the Windows handle, never a recycled PID."""
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]; kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]; kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]; kernel.SetInformationJobObject.restype = wintypes.BOOL
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]; kernel.TerminateJobObject.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]; kernel.CloseHandle.restype = wintypes.BOOL
+        self.kernel, self.handle = kernel, kernel.CreateJobObjectW(None, None)
+        if not self.handle: raise SmokeError(f"CreateJobObjectW failed: {ctypes.get_last_error()}")
+        class Basic(ctypes.Structure): _fields_ = [("a", ctypes.c_longlong), ("b", ctypes.c_longlong), ("flags", wintypes.DWORD), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t), ("e", wintypes.DWORD), ("f", ctypes.c_size_t), ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
+        class Io(ctypes.Structure): _fields_ = [("a", ctypes.c_ulonglong)] * 6
+        class Extended(ctypes.Structure): _fields_ = [("basic", Basic), ("io", Io), ("a", ctypes.c_size_t), ("b", ctypes.c_size_t), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t)]
+        limits = Extended(); limits.basic.flags = 0x2000
+        if not kernel.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)) or not kernel.AssignProcessToJobObject(self.handle, process._handle):
+            error = ctypes.get_last_error(); kernel.CloseHandle(self.handle); self.handle = None; raise SmokeError(f"could not configure/assign process job: {error}")
+    def terminate(self) -> None:
+        if self.handle and not self.kernel.TerminateJobObject(self.handle, 1): raise SmokeError(f"TerminateJobObject failed: {ctypes.get_last_error()}")
+    def close(self) -> None:
+        if self.handle:
+            handle, self.handle = self.handle, None
+            if not self.kernel.CloseHandle(handle): raise SmokeError(f"CloseHandle(job) failed: {ctypes.get_last_error()}")
+
+
+def _resume_suspended(process_id: int) -> None:
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]; kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]; kernel.Thread32First.restype = wintypes.BOOL
+    kernel.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]; kernel.Thread32Next.restype = wintypes.BOOL
+    kernel.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]; kernel.OpenThread.restype = wintypes.HANDLE
+    kernel.ResumeThread.argtypes = [wintypes.HANDLE]; kernel.ResumeThread.restype = wintypes.DWORD
+    snapshot = kernel.CreateToolhelp32Snapshot(4, 0)
+    if snapshot == wintypes.HANDLE(-1).value: raise SmokeError(f"thread snapshot failed: {ctypes.get_last_error()}")
+    try:
+        entry = _ThreadEntry32(); entry.dwSize = ctypes.sizeof(entry)
+        while kernel.Thread32First(snapshot, ctypes.byref(entry)) if entry.dwSize == ctypes.sizeof(entry) else kernel.Thread32Next(snapshot, ctypes.byref(entry)):
+            if entry.th32OwnerProcessID == process_id:
+                thread = kernel.OpenThread(2, False, entry.th32ThreadID)
+                if not thread or kernel.ResumeThread(thread) == 0xFFFFFFFF: raise SmokeError(f"could not resume owned process: {ctypes.get_last_error()}")
+                kernel.CloseHandle(thread); return
+            entry.dwSize = 0  # use Thread32Next after the first record
+        raise SmokeError("owned suspended process had no resumable thread")
+    finally: kernel.CloseHandle(snapshot)
 
 
 @dataclass
@@ -158,21 +209,11 @@ def _close_windows(process_id: int) -> None:
         raise SmokeError("no launched main window accepted a close request")
 
 
-def _force_tree_cleanup(process: subprocess.Popen[str], owned_pids: set[int]) -> None:
+def _force_tree_cleanup(process: subprocess.Popen[str], job: _Job) -> None:
     # A GUI parent can exit while a child remains.  Every descendant observed
     # during this launch is therefore cleaned individually, not only via /T on
     # a still-running parent PID.
-    for process_id in sorted(owned_pids | {process.pid}, reverse=True):
-        completed = subprocess.run(
-            ["taskkill", "/PID", str(process_id), "/T", "/F"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if completed.returncode and "not found" not in (completed.stdout + completed.stderr).casefold():
-            raise SmokeError(f"could not clean process tree: {completed.stderr.strip()}")
+    job.terminate()
     if process.poll() is None:
         process.wait(timeout=10)
 
@@ -241,7 +282,7 @@ def _wait_for_ready(
     raise SmokeError("main UI readiness capture timed out (splash title is not accepted)")
 
 
-def _start(root: Path, ready_file: Path, mode: str, phase: str, nonce: str, marker: Path) -> subprocess.Popen[str]:
+def _start(root: Path, ready_file: Path, mode: str, phase: str, nonce: str, marker: Path) -> tuple[subprocess.Popen[str], _Job]:
     executable = root / "OMR Grader.exe"
     if not executable.is_file():
         raise SmokeError("OMR Grader.exe is missing")
@@ -252,17 +293,20 @@ def _start(root: Path, ready_file: Path, mode: str, phase: str, nonce: str, mark
     environment["OMR_GRADER_SMOKE_NONCE"] = nonce
     environment["OMR_GRADER_SMOKE_SCOPE_MARKER"] = str(marker)
     try:
-        return subprocess.Popen([str(executable)], cwd=root, env=environment)
+        process = subprocess.Popen([str(executable)], cwd=root, env=environment, creationflags=getattr(subprocess, "CREATE_SUSPENDED", 4))
+        job = _Job(process)
+        _resume_suspended(process.pid)
+        return process, job
     except (PermissionError, OSError) as error:
         raise SmokeError(f"process creation failed: {error}") from error
 
 
-def _graceful_close(process: subprocess.Popen[str], *, required: bool, owned_pids: set[int]) -> bool:
+def _graceful_close(process: subprocess.Popen[str], *, required: bool, job: _Job) -> bool:
     _close_windows(process.pid)
     try:
         process.wait(timeout=30)
     except subprocess.TimeoutExpired:
-        _force_tree_cleanup(process, owned_pids)
+        _force_tree_cleanup(process, job)
         if required:
             raise SmokeError("graceful close timed out")
         return False
@@ -303,10 +347,10 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
     temporary = tempfile.TemporaryDirectory(prefix="omr-grader-onedir-smoke-")
     root = Path(temporary.name) / "OMR Grader"
     process: subprocess.Popen[str] | None = None
+    job: _Job | None = None
     deny_applied = False
     sid: str | None = None
     before: dict[str, str] | None = None
-    owned_pids: set[int] = set()
     nonce = uuid.uuid4().hex
     try:
         shutil.copytree(source, root)
@@ -329,12 +373,11 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
         # The observation file is outside the portable root and is bound to the
         # sibling marker, so it cannot be the change the read-only test detects.
         phase = "readonly" if mode == "readonly" else "write"
-        process = _start(root, ready, mode, phase, nonce, marker)
-        owned_pids.add(process.pid)
+        process, job = _start(root, ready, mode, phase, nonce, marker)
         report.passed("process_started", {"pid": process.pid})
-        payload = _wait_for_ready(process, ready, mode, owned_pids)
+        payload = _wait_for_ready(process, ready, mode, set())
         report.passed("main_ui_ready", payload)
-        graceful = _graceful_close(process, required=require_graceful_close, owned_pids=owned_pids)
+        graceful = _graceful_close(process, required=require_graceful_close, job=job)
         report.passed("graceful_close" if graceful else "forced_cleanup", graceful)
         process = None
         if mode == "writable":
@@ -342,12 +385,11 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
             # A second launch must load the persisted portable data, not merely
             # create it during the first initialization.
             ready.unlink(missing_ok=True)
-            process = _start(root, ready, mode, "read", nonce, marker)
-            owned_pids.add(process.pid)
-            payload = _wait_for_ready(process, ready, mode, owned_pids)
+            process, job = _start(root, ready, mode, "read", nonce, marker)
+            payload = _wait_for_ready(process, ready, mode, set())
             reopened = _reopened_persistence(payload, persisted)
             report.passed("persistence_roundtrip", reopened)
-            graceful = _graceful_close(process, required=require_graceful_close, owned_pids=owned_pids)
+            graceful = _graceful_close(process, required=require_graceful_close, job=job)
             report.passed("second_close" if graceful else "second_forced_cleanup", graceful)
             process = None
         else:
@@ -359,8 +401,8 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
         report.failed("execution", error)
     finally:
         try:
-            if process is not None:
-                _force_tree_cleanup(process, owned_pids)
+            if process is not None and job is not None:
+                _force_tree_cleanup(process, job)
                 report.passed("process_tree_cleanup")
         except Exception as error:
             report.failed("process_tree_cleanup", error)
