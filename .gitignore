@@ -64,6 +64,7 @@ fix*/
 /tools/verify-release-bundle.ps1
 /tools/verify_installed_distributions_receipt.py
 /tools/write_installed_distributions_receipt.py
+/tools/qa_minimal_storage.py
 /packaging/build_release.py
 /packaging/verify_release.py
 /tests/packaged/test_application_wheel.py
