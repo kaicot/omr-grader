@@ -224,29 +224,33 @@ def test_screen_resize_preserves_active_input_and_focus(qtbot) -> None:
     assert window.frameGeometry().height() <= 540
 
 
-@pytest.mark.parametrize(
-    ("available", "requested_size", "requested_position"),
-    (
-        (QRect(0, 0, 960, 520), (1500, 800), (1500, 900)),
-        (QRect(-800, 0, 1204, 720), (700, 500), (-400, 100)),
-    ),
-)
+@pytest.mark.parametrize("theme", (Theme.LIGHT, Theme.DARK))
 def test_fit_clamps_the_shown_decorated_frame_inside_available_geometry(
-    qtbot, available, requested_size, requested_position
+    qtbot, theme
 ) -> None:
     window, _, _ = _window(qtbot)
+    window.set_theme(theme)
     QApplication.processEvents()
-    window._initial_geometry_applied = True
-    window.resize(*requested_size)
-    window.move(*requested_position)
-    QApplication.processEvents()
+    # Reuse the shown window across virtual-screen transitions. A QWidget's
+    # cached frame can look correct before queued native move events arrive.
+    for available in (
+        QRect(0, 0, 960, 520),
+        QRect(-960, 0, 960, 520),
+        QRect(0, -520, 960, 520),
+        QRect(-960, -520, 960, 520),
+        QRect(1200, 80, 960, 520),
+        QRect(0, 0, 960, 520),
+    ):
+        window.resize(1400, 900)
+        window.move(1500, 900)
+        window._fit_to_available_geometry(available)
 
-    window._fit_to_available_geometry(available)
-    QApplication.processEvents()
-
-    assert available.contains(window.frameGeometry())
-    if available.left() < 0:
-        assert window.frameGeometry().left() < 0
+        for _ in range(2):
+            QApplication.processEvents()
+            assert available.contains(window.frameGeometry()), (
+                available.getRect(), window.frameGeometry().getRect()
+            )
+            assert available.contains(window.windowHandle().frameGeometry())
 
 
 def test_queued_focus_visibility_does_not_restore_stale_focus(qtbot) -> None:

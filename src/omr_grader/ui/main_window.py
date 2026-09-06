@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from weakref import ref
 
-from PySide6.QtCore import QEvent, QMargins, QObject, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QMargins, QObject, QPoint, QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeyEvent, QResizeEvent, QScreen, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -253,22 +253,18 @@ class MainWindow(QMainWindow):
             if focused is not None:
                 self._queue_focus_visibility(focused)
 
-        frame = self.frameGeometry()
+        window_handle = self.windowHandle()
+        frame = window_handle.frameGeometry() if window_handle is not None else self.frameGeometry()
         left = min(max(frame.left(), available.left()), available.right() - frame.width() + 1)
         top = min(max(frame.top(), available.top()), available.bottom() - frame.height() + 1)
         if (left, top) != (frame.left(), frame.top()):
-            # A top-level QWidget.move() uses the native frame origin, not the
-            # client origin. The frame margins were needed only for the size cap.
-            self.move(left, top)
-            positioned_frame = self.frameGeometry()
-            if (positioned_frame.left(), positioned_frame.top()) != (left, top):
-                # Some Qt platform plugins translate a negative virtual-screen
-                # origin while positioning. Correct from the observed frame
-                # delta instead of assuming a title-bar or border thickness.
-                self.move(
-                    left - (positioned_frame.left() - left),
-                    top - (positioned_frame.top() - top),
-                )
+            if window_handle is not None:
+                # Use native frame coordinates: QWidget.move() can temporarily
+                # report the requested negative origin before queued native
+                # events replace it with a different position.
+                window_handle.setFramePosition(QPoint(left, top))
+            else:
+                self.move(left, top)
 
     def _install_screen_tracking(self) -> None:
         if self._screen_tracking_installed:
