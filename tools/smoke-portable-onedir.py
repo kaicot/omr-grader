@@ -49,7 +49,7 @@ class _Job:
         self.kernel, self.handle = kernel, kernel.CreateJobObjectW(None, None)
         if not self.handle: raise SmokeError(f"CreateJobObjectW failed: {ctypes.get_last_error()}")
         class Basic(ctypes.Structure): _fields_ = [("a", ctypes.c_longlong), ("b", ctypes.c_longlong), ("flags", wintypes.DWORD), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t), ("e", wintypes.DWORD), ("f", ctypes.c_size_t), ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
-        class Io(ctypes.Structure): _fields_ = [("a", ctypes.c_ulonglong)] * 6
+        class Io(ctypes.Structure): _fields_ = [(name, ctypes.c_ulonglong) for name in "abcdef"]
         class Extended(ctypes.Structure): _fields_ = [("basic", Basic), ("io", Io), ("a", ctypes.c_size_t), ("b", ctypes.c_size_t), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t)]
         limits = Extended(); limits.basic.flags = 0x2000
         if not kernel.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)) or not kernel.AssignProcessToJobObject(self.handle, process._handle):
@@ -69,16 +69,19 @@ def _resume_suspended(process_id: int) -> None:
     kernel.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]; kernel.Thread32Next.restype = wintypes.BOOL
     kernel.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]; kernel.OpenThread.restype = wintypes.HANDLE
     kernel.ResumeThread.argtypes = [wintypes.HANDLE]; kernel.ResumeThread.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]; kernel.CloseHandle.restype = wintypes.BOOL
     snapshot = kernel.CreateToolhelp32Snapshot(4, 0)
     if snapshot == wintypes.HANDLE(-1).value: raise SmokeError(f"thread snapshot failed: {ctypes.get_last_error()}")
     try:
         entry = _ThreadEntry32(); entry.dwSize = ctypes.sizeof(entry)
-        while kernel.Thread32First(snapshot, ctypes.byref(entry)) if entry.dwSize == ctypes.sizeof(entry) else kernel.Thread32Next(snapshot, ctypes.byref(entry)):
+        found = kernel.Thread32First(snapshot, ctypes.byref(entry))
+        while found:
             if entry.th32OwnerProcessID == process_id:
                 thread = kernel.OpenThread(2, False, entry.th32ThreadID)
                 if not thread or kernel.ResumeThread(thread) == 0xFFFFFFFF: raise SmokeError(f"could not resume owned process: {ctypes.get_last_error()}")
                 kernel.CloseHandle(thread); return
-            entry.dwSize = 0  # use Thread32Next after the first record
+            entry.dwSize = ctypes.sizeof(entry)
+            found = kernel.Thread32Next(snapshot, ctypes.byref(entry))
         raise SmokeError("owned suspended process had no resumable thread")
     finally: kernel.CloseHandle(snapshot)
 
@@ -218,33 +221,9 @@ def _force_tree_cleanup(process: subprocess.Popen[str], job: _Job) -> None:
         process.wait(timeout=10)
 
 
-def _child_pids(parent_pid: int) -> set[int]:
-    command = (
-        "$all=Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId;"
-        "$seen=@{" + str(parent_pid) + "=$true};$changed=$true;"
-        "while($changed){$changed=$false;foreach($p in $all){if($seen.ContainsKey([int]$p.ParentProcessId) -and -not $seen.ContainsKey([int]$p.ProcessId)){$seen[[int]$p.ProcessId]=$true;$changed=$true}}};"
-        "$seen.Keys | ConvertTo-Json -Compress"
-    )
-    completed = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if completed.returncode:
-        raise SmokeError(f"could not inspect process tree: {completed.stderr.strip()}")
-    value = json.loads(completed.stdout or "[]")
-    return {int(item) for item in (value if isinstance(value, list) else [value])}
-
-
-def _wait_for_ready(
-    process: subprocess.Popen[str], ready_file: Path, mode: str, owned_pids: set[int]
-) -> dict[str, Any]:
+def _wait_for_ready(process: subprocess.Popen[str], ready_file: Path, mode: str, owned_pids: set[int] | None = None) -> dict[str, Any]:
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
-        owned_pids.update(_child_pids(process.pid))
         if process.poll() is not None:
             raise SmokeError(f"startup exit {process.returncode}")
         if ready_file.is_file():
@@ -292,13 +271,20 @@ def _start(root: Path, ready_file: Path, mode: str, phase: str, nonce: str, mark
     environment["OMR_GRADER_SMOKE_PHASE"] = phase
     environment["OMR_GRADER_SMOKE_NONCE"] = nonce
     environment["OMR_GRADER_SMOKE_SCOPE_MARKER"] = str(marker)
+    process: subprocess.Popen[str] | None = None
+    job: _Job | None = None
     try:
         process = subprocess.Popen([str(executable)], cwd=root, env=environment, creationflags=getattr(subprocess, "CREATE_SUSPENDED", 4))
         job = _Job(process)
         _resume_suspended(process.pid)
         return process, job
-    except (PermissionError, OSError) as error:
-        raise SmokeError(f"process creation failed: {error}") from error
+    except BaseException as error:
+        if job is not None:
+            try: job.terminate()
+            finally: job.close()
+        elif process is not None and process.poll() is None:
+            process.kill(); process.wait(timeout=10)
+        raise SmokeError(f"process creation/containment failed: {error}") from error
 
 
 def _graceful_close(process: subprocess.Popen[str], *, required: bool, job: _Job) -> bool:
@@ -307,11 +293,16 @@ def _graceful_close(process: subprocess.Popen[str], *, required: bool, job: _Job
         process.wait(timeout=30)
     except subprocess.TimeoutExpired:
         _force_tree_cleanup(process, job)
+        job.close()
         if required:
             raise SmokeError("graceful close timed out")
         return False
     if process.returncode != 0:
         raise SmokeError(f"graceful close exit {process.returncode}")
+    # Closing the owning job after the root exits terminates/proves cleanup of
+    # any still-live job descendants before this launch is considered closed.
+    job.terminate()
+    job.close()
     return True
 
 
@@ -326,14 +317,15 @@ def _written_persistence(payload: dict[str, Any]) -> dict[str, Any]:
     digest = persistence.get("config_sha256")
     if not isinstance(digest, str) or len(digest) != SHA256_LENGTH or any(c not in "0123456789abcdef" for c in digest):
         raise SmokeError("writable readiness has invalid authoritative config hash")
-    return persistence
+    return {"default_sensitivity": persistence["default_sensitivity"], "config_sha256": digest}
 
 
 def _reopened_persistence(payload: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
     reopened = payload.get("persistence")
     if not isinstance(reopened, dict) or reopened.get("phase") != "reopened":
         raise SmokeError("second writable launch did not reopen persisted state")
-    if payload.get("persistence_roundtrip") is not True or reopened != expected:
+    stable = {"default_sensitivity": reopened.get("default_sensitivity"), "config_sha256": reopened.get("config_sha256")}
+    if payload.get("persistence_roundtrip") is not True or stable != expected:
         raise SmokeError("second writable launch failed authoritative config roundtrip")
     return reopened
 

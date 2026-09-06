@@ -38,10 +38,12 @@ The ready object has these required fields:
 ```
 
 For writable phase `write`, use the ordinary settings save path to persist a
-nondefault sensitivity (not 5); emit `persistence_roundtrip: false` and the
+nondefault sensitivity (not 5); emit `persistence.phase: "written"`,
+`persistence_roundtrip: false` and the
 authoritative saved value/hash. For phase `read`, reload through the normal
 application path, compare its authoritative value/hash with the saved state,
-then emit the same `persistence` object and `persistence_roundtrip: true`.
+then emit `persistence.phase: "reopened"` with the same stable
+`default_sensitivity` and `config_sha256` values and `persistence_roundtrip: true`.
 The harness compares both values, so a hardcoded true or file-existence check
 does not pass. In readonly phase, write access and both affordances are false,
 `persistence_roundtrip` is false, and `persistence` is null; no portable-root

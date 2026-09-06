@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import json
 import sys
 from pathlib import Path
@@ -75,7 +77,7 @@ def test_process_creation_permission_error_is_a_failure(monkeypatch: pytest.Monk
         raise PermissionError("denied")
 
     monkeypatch.setattr(portable_smoke.subprocess, "Popen", denied)
-    with pytest.raises(portable_smoke.SmokeError, match="process creation failed"):
+    with pytest.raises(portable_smoke.SmokeError, match="process creation/containment failed"):
         portable_smoke._start(tmp_path, tmp_path / "ready.json", "readonly", "readonly", "token", tmp_path / "scope.json")
 
 
@@ -112,3 +114,27 @@ def test_missing_or_false_ready_persistence_flags_fail_closed() -> None:
         portable_smoke._reopened_persistence(false_roundtrip, persisted)
     with pytest.raises(portable_smoke.SmokeError, match="invalid roundtrip flag"):
         portable_smoke._written_persistence({"persistence": {"phase": "written"}})
+
+
+def test_positive_roundtrip_compares_stable_values_not_phase() -> None:
+    expected = {"default_sensitivity": 7, "config_sha256": "b" * 64}
+    payload = {"persistence_roundtrip": True, "persistence": {"phase": "reopened", **expected}}
+    assert portable_smoke._reopened_persistence(payload, expected)["phase"] == "reopened"
+    payload["persistence"]["config_sha256"] = "c" * 64
+    with pytest.raises(portable_smoke.SmokeError, match="config roundtrip"):
+        portable_smoke._reopened_persistence(payload, expected)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+def test_job_object_owns_and_terminates_a_real_suspended_child() -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        creationflags=getattr(subprocess, "CREATE_SUSPENDED", 4),
+    )
+    job = portable_smoke._Job(process)
+    try:
+        portable_smoke._resume_suspended(process.pid)
+        portable_smoke._force_tree_cleanup(process, job)
+        assert process.poll() is not None
+    finally:
+        job.close()

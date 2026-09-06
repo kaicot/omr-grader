@@ -101,6 +101,7 @@ def _safe_relative(path: object, *, label: str) -> PurePosixPath:
         if (
             part in {"", ".", ".."}
             or ":" in part
+            or any(ord(character) < 32 or character in '<>"|?*' for character in part)
             or part.endswith((".", " "))
             or stem in WINDOWS_RESERVED
         ):
@@ -395,10 +396,13 @@ def _archive_names(archive: zipfile.ZipFile) -> list[str]:
     names: list[str] = []
     aliases: set[str] = set()
     for info in archive.infolist():
-        if info.is_dir():
-            continue
         name = info.filename
         _safe_relative(name, label="ZIP entry")
+        unix_type = (info.external_attr >> 16) & 0o170000
+        if unix_type == 0o120000:
+            _fail(f"ZIP entry is a symlink: {name!r}")
+        if info.is_dir():
+            continue
         if name.casefold() in aliases:
             _fail(f"duplicate/case-colliding ZIP entry: {name!r}")
         aliases.add(name.casefold())

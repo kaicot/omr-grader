@@ -114,6 +114,22 @@ def test_missing_archive_sidecar_is_a_required_failure(tmp_path: Path) -> None:
     _expect_rejected(release, archive, "sidecar is missing")
 
 
+@pytest.mark.parametrize("entry, expected", [("../escape/", "unsafe Windows path"), ("link", "symlink")])
+def test_zip_rejects_unsafe_directory_and_symlink_records(tmp_path: Path, entry: str, expected: str) -> None:
+    release, archive = _write_bundle(tmp_path)
+    with zipfile.ZipFile(archive, "a") as output:
+        if entry == "link":
+            info = zipfile.ZipInfo(entry)
+            info.create_system = 3
+            info.external_attr = 0o120777 << 16
+            output.writestr(info, b"outside")
+        else:
+            output.writestr(entry, b"")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    Path(f"{archive}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
+    _expect_rejected(release, archive, expected)
+
+
 @pytest.mark.parametrize(
     ("field", "replacement", "expected"),
     [
