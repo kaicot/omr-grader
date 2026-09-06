@@ -48,6 +48,8 @@ class _Job:
         kernel.SetInformationJobObject.restype = wintypes.BOOL
         kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         kernel.TerminateJobObject.restype = wintypes.BOOL
+        kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+        kernel.QueryInformationJobObject.restype = wintypes.BOOL
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel.CloseHandle.restype = wintypes.BOOL
         self.kernel, self.handle = kernel, kernel.CreateJobObjectW(None, None)
@@ -69,6 +71,29 @@ class _Job:
     def terminate(self) -> None:
         if self.handle and not self.kernel.TerminateJobObject(self.handle, 1):
             raise SmokeError(f"TerminateJobObject failed: {ctypes.get_last_error()}")
+
+    def process_ids(self) -> set[int]:
+        if not self.handle:
+            return set()
+        capacity = 16
+        while True:
+            size = ctypes.sizeof(wintypes.DWORD) * 2 + capacity * ctypes.sizeof(ctypes.c_size_t)
+            buffer = ctypes.create_string_buffer(size)
+            if self.kernel.QueryInformationJobObject(self.handle, 3, buffer, size, None):
+                count = int.from_bytes(buffer.raw[0:4], "little")
+                offset = ctypes.sizeof(wintypes.DWORD) * 2
+                return {int.from_bytes(buffer.raw[offset + index * ctypes.sizeof(ctypes.c_size_t):offset + (index + 1) * ctypes.sizeof(ctypes.c_size_t)], "little") for index in range(count)}
+            if ctypes.get_last_error() != 234:
+                raise SmokeError(f"QueryInformationJobObject failed: {ctypes.get_last_error()}")
+            capacity *= 2
+
+    def wait_empty(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while self.process_ids():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+        return True
     def close(self) -> None:
         if self.handle:
             handle, self.handle = self.handle, None
@@ -246,6 +271,8 @@ def _force_tree_cleanup(process: subprocess.Popen[str], job: _Job) -> None:
     job.terminate()
     if process.poll() is None:
         process.wait(timeout=10)
+    if not job.wait_empty(10):
+        raise SmokeError("owned process job did not drain after forced cleanup")
 
 
 def _wait_for_ready(process: subprocess.Popen[str], ready_file: Path, mode: str, owned_pids: set[int] | None = None) -> dict[str, Any]:
@@ -329,11 +356,14 @@ def _graceful_close(process: subprocess.Popen[str], *, required: bool, job: _Job
         return False
     if process.returncode != 0:
         raise SmokeError(f"graceful close exit {process.returncode}")
-    # Closing the owning job after the root exits terminates/proves cleanup of
-    # any still-live job descendants before this launch is considered closed.
-    job.terminate()
+    if job.wait_empty(5):
+        job.close()
+        return True
+    _force_tree_cleanup(process, job)
     job.close()
-    return True
+    if required:
+        raise SmokeError("graceful close left owned descendant processes")
+    return False
 
 
 def _written_persistence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -426,6 +456,8 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
             if process is not None and job is not None:
                 _force_tree_cleanup(process, job)
                 report.passed("process_tree_cleanup")
+            if job is not None:
+                job.close()
         except Exception as error:
             report.failed("process_tree_cleanup", error)
         try:
