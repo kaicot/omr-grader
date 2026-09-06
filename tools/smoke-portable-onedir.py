@@ -15,7 +15,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
@@ -41,49 +40,75 @@ class _Job:
     """Kill-on-close job: ownership is the Windows handle, never a recycled PID."""
     def __init__(self, process: subprocess.Popen[str]) -> None:
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]; kernel.CreateJobObjectW.restype = wintypes.HANDLE
-        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]; kernel.AssignProcessToJobObject.restype = wintypes.BOOL
-        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]; kernel.SetInformationJobObject.restype = wintypes.BOOL
-        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]; kernel.TerminateJobObject.restype = wintypes.BOOL
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]; kernel.CloseHandle.restype = wintypes.BOOL
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateJobObject.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
         self.kernel, self.handle = kernel, kernel.CreateJobObjectW(None, None)
-        if not self.handle: raise SmokeError(f"CreateJobObjectW failed: {ctypes.get_last_error()}")
-        class Basic(ctypes.Structure): _fields_ = [("a", ctypes.c_longlong), ("b", ctypes.c_longlong), ("flags", wintypes.DWORD), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t), ("e", wintypes.DWORD), ("f", ctypes.c_size_t), ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
-        class Io(ctypes.Structure): _fields_ = [(name, ctypes.c_ulonglong) for name in "abcdef"]
-        class Extended(ctypes.Structure): _fields_ = [("basic", Basic), ("io", Io), ("a", ctypes.c_size_t), ("b", ctypes.c_size_t), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t)]
-        limits = Extended(); limits.basic.flags = 0x2000
+        if not self.handle:
+            raise SmokeError(f"CreateJobObjectW failed: {ctypes.get_last_error()}")
+        class Basic(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_longlong), ("b", ctypes.c_longlong), ("flags", wintypes.DWORD), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t), ("e", wintypes.DWORD), ("f", ctypes.c_size_t), ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
+        class Io(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in "abcdef"]
+        class Extended(ctypes.Structure):
+            _fields_ = [("basic", Basic), ("io", Io), ("a", ctypes.c_size_t), ("b", ctypes.c_size_t), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t)]
+        limits = Extended()
+        limits.basic.flags = 0x2000
         if not kernel.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)) or not kernel.AssignProcessToJobObject(self.handle, process._handle):
-            error = ctypes.get_last_error(); kernel.CloseHandle(self.handle); self.handle = None; raise SmokeError(f"could not configure/assign process job: {error}")
+            error = ctypes.get_last_error()
+            kernel.CloseHandle(self.handle)
+            self.handle = None
+            raise SmokeError(f"could not configure/assign process job: {error}")
     def terminate(self) -> None:
-        if self.handle and not self.kernel.TerminateJobObject(self.handle, 1): raise SmokeError(f"TerminateJobObject failed: {ctypes.get_last_error()}")
+        if self.handle and not self.kernel.TerminateJobObject(self.handle, 1):
+            raise SmokeError(f"TerminateJobObject failed: {ctypes.get_last_error()}")
     def close(self) -> None:
         if self.handle:
             handle, self.handle = self.handle, None
-            if not self.kernel.CloseHandle(handle): raise SmokeError(f"CloseHandle(job) failed: {ctypes.get_last_error()}")
+            if not self.kernel.CloseHandle(handle):
+                raise SmokeError(f"CloseHandle(job) failed: {ctypes.get_last_error()}")
 
 
 def _resume_suspended(process_id: int) -> None:
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]; kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    kernel.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]; kernel.Thread32First.restype = wintypes.BOOL
-    kernel.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]; kernel.Thread32Next.restype = wintypes.BOOL
-    kernel.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]; kernel.OpenThread.restype = wintypes.HANDLE
-    kernel.ResumeThread.argtypes = [wintypes.HANDLE]; kernel.ResumeThread.restype = wintypes.DWORD
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]; kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
+    kernel.Thread32First.restype = wintypes.BOOL
+    kernel.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
+    kernel.Thread32Next.restype = wintypes.BOOL
+    kernel.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenThread.restype = wintypes.HANDLE
+    kernel.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel.ResumeThread.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
     snapshot = kernel.CreateToolhelp32Snapshot(4, 0)
-    if snapshot == wintypes.HANDLE(-1).value: raise SmokeError(f"thread snapshot failed: {ctypes.get_last_error()}")
+    if snapshot == wintypes.HANDLE(-1).value:
+        raise SmokeError(f"thread snapshot failed: {ctypes.get_last_error()}")
     try:
-        entry = _ThreadEntry32(); entry.dwSize = ctypes.sizeof(entry)
+        entry = _ThreadEntry32()
+        entry.dwSize = ctypes.sizeof(entry)
         found = kernel.Thread32First(snapshot, ctypes.byref(entry))
         while found:
             if entry.th32OwnerProcessID == process_id:
                 thread = kernel.OpenThread(2, False, entry.th32ThreadID)
-                if not thread or kernel.ResumeThread(thread) == 0xFFFFFFFF: raise SmokeError(f"could not resume owned process: {ctypes.get_last_error()}")
-                kernel.CloseHandle(thread); return
+                if not thread or kernel.ResumeThread(thread) == 0xFFFFFFFF:
+                    raise SmokeError(f"could not resume owned process: {ctypes.get_last_error()}")
+                kernel.CloseHandle(thread)
+                return
             entry.dwSize = ctypes.sizeof(entry)
             found = kernel.Thread32Next(snapshot, ctypes.byref(entry))
         raise SmokeError("owned suspended process had no resumable thread")
-    finally: kernel.CloseHandle(snapshot)
+    finally:
+        kernel.CloseHandle(snapshot)
 
 
 @dataclass
@@ -280,10 +305,13 @@ def _start(root: Path, ready_file: Path, mode: str, phase: str, nonce: str, mark
         return process, job
     except BaseException as error:
         if job is not None:
-            try: job.terminate()
-            finally: job.close()
+            try:
+                job.terminate()
+            finally:
+                job.close()
         elif process is not None and process.poll() is None:
-            process.kill(); process.wait(timeout=10)
+            process.kill()
+            process.wait(timeout=10)
         raise SmokeError(f"process creation/containment failed: {error}") from error
 
 
