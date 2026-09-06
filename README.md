@@ -89,6 +89,14 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe main.py
 ```
 
+`py -3.12`를 사용할 수 없거나 실행에 실패하는 호스트에서는 `uv`를 대체 경로로
+사용합니다. 호스트 전역 Python 등록이나 런처를 수정하지 않습니다.
+
+```powershell
+uv venv --python 3.12 --seed .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev,build]" -c constraints\windows-py312.lock
+```
+
 소스 실행 시에는 `main.py`가 있는 저장소 루트가 포터블 루트가 됩니다.
 
 테스트와 정적 검사는 다음과 같이 실행합니다.
@@ -113,6 +121,17 @@ EXE만 따로 복사하지 않습니다.
 & .\tools\verify-portable-folder.ps1 `
     -ReleaseRoot .\dist\OMR-Grader-fixed21-YYYYMMDD `
     -Smoke Both -StrictShutdown
+```
+
+OneDrive의 동기화 루트와 `dist`는 Windows Cloud reparse 경로일 수 있습니다. 빌드
+가드는 모든 reparse ancestor를 거부하므로 이를 완화하지 말고, 저장소 체크아웃을
+일반 쓰기 가능 폴더로 복사한 뒤 빌드합니다. 일반 저장소에서는 기본 `.\dist`가
+유효합니다. 별도 출력 위치가 필요하면 기존 폴더를 지우지 않는 일반 부모를 지정합니다.
+
+```powershell
+$releaseRoot = 'D:\workspace\omr-grader-release'
+& .\tools\build-portable-folder.ps1 `
+    -DistRoot "$releaseRoot\dist" -WorkRoot "$releaseRoot\build" -BuildNumber 21
 ```
 
 `WorkRoot`를 지정할 때는 기존 파일을 담은 작업 폴더가 아니라 새 고유 하위 폴더를

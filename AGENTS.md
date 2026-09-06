@@ -111,8 +111,8 @@ D:\OMR-Grader\
 - 빌드 후에는 `tools/verify-portable-folder.ps1 -Smoke Both`로 부분 smoke를 실행할 수
   있지만, 이 결과를 전체 승인으로 안내하지 않습니다.
 - 종료 신호까지 릴리즈 게이트로 강제할 때만 `-StrictShutdown`을 추가합니다.
-- 기본 smoke 결과의 `graceful_close=inconclusive`는 제품 실행·포터블 저장 검증과
-  분리된 종료 진단으로 기록합니다.
+- 비엄격 smoke의 `forced_cleanup`·부분 범위 진단 결과는 제품 실행·포터블 저장 검증과
+  분리해 기록하며 전체 승인으로 해석하지 않습니다.
 - 검증기는 `OMR Grader.exe`, `_internal\`, 현재 `Data/` 포터블 계약, receipt의 파일
   해시와 Git HEAD를 확인합니다.
 - `release-receipt.json`은 형식 2만 새 표준으로 사용합니다. 형식 1은
@@ -122,6 +122,11 @@ D:\OMR-Grader\
   `-ReleaseRoot <dir> -Smoke Both -StrictShutdown`입니다.
 - WorkRoot는 기존 파일을 지우는 scratch가 아니라 새 고유 하위 폴더를 만들 부모
   경로입니다. 빌드 번호 21 후보는 `-BuildNumber 21`을 사용하며 기존 출력은 보존합니다.
+- OneDrive 동기화 루트처럼 Windows Cloud reparse 속성이 있는 경로는 저장소·출력
+  경로의 ancestor로 사용하지 않습니다. 빌드 가드가 모든 reparse ancestor를 거부하므로
+  코드를 완화하지 말고 일반 쓰기 가능 폴더에 체크아웃을 복사합니다. 일반 저장소의
+  기본 `.\dist`는 유효하며, 필요하면 `-DistRoot`와 `-WorkRoot`로 일반 부모 아래
+  출력 위치를 지정합니다.
 - 단일 EXE와 `release-receipt.json`을 릴리즈 루트에 직접 두는 이전
   `packaging/verify_release.py` 계약을 현재 onedir 릴리즈의 판정 기준으로 사용하지
   않습니다.
