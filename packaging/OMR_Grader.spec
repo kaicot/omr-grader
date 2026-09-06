@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -10,6 +11,21 @@ PROJECT_ROOT = Path(SPECPATH).resolve().parent
 SRC_ROOT = PROJECT_ROOT / "src"
 
 datas = collect_data_files("omr_grader") + collect_data_files("tzdata")
+
+notice_helper_path = PROJECT_ROOT / "packaging" / "generate_third_party_notices.py"
+notice_helper_spec = importlib.util.spec_from_file_location("third_party_notices", notice_helper_path)
+if notice_helper_spec is None or notice_helper_spec.loader is None:
+    raise RuntimeError("Could not load the third-party notice helper.")
+notice_helper = importlib.util.module_from_spec(notice_helper_spec)
+notice_helper_spec.loader.exec_module(notice_helper)
+notice_directory = Path(workpath) / "third-party-notices"
+notice_index = notice_helper.materialize_notices(notice_directory)
+datas.extend(
+    (
+        (str(notice_index), "."),
+        (str(notice_directory / "THIRD_PARTY_NOTICES_SOURCES"), "THIRD_PARTY_NOTICES_SOURCES"),
+    )
+)
 
 hiddenimports = ["fitz", "omr_grader.bootstrap"]
 hiddenimports.extend(collect_submodules("tzdata"))

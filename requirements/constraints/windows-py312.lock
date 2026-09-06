@@ -1,6 +1,6 @@
-# Python 3.12 Windows x64 direct requirements. Hashes are intentionally absent until
-# the attested offline wheelhouse is produced; release installation must use its
-# separately generated --require-hashes lock file.
+# Windows x64 / CPython 3.12 installation constraints for the reviewed 2.1.1 work.
+# These pins intentionally have no hashes: an offline wheelhouse attestation is a
+# separate release gate and is not claimed by this file.
 PySide6==6.11.2
 PySide6_Essentials==6.11.2
 PySide6_Addons==6.11.2
@@ -9,6 +9,7 @@ opencv-python==4.11.0.86
 numpy==2.2.6
 PyMuPDF==1.26.1
 openpyxl==3.1.5
+tzdata==2026.3
 pytest==8.4.1
 pytest-qt==4.4.0
 pytest-cov==6.2.1
