@@ -171,7 +171,9 @@ def current_user_sid() -> str:
 
 
 def apply_write_deny(root: Path, sid: str) -> None:
-    rule = f"{sid}:(OI)(CI)(WD,AD,DC,DE)"
+    # icacls treats an unqualified numeric SID as an account name; the leading
+    # asterisk explicitly selects SID syntax for both add and removal.
+    rule = f"*{sid}:(OI)(CI)(WD,AD,DC,DE)"
     completed = subprocess.run(
         ["icacls", str(root), "/deny", rule, "/T", "/C"],
         capture_output=True,
@@ -186,7 +188,7 @@ def apply_write_deny(root: Path, sid: str) -> None:
 
 def remove_write_deny(root: Path, sid: str) -> None:
     completed = subprocess.run(
-        ["icacls", str(root), "/remove:d", sid, "/T", "/C"],
+        ["icacls", str(root), "/remove:d", f"*{sid}", "/T", "/C"],
         capture_output=True,
         text=True,
         encoding="utf-8",

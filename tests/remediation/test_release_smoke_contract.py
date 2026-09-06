@@ -138,3 +138,15 @@ def test_job_object_owns_and_terminates_a_real_suspended_child() -> None:
         assert process.poll() is not None
     finally:
         job.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL semantics")
+def test_numeric_sid_acl_deny_blocks_write_and_is_restored(tmp_path: Path) -> None:
+    sid = portable_smoke.current_user_sid()
+    portable_smoke.apply_write_deny(tmp_path, sid)
+    try:
+        with pytest.raises(PermissionError):
+            (tmp_path / "must-not-write.txt").write_text("blocked", encoding="utf-8")
+    finally:
+        portable_smoke.remove_write_deny(tmp_path, sid)
+    (tmp_path / "write-after-restore.txt").write_text("restored", encoding="utf-8")
