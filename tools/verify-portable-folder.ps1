@@ -57,8 +57,9 @@ if ($Smoke -ne 'None') {
             }
         }
     } finally {
-        $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-        if ([IO.Path]::GetDirectoryName($temporary) -ne $tempBase -or [IO.Path]::GetFileName($temporary) -notlike 'omr-verified-zip-*') { Fail 'unsafe verifier temporary cleanup target' }
+        $tempBase = ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd([char[]]@('\', '/'))
+        $tempParent = ([IO.Path]::GetDirectoryName($temporary)).TrimEnd([char[]]@('\', '/'))
+        if ($tempParent -ne $tempBase -or [IO.Path]::GetFileName($temporary) -notlike 'omr-verified-zip-*') { Fail 'unsafe verifier temporary cleanup target' }
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
     }
 }
