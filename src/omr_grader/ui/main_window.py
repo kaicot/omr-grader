@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
         target = self.size().boundedTo(maximum_client)
         if not self._initial_geometry_applied:
             target = self.initial_size_for_available_geometry(available, margins)
+            self.initial_size = QSize(target)
             self._initial_geometry_applied = True
         if target != self.size():
             focused = self.focusWidget()

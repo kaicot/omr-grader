@@ -1,10 +1,42 @@
-from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+import pytest
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QRect, Qt, QUrl
 from PySide6.QtGui import QDropEvent
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
 from omr_grader.ui.main_window import MainWindow
 from omr_grader.ui.scan_page import ScanPage, ScanPageRequest, ValidatedProfileState
+
+
+@pytest.fixture(
+    params=(None, (960, 540), (1280, 720), (1366, 768), (1536, 864), (1920, 1080)),
+    ids=("current-screen", "960x540", "1280x720", "1366x768", "1536x864", "1920x1080"),
+)
+def available_work_area(request, monkeypatch, qapp):
+    """Emulate logical work areas while retaining Qt's real frames and layouts."""
+    if request.param is None:
+        return qapp.primaryScreen().availableGeometry()
+    available = QRect(0, 0, *request.param)
+    monkeypatch.setattr(
+        MainWindow, "_available_geometry_for_current_screen", lambda self: QRect(available)
+    )
+    return available
+
+
+def _tab_to(qtbot, widget):
+    for _ in range(20):
+        focused = QApplication.focusWidget()
+        if focused is widget:
+            return
+        assert focused is not None
+        qtbot.keyClick(focused, Qt.Key.Key_Tab)
+        QApplication.processEvents()
+    assert QApplication.focusWidget() is widget
+
+
+def _fully_in_viewport(widget, viewport):
+    return viewport.rect().contains(QRect(widget.mapTo(viewport, QPoint(0, 0)), widget.size()))
 
 
 def _profile(*, validated=True, errors=(), is_default=False, duplicate_outcome=None):
@@ -81,42 +113,55 @@ def test_run_emits_immutable_validated_profile_request(qtbot):
     assert request.roster_path == "C:/input/roster.xlsx"
 
 
-def test_fresh_response_button_is_visible_and_keyboard_accessible_at_minimum_window_size(qtbot):
+def test_scan_primary_buttons_scroll_into_view_and_activate_by_keyboard(qtbot, available_work_area):
     window = MainWindow()
     qtbot.addWidget(window)
-    window.resize(1280, 800)
     window.show()
     qtbot.waitExposed(window)
     window.activateWindow()
-    window.setFocus(Qt.FocusReason.OtherFocusReason)
+    window.nav_buttons[window.SCAN_PAGE].setFocus(Qt.FocusReason.TabFocusReason)
     QApplication.processEvents()
 
     page = window.scan_page
     button = page.fresh_response_button
-    viewport = window.page_scroll_areas[window.SCAN_PAGE].viewport()
-    button_rect = button.rect()
-    button_top_left = button.mapTo(viewport, button_rect.topLeft())
-    button_bottom_right = button.mapTo(viewport, button_rect.bottomRight())
+    scroll_area = window.page_scroll_areas[window.SCAN_PAGE]
+    viewport = scroll_area.viewport()
 
+    assert available_work_area.contains(window.frameGeometry())
     assert window.pages.currentIndex() == window.SCAN_PAGE
     assert button.isVisible()
-    assert viewport.rect().contains(button_top_left)
-    assert viewport.rect().contains(button_bottom_right)
     assert button.text() == "응답 엑셀로 시작"
     assert button.accessibleName() == "응답 엑셀로 새 세션 시작"
     assert button.focusPolicy() == Qt.FocusPolicy.StrongFocus
     assert button.isEnabled()
 
-    for _ in range(20):
-        if QApplication.focusWidget() is button:
-            break
-        qtbot.keyClick(window, Qt.Key.Key_Tab)
+    # A control may start outside the viewport; keyboard focus must reveal it
+    # before activation, including on the default 800px offscreen test display.
+    _tab_to(qtbot, button)
+    assert _fully_in_viewport(button, viewport)
+    fresh_requests = QSignalSpy(page.fresh_response_requested)
+    qtbot.keyClick(button, Qt.Key.Key_Space)
+    assert fresh_requests.count() == 1
+    qtbot.keyClick(button, Qt.Key.Key_Return)
+    assert fresh_requests.count() == 2
 
-    assert QApplication.focusWidget() is button
-    with qtbot.waitSignal(page.fresh_response_requested):
-        qtbot.keyClick(button, Qt.Key.Key_Space)
-    with qtbot.waitSignal(page.fresh_response_requested):
-        qtbot.keyClick(button, Qt.Key.Key_Return)
+    page.set_profiles((_profile(is_default=True),))
+    page.exam_name_edit.setText("26-2 생리학 중간고사")
+    page.set_source(ImportSelection(ImportKind.PDF, ("C:/input/scans.pdf",)))
+    QApplication.processEvents()
+    scroll_area.horizontalScrollBar().setValue(0)
+    if available_work_area.width() == 960:
+        assert not _fully_in_viewport(page.run_button, viewport)
+        assert scroll_area.horizontalScrollBar().maximum() > 0
+    _tab_to(qtbot, page.run_button)
+    assert page.run_button.isEnabled()
+    assert _fully_in_viewport(page.run_button, viewport)
+    if available_work_area.width() == 960:
+        assert scroll_area.horizontalScrollBar().value() > 0
+    recognition_requests = QSignalSpy(page.recognition_requested)
+    qtbot.keyClick(page.run_button, Qt.Key.Key_Space)
+    assert recognition_requests.count() == 1
+    assert recognition_requests.at(0)[0].exam_name == "26-2 생리학 중간고사"
 
     page.set_busy(True, "import-1", cancellable=False)
     assert not page.fresh_response_button.isEnabled()
@@ -126,7 +171,7 @@ def test_fresh_response_button_is_visible_and_keyboard_accessible_at_minimum_win
     assert not page.fresh_response_button.isEnabled()
 
 
-def test_initial_window_fits_scan_page_without_vertical_scroll(qtbot):
+def test_initial_frame_fits_work_area_and_scan_footer_remains_scrollable(qtbot, available_work_area):
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
@@ -134,7 +179,30 @@ def test_initial_window_fits_scan_page_without_vertical_scroll(qtbot):
     QApplication.processEvents()
 
     assert window.size() == window.initial_size
-    assert not window.page_scroll_areas[window.SCAN_PAGE].verticalScrollBar().isVisible()
+    assert available_work_area.contains(window.frameGeometry())
+    assert available_work_area.contains(window.windowHandle().frameGeometry())
+    # Verify that the simulated work areas were really used instead of all
+    # cases silently running at the offscreen plugin's smaller default size.
+    if available_work_area.width() < MainWindow.PREFERRED_INITIAL_SIZE.width():
+        assert window.frameGeometry().width() == available_work_area.width()
+    if available_work_area.height() < MainWindow.PREFERRED_INITIAL_SIZE.height():
+        assert window.frameGeometry().height() == available_work_area.height()
+    page = window.scan_page
+    scroll_area = window.page_scroll_areas[window.SCAN_PAGE]
+    viewport = scroll_area.viewport()
+    scrollbar = scroll_area.verticalScrollBar()
+    assert scroll_area.widgetResizable()
+    if page.height() > viewport.height():
+        assert scrollbar.isVisible()
+        assert scrollbar.maximum() > 0
+        scrollbar.setFocus(Qt.FocusReason.TabFocusReason)
+        qtbot.keyClick(scrollbar, Qt.Key.Key_End)
+        QApplication.processEvents()
+        assert scrollbar.value() == scrollbar.maximum()
+    else:
+        assert scrollbar.maximum() == 0
+    footer_bottom = page.session_footer.mapTo(viewport, page.session_footer.rect().bottomLeft())
+    assert 0 <= footer_bottom.y() <= viewport.rect().bottom()
 
 
 def test_scan_run_and_cancel_actions_are_in_top_action_row(qtbot):
