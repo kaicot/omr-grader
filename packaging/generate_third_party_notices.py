@@ -22,7 +22,9 @@ BUNDLED_DISTRIBUTIONS = (
     "opencv-python",
     "numpy",
     "openpyxl",
+    "et-xmlfile",
     "tzdata",
+    "PyInstaller",
 )
 NOTICE_FILENAMES = ("license", "licence", "copying", "notice", "copyright")
 
@@ -89,6 +91,12 @@ def materialize_notices(output_directory: Path) -> Path:
             raise RuntimeError(
                 f"Required bundled distribution has no installed license or notice source: "
                 f"{distribution_name}"
+            )
+        if distribution_name == "PyInstaller" and not any(
+            path.name.lower() == "copying.txt" for path in copied
+        ):
+            raise RuntimeError(
+                "PyInstaller bootloader COPYING.txt source was not provided by the build distribution"
             )
         metadata = distribution_info.metadata
         declared_license = metadata.get("License", "not declared").splitlines()[0]
