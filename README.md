@@ -15,8 +15,8 @@ Windows에서 스캔한 OMR 답안지를 인식하고 검토·채점·보관하�
 
 ## 포터블 EXE 사용
 
-Python 설치는 필요하지 않습니다. 쓰기 가능한 전용 폴더를 만들고 EXE를 그 안에
-두는 방식을 권장합니다.
+Python 설치는 필요하지 않습니다. 쓰기 가능한 전용 폴더를 만들고 배포 폴더 전체를
+그 안에 두는 방식을 권장합니다.
 
 공식 배포 단위는 PyInstaller onedir 폴더 전체입니다. EXE와 `_internal\`을 함께
 보관하고 이동해야 합니다.
@@ -134,14 +134,27 @@ $releaseRoot = 'D:\workspace\omr-grader-release'
     -DistRoot "$releaseRoot\dist" -WorkRoot "$releaseRoot\build" -BuildNumber 21
 ```
 
-`WorkRoot`를 지정할 때는 기존 파일을 담은 작업 폴더가 아니라 새 고유 하위 폴더를
-만들 기존 부모 경로를 지정합니다. 빌드 스크립트는 기존 출력과 부모 폴더를 지우지
-않으며, 이전 산출물과 충돌하면 중단합니다.
+`WorkRoot`는 빌드가 새 고유 하위 폴더만 만드는 부모 경로입니다. 빌드 스크립트는
+기존 파일과 부모 폴더를 지우지 않으며, 이전 산출물과 충돌하면 중단합니다.
 
-빌드 결과의 `OMR Grader\release-receipt.json`은 형식 2로 현재 Git HEAD, 빌드 입력,
-제품 버전, 도구 버전과 payload 파일을 연결합니다. ZIP과 SHA-256 sidecar는 payload
-폴더 밖에 보존합니다. 이전 형식 1 receipt는 `LEGACY_AUDIT_ONLY`로만 판정하며 새
-표준 receipt로 고쳐 쓰지 않습니다. `-Smoke None`은 구조 검사일 뿐이고,
+빌드 산출물은 다음 3계층입니다. `release-receipt.json`은 EXE payload 밖의 외부
+release 폴더에 두며, ZIP과 SHA-256 sidecar는 `dist` 바로 아래에서 그 release 폴더와
+나란히 보존합니다.
+
+```text
+dist\
+├─ OMR-Grader-fixed21-YYYYMMDD\
+│  ├─ release-receipt.json
+│  └─ OMR Grader\
+│     ├─ OMR Grader.exe
+│     └─ _internal\...
+├─ OMR-Grader-fixed21-YYYYMMDD.zip
+└─ OMR-Grader-fixed21-YYYYMMDD.zip.sha256
+```
+
+receipt 형식 2는 현재 Git HEAD, 빌드 입력, 제품 버전, 도구 버전과 payload 파일을
+연결합니다. 이전 형식 1 receipt는 `LEGACY_AUDIT_ONLY`로만 판정하며 새 표준 receipt로
+고쳐 쓰지 않습니다. `-Smoke None`은 구조 검사일 뿐이고,
 `Writable`·`ReadOnly` 단독 또는 비엄격 검사는 전체 승인 판정이 아닙니다. 최종 기술
 게이트는 `-ReleaseRoot <dir> -Smoke Both -StrictShutdown`입니다.
 
