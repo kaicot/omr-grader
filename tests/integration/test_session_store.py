@@ -8,9 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from omr_grader.application.backup_use_case import BackupApplicationService
 from omr_grader.application.dto import (
+    BackupExportRequest,
+    BackupValidateRequest,
+    CollisionPolicy,
     GenerationMutation,
     MetadataSemanticView,
+    RestoreCommand,
     SnapshotRequest,
 )
 from omr_grader.domain.enums import (
@@ -29,7 +34,7 @@ from omr_grader.domain.models import (
     SessionRecord,
 )
 from omr_grader.infrastructure import session_store as session_store_module
-from omr_grader.infrastructure.session_store import SessionStore
+from omr_grader.infrastructure.session_store import SessionCommitCoordinator, SessionStore
 
 STAMP = "2026-07-28T12:00:00.000000Z"
 SHA = "a" * 64
@@ -334,3 +339,240 @@ def test_result_view_failure_keeps_published_revision_consistent(
     )
     assert isinstance(opened, Ok)
     opened.value.close()
+
+
+def _create_prune_fixture(root: Path) -> tuple[SessionStore, Path]:
+    store = SessionStore(root)
+    artifacts = {
+        "payload.bin": b"immutable synthetic history",
+        "images/page.png": b"synthetic normalized image",
+        "sources/scans/page.pdf": b"synthetic original PDF",
+    }
+    manifest = replace(
+        _manifest(),
+        files=tuple(
+            ManifestFile(
+                path, len(payload), hashlib.sha256(payload).hexdigest(), "application/octet-stream"
+            )
+            for path, payload in sorted(artifacts.items())
+        ),
+    )
+    created = store._create_initial_generation(
+        identity=_identity(),
+        manifest=manifest,
+        session=_record(),
+        display_name="exam-session-1",
+        artifacts=artifacts,
+    )
+    assert isinstance(created, Ok)
+    first = store.commit_generation(_mutation())
+    assert isinstance(first, Ok) and not first.warnings
+    session = root / "exam-session-1"
+    assert len(tuple((session / "generations").iterdir())) == 1
+    return store, session
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _assert_prune_backup_roundtrip(store: SessionStore, revision: int, root: Path) -> None:
+    target = SessionStore(root / "restored")
+    service = BackupApplicationService(
+        SessionCommitCoordinator(store), restore_publisher=target.restore_publisher()
+    )
+    archive = root / "prune.omrbak"
+    exported = service.export_backup(
+        BackupExportRequest(
+            SnapshotRequest("session-1", revision, SnapshotPurpose.BACKUP),
+            str(archive),
+            CollisionPolicy.ERROR,
+            "prune-backup",
+        )
+    )
+    assert isinstance(exported, Ok), exported
+    validated = service.validate_backup(BackupValidateRequest(str(archive)))
+    assert isinstance(validated, Ok), validated
+    restored = service.restore_backup(
+        RestoreCommand(validated.value, str(target.root), "prune-restore")
+    )
+    assert isinstance(restored, Ok), restored
+    opened = target.open_committed_snapshot(
+        SnapshotRequest("session-1", revision, SnapshotPurpose.DETAIL)
+    )
+    assert isinstance(opened, Ok), opened
+    try:
+        for path, payload in (
+            ("payload.bin", b"immutable synthetic history"),
+            ("images/page.png", b"synthetic normalized image"),
+            ("sources/scans/page.pdf", b"synthetic original PDF"),
+        ):
+            stream = opened.value.open_allowlisted(path)
+            assert isinstance(stream, Ok), stream
+            with stream.value:
+                assert stream.value.read() == payload
+    finally:
+        assert isinstance(opened.value.close(), Ok)
+
+
+@pytest.mark.parametrize("successful_moves", (0, 1))
+def test_prune_move_failure_keeps_current_readable_backupable_and_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, successful_moves: int
+) -> None:
+    store, session = _create_prune_fixture(tmp_path / "source")
+    revision = 2
+    if successful_moves:
+        # Keep two obsolete generations so the injected failure really follows
+        # a successful prune move, with the older revision-one boundary absent.
+        def defer_prune(stage: str) -> None:
+            if stage == "before_generation_prune":
+                raise OSError("defer synthetic cleanup")
+
+        deferred = SessionStore(store.root, fault_barrier=defer_prune).commit_generation(
+            _mutation(expected_revision=2)
+        )
+        assert isinstance(deferred, Ok) and deferred.warnings
+        revision = 3
+
+    moved: list[Path] = []
+    retry_replace = session_store_module.retry_replace
+
+    def fail_prune_move(source: Path, destination: Path) -> None:
+        if source.parent == session / "generations":
+            if len(moved) == successful_moves:
+                raise OSError("injected owned-fixture prune move error")
+            retry_replace(source, destination)
+            moved.append(source)
+        else:
+            retry_replace(source, destination)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(session_store_module, "retry_replace", fail_prune_move)
+        committed = store.commit_generation(_mutation(expected_revision=revision))
+    assert isinstance(committed, Ok), committed
+    assert committed.value.revision == revision + 1
+    assert [warning.code for warning in committed.warnings] == ["GENERATION_PRUNE_RETRY_REQUIRED"]
+    assert len(moved) == successful_moves
+    revision += 1
+    pointer_bytes = (session / "CURRENT.json").read_bytes()
+    pointer = json.loads(pointer_bytes)
+    current = session / pointer["generation_relpath"]
+    canonical = _tree_bytes(current)
+    raw = _tree_bytes(session / "01원본스캔")
+
+    reopened_store = SessionStore(store.root)
+    before_read = _tree_bytes(store.root)
+    opened = reopened_store.open_committed_snapshot(
+        SnapshotRequest("session-1", revision, SnapshotPurpose.DETAIL)
+    )
+    assert isinstance(opened, Ok), opened
+    assert opened.value.snapshot_ref.generation_id == committed.value.generation_id
+    assert isinstance(opened.value.close(), Ok)
+    assert _tree_bytes(store.root) == before_read
+    _assert_prune_backup_roundtrip(reopened_store, revision, tmp_path)
+    assert (session / "CURRENT.json").read_bytes() == pointer_bytes
+    assert _tree_bytes(current) == canonical
+    assert _tree_bytes(session / "01원본스캔") == raw
+
+    retried = reopened_store.commit_generation(_mutation(expected_revision=revision))
+    assert isinstance(retried, Ok) and not retried.warnings, retried
+    generations = tuple((session / "generations").iterdir())
+    assert len(generations) == 1
+    assert not (session / ".staging" / "prune").exists()
+    assert _tree_bytes(session / "01원본스캔") == raw
+    assert not any(path.suffix in {".png", ".pdf"} for path in generations[0].rglob("*"))
+    assert {path.name for path in (store.root / ".locks" / "lifetime" / "session-1").iterdir()} == {
+        f"{retried.value.generation_id}.gate"
+    }
+    final = SessionStore(store.root).open_committed_snapshot(
+        SnapshotRequest("session-1", revision + 1, SnapshotPurpose.DETAIL)
+    )
+    assert isinstance(final, Ok), final
+    assert isinstance(final.value.close(), Ok)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "missing-retention",
+        "bad-boundary-hash",
+        "bad-parent-hash",
+        "bad-retention-session",
+        "boolean-schema",
+        "bad-boundary-generation",
+        "bad-boundary-revision",
+        "bad-parent-generation",
+        "extra-parent-field",
+        "missing-retained-manifest",
+        "bad-retained-manifest",
+        "bad-retained-session",
+        "bad-retained-generation",
+        "renamed-retained-generation",
+    ),
+)
+def test_interrupted_prune_does_not_bypass_retention_or_retained_manifest_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    store, session = _create_prune_fixture(tmp_path)
+    retry_replace = session_store_module.retry_replace
+
+    def fail_prune_move(source: Path, destination: Path) -> None:
+        if source.parent == session / "generations":
+            raise OSError("injected owned-fixture prune move error")
+        retry_replace(source, destination)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(session_store_module, "retry_replace", fail_prune_move)
+        committed = store.commit_generation(_mutation(expected_revision=2))
+    assert isinstance(committed, Ok) and committed.warnings
+    pointer_bytes = (session / "CURRENT.json").read_bytes()
+    retention_path = session / "RETENTION.json"
+    retention = json.loads(retention_path.read_bytes())
+    if tamper == "missing-retention":
+        retention_path.unlink()
+    elif tamper == "missing-retained-manifest":
+        parent = next((session / "generations").glob("g00000002_*")) / "manifest.json"
+        parent.unlink()
+    elif tamper.startswith("bad-retained-") or tamper == "renamed-retained-generation":
+        parent = next((session / "generations").glob("g00000002_*")) / "manifest.json"
+        value = json.loads(parent.read_bytes())
+        field = {
+            "bad-retained-manifest": "app_version",
+            "bad-retained-session": "session_id",
+            "bad-retained-generation": "generation_id",
+            "renamed-retained-generation": "generation_id",
+        }[tamper]
+        value[field] = "tampered"
+        parent.write_text(json.dumps(value), encoding="utf-8")
+        if tamper == "renamed-retained-generation":
+            parent.parent.rename(parent.parent.with_name("g00000002_tampered"))
+    else:
+        if tamper == "bad-boundary-hash":
+            retention["boundary_manifest_sha256"] = "0" * 64
+        elif tamper == "bad-parent-hash":
+            retention["omitted_parent"]["manifest_sha256"] = "0" * 64
+        elif tamper == "boolean-schema":
+            retention["schema_version"] = True
+        elif tamper == "bad-boundary-generation":
+            retention["boundary_generation_id"] = "other-generation"
+        elif tamper == "bad-boundary-revision":
+            retention["boundary_revision"] = 99
+        elif tamper == "bad-parent-generation":
+            retention["omitted_parent"]["generation_id"] = "other-generation"
+        elif tamper == "extra-parent-field":
+            retention["omitted_parent"]["unexpected"] = True
+        else:
+            retention["session_id"] = "other-session"
+        retention_path.write_text(json.dumps(retention), encoding="utf-8")
+    before_read = _tree_bytes(store.root)
+    opened = store.open_committed_snapshot(
+        SnapshotRequest("session-1", 3, SnapshotPurpose.DETAIL)
+    )
+    assert isinstance(opened, Err), opened
+    assert opened.errors[0].code == "SESSION_COMMITTED_GENERATION_INVALID"
+    assert _tree_bytes(store.root) == before_read
+    assert (session / "CURRENT.json").read_bytes() == pointer_bytes
