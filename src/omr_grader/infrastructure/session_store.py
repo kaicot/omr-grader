@@ -950,31 +950,48 @@ class SessionStore:
         return pointer, manifest, generation
 
     def _validate_lineage(self, session: Path, current: SessionManifest) -> None:
-        """Require every locally retained parent manifest to authenticate the current head."""
+        """Check retained parents even when authenticated compaction is incomplete."""
         generations = session / "generations"
         by_id: dict[str, tuple[SessionManifest, str]] = {}
+        by_revision: dict[int, str] = {}
         for candidate in generations.iterdir():
-            if not candidate.is_dir() or candidate.is_symlink():
+            if not candidate.is_dir() or _is_reparse_point(candidate):
                 raise ValueError("published generation path invalid")
             manifest, digest = self._manifest(candidate)
-            if manifest.session_id != current.session_id or manifest.generation_id in by_id:
+            if (
+                manifest.session_id != current.session_id
+                or manifest.generation_id in by_id
+                or manifest.revision in by_revision
+                or candidate.name != f"g{manifest.revision:08d}_{manifest.generation_id}"
+            ):
                 raise ValueError("published generation lineage identity invalid")
             by_id[manifest.generation_id] = (manifest, digest)
+            by_revision[manifest.revision] = manifest.generation_id
 
         manifest = current
+        retention_authenticated = False
         while manifest.revision > 1:
             parent_id = manifest.parent_generation_id
             parent_revision = manifest.parent_revision
             parent_digest = manifest.parent_manifest_sha256
             if parent_id is None or parent_revision is None or parent_digest is None:
                 raise ValueError("generation parent lineage is incomplete")
+            # RETENTION is published before old generations are moved.  A
+            # failed/partial move must not make this boundary depend on whether
+            # its direct parent happened to move already.  Still verify every
+            # available parent below; this only authorizes a missing ancestor.
+            retention_authenticated = retention_authenticated or (
+                self._is_authenticated_retention_boundary(
+                    session, manifest, parent_id, parent_digest
+                )
+            )
             parent = by_id.get(parent_id)
             if parent is None:
+                if parent_revision in by_revision:
+                    raise ValueError("retained parent generation identity does not authenticate")
                 if not (
-                    self._is_authenticated_restore_boundary(
-                        session, manifest, parent_id, parent_digest
-                    )
-                    or self._is_authenticated_retention_boundary(
+                    retention_authenticated
+                    or self._is_authenticated_restore_boundary(
                         session, manifest, parent_id, parent_digest
                     )
                 ):
@@ -1023,7 +1040,9 @@ class SessionStore:
         try:
             payload = _read_json_object(session / "RETENTION.json")
             omitted = payload["omitted_parent"]
-            if not isinstance(omitted, Mapping):
+            if not isinstance(omitted, Mapping) or set(omitted) != {
+                "generation_id", "revision", "manifest_sha256"
+            }:
                 return False
             _, boundary_digest = self._manifest(
                 session / "generations" / f"g{boundary.revision:08d}_{boundary.generation_id}"
@@ -1039,12 +1058,15 @@ class SessionStore:
                     "omitted_parent",
                     "retained_at",
                 }
+                and type(payload["schema_version"]) is int
                 and payload["schema_version"] == 1
                 and payload["session_id"] == boundary.session_id
+                and type(payload["boundary_revision"]) is int
                 and payload["boundary_revision"] == boundary.revision
                 and payload["boundary_generation_id"] == boundary.generation_id
                 and payload["boundary_manifest_sha256"] == boundary_digest
                 and omitted.get("generation_id") == parent_id
+                and type(omitted.get("revision")) is int
                 and omitted.get("revision") == boundary.parent_revision
                 and omitted.get("manifest_sha256") == parent_digest
             )
@@ -1852,7 +1874,7 @@ class SessionStore:
             if path.is_dir() and path != current
         )
         gates: list[tuple[Path, GateHandle]] = []
-        completed = False
+        removed_gates: set[Path] = set()
         try:
             for candidate in candidates:
                 manifest, _ = self._manifest(candidate)
@@ -1871,16 +1893,16 @@ class SessionStore:
                 raise OSError("retention boundary를 기록하지 못했습니다.")
             prune_root = session / ".staging" / "prune"
             retry_mkdir(prune_root, parents=True, exist_ok=True)
-            moved: list[Path] = []
-            for candidate in candidates:
+            for candidate, (gate_path, _) in zip(candidates, gates, strict=True):
                 target = prune_root / candidate.name
                 if target.exists():
-                    shutil.rmtree(target)
+                    raise OSError("generation prune destination already exists")
                 retry_replace(candidate, target)
-                moved.append(target)
-            for target in moved:
+                # Finish each retired generation before moving the next one.
+                # A later move failure then leaves no earlier staged copies or
+                # orphaned gates for a subsequent save to overlook.
                 shutil.rmtree(target)
-            completed = True
+                removed_gates.add(gate_path)
             try:
                 prune_root.rmdir()
                 prune_root.parent.rmdir()
@@ -1889,7 +1911,7 @@ class SessionStore:
         finally:
             for gate_path, gate in reversed(gates):
                 gate.close()
-                if completed:
+                if gate_path in removed_gates:
                     retry_unlink(gate_path, missing_ok=True)
 
     def soft_delete(self, request: SessionMutationRequest) -> Result[SoftDeleteResult]:
