@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from weakref import ref
+
+import pytest
+from PySide6.QtCore import QCoreApplication, QEvent, QMargins, QRect, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
 
@@ -103,8 +106,8 @@ def test_grading_navigation_requires_scan_result_then_activates(qtbot) -> None:
 def test_shell_accessibility_status_and_write_authority_contract(qtbot) -> None:
     window, scan, grading = _window(qtbot)
 
-    assert window.minimumWidth() >= 1280
-    assert window.minimumHeight() >= 800
+    assert window.minimumWidth() <= MainWindow.MINIMUM_USABLE_SIZE.width()
+    assert window.minimumHeight() <= MainWindow.MINIMUM_USABLE_SIZE.height()
     assert window.sidebar.width() == 280
     assert window.help_button.accessibleName() == "도움말"
     assert all(button.accessibleName() for button in window.nav_buttons)
@@ -152,6 +155,111 @@ def test_minimum_size_keeps_scan_and_grading_workflows_scrollable(qtbot) -> None
         qtbot.waitUntil(
             lambda scroll_area=scroll_area: scroll_area.verticalScrollBar().maximum() > 0
         )
+
+
+@pytest.mark.parametrize(
+    "available",
+    (
+        QRect(0, 0, 1366, 768),
+        QRect(0, 0, 1920, 1080),
+        QRect(0, 0, 1536, 864),
+        QRect(0, 0, 1280, 720),
+        QRect(0, 0, 960, 540),
+    ),
+)
+def test_initial_size_policy_caps_the_decorated_window_to_available_geometry(available) -> None:
+    margins = QMargins(8, 32, 8, 8)
+
+    initial = MainWindow.initial_size_for_available_geometry(available, margins)
+    minimum = MainWindow.minimum_size_for_available_geometry(available, margins)
+
+    assert initial.width() + margins.left() + margins.right() <= available.width()
+    assert initial.height() + margins.top() + margins.bottom() <= available.height()
+    assert minimum.width() + margins.left() + margins.right() <= available.width()
+    assert minimum.height() + margins.top() + margins.bottom() <= available.height()
+
+
+def test_focused_primary_workflow_control_scrolls_into_view(qtbot) -> None:
+    window, scan, _ = _window(qtbot)
+    bottom_action = QPushButton("아래 작업", scan)
+    bottom_action.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    scan.layout().addStretch(1)
+    scan.layout().addWidget(bottom_action)
+    scan.setMinimumHeight(1500)
+    window.resize(960, 540)
+    window.show()
+
+    scroll_area = window.page_scroll_areas[MainWindow.SCAN_PAGE]
+    qtbot.waitUntil(lambda: scroll_area.verticalScrollBar().maximum() > 0)
+    bottom_action.show()
+    qtbot.waitUntil(bottom_action.isVisible)
+    bottom_action.setFocus()
+    window._ensure_current_focus_is_visible(ref(bottom_action))
+    qtbot.waitUntil(lambda: scroll_area.verticalScrollBar().value() > 0)
+
+    assert bottom_action.isVisible()
+    assert scroll_area.viewport().rect().contains(
+        bottom_action.mapTo(scroll_area.viewport(), bottom_action.rect().center())
+    )
+
+
+def test_screen_resize_preserves_active_input_and_focus(qtbot) -> None:
+    window, scan, _ = _window(qtbot)
+    scan.exam_name_edit.setText("2026년 2학기 중간고사")
+    scan.exam_name_edit.setSelection(6, 3)
+    selected_text = scan.exam_name_edit.selectedText()
+    selection_start = scan.exam_name_edit.selectionStart()
+    scan.exam_name_edit.setFocus()
+    qtbot.waitUntil(scan.exam_name_edit.hasFocus)
+
+    window._initial_geometry_applied = True
+    window.resize(1400, 900)
+    window._fit_to_available_geometry(QRect(0, 0, 960, 540))
+
+    qtbot.waitUntil(scan.exam_name_edit.hasFocus)
+    assert scan.exam_name_edit.text() == "2026년 2학기 중간고사"
+    assert scan.exam_name_edit.selectedText() == selected_text
+    assert scan.exam_name_edit.selectionStart() == selection_start
+    assert window.frameGeometry().width() <= 960
+    assert window.frameGeometry().height() <= 540
+
+
+def test_fit_clamps_the_decorated_frame_inside_available_geometry(qtbot) -> None:
+    window, _, _ = _window(qtbot)
+    available = QRect(100, 80, 960, 540)
+    window._initial_geometry_applied = True
+    window.resize(900, 500)
+    window.move(-400, -300)
+
+    window._fit_to_available_geometry(available)
+
+    assert available.contains(window.frameGeometry())
+
+
+def test_queued_focus_visibility_does_not_restore_stale_focus(qtbot) -> None:
+    window, _, _ = _window(qtbot)
+    window.set_grading_available(True)
+    scan_button = window.nav_buttons[MainWindow.SCAN_PAGE]
+    exam_button = window.nav_buttons[MainWindow.EXAM_PAGE]
+    scan_button.setFocus()
+    qtbot.waitUntil(scan_button.hasFocus)
+
+    qtbot.keyClick(scan_button, Qt.Key.Key_Tab)
+    qtbot.keyClick(window.focusWidget(), Qt.Key.Key_Tab)
+    qtbot.waitUntil(exam_button.hasFocus)
+    qtbot.wait(0)
+
+    assert window.focusWidget() is exam_button
+
+
+def test_queued_focus_visibility_ignores_a_deleted_widget(qtbot) -> None:
+    window, _, _ = _window(qtbot)
+    transient = QPushButton("temporary", window)
+    window._queue_focus_visibility(transient)
+    transient.deleteLater()
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qtbot.wait(0)
 
 
 def test_theme_help_and_sidebar_tab_keyboard_activation(qtbot) -> None:

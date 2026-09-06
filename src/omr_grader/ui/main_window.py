@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QResizeEvent
+from weakref import ref
+
+from PySide6.QtCore import QEvent, QMargins, QObject, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeyEvent, QResizeEvent, QScreen, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -29,6 +31,7 @@ from .grading_page import GradingPage
 from .scan_page import ScanPage
 from .settings_page import SettingsPage
 from .theme import Theme, apply_theme, tokens_for
+from shiboken6 import isValid
 
 
 class MainWindow(QMainWindow):
@@ -50,6 +53,13 @@ class MainWindow(QMainWindow):
     GRADING_PAGE = 1
     EXAM_PAGE = 2
     SETTINGS_PAGE = 3
+
+    # The preferred size remains comfortable on a standard desktop, while the
+    # minimum keeps the shell usable when Windows logical pixels shrink at a
+    # higher scale factor. Workflow content stays reachable through the page
+    # scroll areas instead of making the native window exceed its screen.
+    PREFERRED_INITIAL_SIZE = QSize(1500, 1000)
+    MINIMUM_USABLE_SIZE = QSize(480, 360)
 
     def __init__(
         self,
@@ -73,8 +83,15 @@ class MainWindow(QMainWindow):
         self.diagnostic_log_path: str | None = None
         self.setObjectName("mainWindow")
         self.setWindowTitle("OMR Grader")
-        self.setMinimumSize(1280, 800)
-        self.initial_size = QSize(1500, 1000)
+        self._screen_tracking_installed = False
+        self._tracked_screen: QScreen | None = None
+        self._initial_geometry_applied = False
+        self.initial_size = self.initial_size_for_available_geometry(
+            self._available_geometry_for_current_screen()
+        )
+        self.setMinimumSize(
+            self.minimum_size_for_available_geometry(self._available_geometry_for_current_screen())
+        )
         self.resize(self.initial_size)
         self.setAccessibleName("OMR Grader 메인 창")
         self.help_dialog, self.help_browser = self._create_help_dialog()
@@ -126,6 +143,8 @@ class MainWindow(QMainWindow):
             )
             scroll_area.setWidgetResizable(True)
             scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             scroll_area.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             scroll_area.setWidget(page)
             self.page_scroll_areas.append(scroll_area)
@@ -155,6 +174,169 @@ class MainWindow(QMainWindow):
         self.navigate_to(self.SCAN_PAGE)
         self._set_tab_order()
         self._apply_current_theme()
+
+        application = QApplication.instance()
+        if isinstance(application, QApplication):
+            application.focusChanged.connect(self._ensure_focused_control_is_visible)
+
+    @classmethod
+    def initial_size_for_available_geometry(
+        cls, available_geometry: QRect, frame_margins: QMargins | None = None
+    ) -> QSize:
+        """Return a client size whose native frame fits the available screen.
+
+        Qt's ``resize`` accepts a client size, whereas Windows constrains the
+        decorated frame to ``QScreen.availableGeometry``.  Keeping this policy
+        public makes the distinction testable without a physical DPI change.
+        """
+        return cls._available_client_size(available_geometry, frame_margins).boundedTo(
+            cls.PREFERRED_INITIAL_SIZE
+        )
+
+    @classmethod
+    def minimum_size_for_available_geometry(
+        cls, available_geometry: QRect, frame_margins: QMargins | None = None
+    ) -> QSize:
+        """Return a usable minimum that never forces a frame beyond the screen."""
+        return cls.MINIMUM_USABLE_SIZE.boundedTo(
+            cls._available_client_size(available_geometry, frame_margins)
+        )
+
+    @staticmethod
+    def _available_client_size(
+        available_geometry: QRect, frame_margins: QMargins | None = None
+    ) -> QSize:
+        margins = frame_margins or QMargins()
+        return QSize(
+            max(1, available_geometry.width() - margins.left() - margins.right()),
+            max(1, available_geometry.height() - margins.top() - margins.bottom()),
+        )
+
+    def _available_geometry_for_current_screen(self) -> QRect:
+        window_handle = self.windowHandle()
+        screen = window_handle.screen() if window_handle is not None else self.screen()
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        return screen.availableGeometry() if screen is not None else QRect(0, 0, 1500, 1000)
+
+    def _frame_margins(self) -> QMargins:
+        window_handle = self.windowHandle()
+        if window_handle is not None:
+            margins = window_handle.frameMargins()
+            if not margins.isNull():
+                return margins
+        frame = self.frameGeometry()
+        client = self.geometry()
+        return QMargins(
+            max(0, client.left() - frame.left()),
+            max(0, client.top() - frame.top()),
+            max(0, frame.right() - client.right()),
+            max(0, frame.bottom() - client.bottom()),
+        )
+
+    def _fit_to_available_geometry(self, available_geometry: QRect | None = None) -> None:
+        """Cap this window after show and after a monitor/DPI transition."""
+        if self.isMaximized():
+            return
+        available = available_geometry or self._available_geometry_for_current_screen()
+        margins = self._frame_margins()
+        maximum_client = self._available_client_size(available, margins)
+        self.setMinimumSize(self.minimum_size_for_available_geometry(available, margins))
+
+        target = self.size().boundedTo(maximum_client)
+        if not self._initial_geometry_applied:
+            target = self.initial_size_for_available_geometry(available, margins)
+            self._initial_geometry_applied = True
+        if target != self.size():
+            focused = self.focusWidget()
+            self.resize(target)
+            if focused is not None:
+                self._queue_focus_visibility(focused)
+
+        frame = self.frameGeometry()
+        left = min(max(frame.left(), available.left()), available.right() - frame.width() + 1)
+        top = min(max(frame.top(), available.top()), available.bottom() - frame.height() + 1)
+        if (left, top) != (frame.left(), frame.top()):
+            self.move(left + margins.left(), top + margins.top())
+
+    def _install_screen_tracking(self) -> None:
+        if self._screen_tracking_installed:
+            return
+        window_handle = self.windowHandle()
+        if window_handle is None:
+            return
+        window_handle.screenChanged.connect(self._on_screen_changed)
+        self._screen_tracking_installed = True
+        self._track_screen(window_handle.screen())
+
+    def _track_screen(self, screen: QScreen | None) -> None:
+        if screen is self._tracked_screen:
+            return
+        if self._tracked_screen is not None:
+            try:
+                self._tracked_screen.availableGeometryChanged.disconnect(
+                    self._on_available_geometry_changed
+                )
+                self._tracked_screen.logicalDotsPerInchChanged.disconnect(
+                    self._on_logical_dpi_changed
+                )
+            except (RuntimeError, TypeError):
+                pass
+        self._tracked_screen = screen
+        if screen is not None:
+            screen.availableGeometryChanged.connect(self._on_available_geometry_changed)
+            screen.logicalDotsPerInchChanged.connect(self._on_logical_dpi_changed)
+
+    def _on_screen_changed(self, screen: QScreen | None) -> None:
+        self._track_screen(screen)
+        QTimer.singleShot(0, self._fit_to_available_geometry)
+
+    def _on_available_geometry_changed(self, _geometry: QRect) -> None:
+        QTimer.singleShot(0, self._fit_to_available_geometry)
+
+    def _on_logical_dpi_changed(self, _dpi: float) -> None:
+        QTimer.singleShot(0, self._fit_to_available_geometry)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._install_screen_tracking()
+        QTimer.singleShot(0, self._fit_to_available_geometry)
+
+    def _ensure_focused_control_is_visible(
+        self, _previous: QWidget | None, current: QWidget | None
+    ) -> None:
+        if current is not None:
+            self._queue_focus_visibility(current)
+
+    def _queue_focus_visibility(self, widget: QWidget) -> None:
+        widget_reference = ref(widget)
+        QTimer.singleShot(0, lambda: self._ensure_current_focus_is_visible(widget_reference))
+
+    def _ensure_current_focus_is_visible(self, widget_reference: ref[QWidget]) -> None:
+        widget = widget_reference()
+        if (
+            widget is None
+            or not isValid(widget)
+            or self.focusWidget() is not widget
+            or widget.window() is not self
+            or not widget.isVisible()
+            or not widget.isEnabled()
+        ):
+            return
+        scroll_area = self._scroll_area_containing(widget)
+        if scroll_area is not None:
+            scroll_area.ensureWidgetVisible(widget, 12, 12)
+
+    @staticmethod
+    def _scroll_area_containing(widget: QWidget) -> QScrollArea | None:
+        parent = widget.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                content = parent.widget()
+                if content is not None and content.isAncestorOf(widget):
+                    return parent
+            parent = parent.parentWidget()
+        return None
 
     def _create_sidebar(self) -> QFrame:
         sidebar = QFrame(self)
