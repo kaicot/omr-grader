@@ -41,7 +41,7 @@ def _write_bundle(tmp_path: Path, *, archive_overrides: dict[str, bytes] | None 
         "executable": records[0],
         "payload_files": records,
         "build_inputs": [{"path": "main.py", "sha256": "b" * 64}],
-        "tools": {"python": "Python 3.12.13", "pyinstaller": "6.14.1"},
+        "tools": {"python": "Python 3.12.13", "pyinstaller": "6.14.1", "pyside6": "6.9.1", "pyinstaller_hooks_contrib": "2026.6"},
     }
     receipt_bytes = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode() + b"\n"
     (release / "release-receipt.json").write_bytes(receipt_bytes)

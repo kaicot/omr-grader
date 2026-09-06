@@ -272,6 +272,10 @@ def _tool_version(python: Path, *arguments: str) -> str:
     return value
 
 
+def _distribution_version(python: Path, distribution: str) -> str:
+    return _tool_version(python, "-c", f"import importlib.metadata; print(importlib.metadata.version('{distribution}'))")
+
+
 def create_receipt(
     release: Path, repository: Path, before_snapshot: Path, python: Path
 ) -> dict[str, Any]:
@@ -313,7 +317,7 @@ def create_receipt(
         "executable": executable,
         "payload_files": files,
         "build_inputs": after["inputs"],
-        "tools": {"python": _tool_version(python, "--version"), "pyinstaller": _tool_version(python, "-m", "PyInstaller", "--version")},
+        "tools": {"python": _tool_version(python, "--version"), "pyinstaller": _tool_version(python, "-m", "PyInstaller", "--version"), "pyside6": _distribution_version(python, "PySide6"), "pyinstaller_hooks_contrib": _distribution_version(python, "pyinstaller-hooks-contrib")},
     }
     (release / "release-receipt.json").write_bytes(
         json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -333,14 +337,14 @@ class Verification:
 
 def _parse_receipt(receipt_bytes: bytes) -> dict[str, Any]:
     receipt = strict_json_bytes(receipt_bytes, label="release receipt")
-    if receipt.get("format") == 1:
+    if type(receipt.get("format")) is int and receipt["format"] == 1:
         return receipt
     _exact_keys(
         receipt,
         {"format", "product", "version", "git_head", "payload_root", "executable", "payload_files", "build_inputs", "tools"},
         "release receipt",
     )
-    if receipt["format"] != FORMAT or receipt["product"] != PRODUCT or receipt["payload_root"] != PAYLOAD_ROOT:
+    if type(receipt["format"]) is not int or receipt["format"] != FORMAT or receipt["product"] != PRODUCT or receipt["payload_root"] != PAYLOAD_ROOT:
         _fail("release receipt identity is invalid")
     if not isinstance(receipt["version"], str) or not receipt["version"]:
         _fail("release receipt version is invalid")
@@ -363,7 +367,7 @@ def _parse_receipt(receipt_bytes: bytes) -> dict[str, Any]:
     receipt["build_inputs"] = inputs
     if not isinstance(receipt["tools"], dict):
         _fail("release receipt tools is invalid")
-    _exact_keys(receipt["tools"], {"python", "pyinstaller"}, "tools")
+    _exact_keys(receipt["tools"], {"python", "pyinstaller", "pyside6", "pyinstaller_hooks_contrib"}, "tools")
     if not all(isinstance(value, str) and value for value in receipt["tools"].values()):
         _fail("release receipt tool versions are invalid")
     return receipt
@@ -462,7 +466,7 @@ def verify_release(release: Path, archive_path: Path, repository: Path | None = 
         _fail("release receipt or payload root is a symlink/reparse point")
     receipt_bytes = receipt_path.read_bytes()
     receipt = _parse_receipt(receipt_bytes)
-    if receipt.get("format") == 1:
+    if type(receipt.get("format")) is int and receipt["format"] == 1:
         return Verification(
             status="LEGACY_AUDIT_ONLY",
             format=1,
@@ -471,12 +475,19 @@ def verify_release(release: Path, archive_path: Path, repository: Path | None = 
             global_approval=False,
             details=("format 1 provenance and ZIP binding are unavailable; not rewritten",),
         )
-    _verify_file_records(release / PAYLOAD_ROOT, receipt["payload_files"])
+    internal = payload_path / "_internal"
+    if not internal.is_dir() or _is_symlink_or_reparse(internal):
+        _fail("onedir payload is missing a regular _internal directory")
+    _verify_file_records(payload_path, receipt["payload_files"])
     if repository is not None:
         repository = repository.resolve()
         snapshot = snapshot_inputs(repository)
         if snapshot["git_head"] != receipt["git_head"] or snapshot["inputs"] != receipt["build_inputs"]:
             _fail("source/build input provenance differs from receipt")
+        project = (repository / "pyproject.toml").read_text(encoding="utf-8")
+        version = re.search(r'(?m)^version\s*=\s*"(?P<version>[^"]+)"\s*$', project)
+        if version is None or receipt["version"] != version.group("version"):
+            _fail("receipt version differs from pyproject.toml")
     sidecar = Path(f"{archive_path}.sha256")
     if _is_symlink_or_reparse(sidecar):
         _fail("archive sidecar is a symlink/reparse point")
