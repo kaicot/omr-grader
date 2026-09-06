@@ -24,13 +24,14 @@ from omr_grader.application.dto import (
     ScoreInput,
     ScoreSet,
 )
-from omr_grader.domain.enums import OperationKind
+from omr_grader.domain.enums import AnswerStatus, CellStatus, OperationKind
 from omr_grader.domain.errors import Err
 from omr_grader.domain.corrections import CorrectionState, project_correction_state, project_effective_responses, validate_correction_event_history
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
     AnswerRecognition,
+    AnswerValue,
     AutomaticPage,
     CellEvidence,
     CorrectionDraft,
@@ -65,8 +66,45 @@ def _encode_review_image(
     raster: NDArray[np.uint8],
     evidence: tuple[CellEvidence, ...],
     answers: tuple[AnswerRecognition, ...],
+    effective_answers: tuple[AnswerValue, ...],
     answer_key: AnswerKeySnapshot,
 ) -> bytes:
+    if len(effective_answers) != 100:
+        raise ValueError("effective review answers are incomplete")
+    rendered_evidence = tuple(
+        cell
+        if cell.question is None
+        else replace(
+            cell,
+            selected=(
+                effective_answers[cell.question - 1].status is AnswerStatus.ALL
+                or cell.choice in effective_answers[cell.question - 1].choices
+            ),
+            status=_render_cell_status(
+                effective_answers[cell.question - 1],
+                effective_answers[cell.question - 1].status is AnswerStatus.ALL
+                or cell.choice in effective_answers[cell.question - 1].choices,
+            ),
+        )
+        for cell in evidence
+    )
+    rendered: list[AnswerRecognition] = []
+    for answer in answers:
+        value = effective_answers[answer.question - 1]
+        cells = tuple(
+            replace(
+                cell,
+                selected=(value.status is AnswerStatus.ALL or cell.choice in value.choices),
+            )
+            for cell in answer.cells
+        )
+        try:
+            rendered.append(AnswerRecognition(answer.question, value, cells))
+        except ValueError as error:
+            raise ValueError(
+                f"effective review answer is inconsistent at question {answer.question}"
+            ) from error
+    rendered_answers = tuple(rendered)
     source_height, source_width = raster.shape[:2]
     edge = min(MAX_REVIEW_LONG_EDGE, max(source_width, source_height))
     while True:
@@ -77,8 +115,8 @@ def _encode_review_image(
         )
         scored = render_scored_overlay_scaled(
             raster,
-            evidence,
-            answers,
+            rendered_evidence,
+            rendered_answers,
             answer_key.entries,
             target_size,
         )
@@ -101,6 +139,14 @@ def _encode_review_image(
             return payload
         ratio = math.sqrt(MAX_REVIEW_BYTES / len(payload)) * 0.95
         edge = max(MIN_REVIEW_LONG_EDGE, min(edge - 1, int(edge * ratio)))
+
+
+def _render_cell_status(value: AnswerValue, selected: bool) -> CellStatus:
+    if value.status is AnswerStatus.UNCERTAIN:
+        return CellStatus.UNCERTAIN
+    if value.status is AnswerStatus.MULTIPLE and selected:
+        return CellStatus.MULTIPLE
+    return CellStatus.NORMAL if selected else CellStatus.BLANK
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +468,7 @@ class GenerationMaterializer:
                             review_raster,
                             page.evidence,
                             page.answers,
+                            response.answers,
                             answer_key,
                         ),
                     )
