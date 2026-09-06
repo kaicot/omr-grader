@@ -1785,27 +1785,23 @@ class SessionStore:
                     ),
                 )
             try:
-                if parent.parent_revision is not None:
-                    retained = atomic_write_json(
-                        session / "RETENTION.json",
-                        {
-                            "schema_version": 1,
-                            "session_id": parent.session_id,
-                            "boundary_revision": parent.revision,
-                            "boundary_generation_id": parent.generation_id,
-                            "boundary_manifest_sha256": current.manifest_sha256,
-                            "omitted_parent": {
-                                "revision": parent.parent_revision,
-                                "generation_id": parent.parent_generation_id,
-                                "manifest_sha256": parent.parent_manifest_sha256,
-                            },
-                            "retained_at": _utc(),
+                self._prune_superseded_generations(
+                    session,
+                    final,
+                    {
+                        "schema_version": 1,
+                        "session_id": manifest.session_id,
+                        "boundary_revision": manifest.revision,
+                        "boundary_generation_id": manifest.generation_id,
+                        "boundary_manifest_sha256": pointer.manifest_sha256,
+                        "omitted_parent": {
+                            "revision": manifest.parent_revision,
+                            "generation_id": manifest.parent_generation_id,
+                            "manifest_sha256": manifest.parent_manifest_sha256,
                         },
-                    )
-                    if isinstance(retained, Err):
-                        raise OSError("retention boundary를 기록하지 못했습니다.")
-                self._barrier("before_generation_prune")
-                self._prune_superseded_generations(session, final)
+                        "retained_at": _utc(),
+                    },
+                )
             except OSError as exc:
                 return Ok(
                     result,
@@ -1840,21 +1836,23 @@ class SessionStore:
                         pass
             writer.value.close()
 
-    def _prune_superseded_generations(self, session: Path, current: Path) -> None:
-        # Retain the direct parent as the authenticated boundary.  Older
-        # ancestors may be removed only after RETENTION.json binds that exact
-        # parent to the omitted predecessor.
-        current_manifest, _ = self._manifest(current)
-        parent_id = current_manifest.parent_generation_id
+    def _prune_superseded_generations(
+        self, session: Path, current: Path, retention: Mapping[str, object]
+    ) -> None:
+        """Compact all obsolete generations only after their locks are acquired.
+
+        The target retention record binds the current generation directly to its
+        omitted parent.  It is written *after* lock preflight, so a live CAS
+        correction lease leaves the previous authenticated boundary intact.
+        """
         generations = session / "generations"
         candidates = tuple(
             path
             for path in sorted(generations.iterdir(), key=lambda item: item.name.encode("utf-8"))
-            if path.is_dir()
-            and path != current
-            and path.name != f"g{current_manifest.parent_revision:08d}_{parent_id}"
+            if path.is_dir() and path != current
         )
         gates: list[tuple[Path, GateHandle]] = []
+        completed = False
         try:
             for candidate in candidates:
                 manifest, _ = self._manifest(candidate)
@@ -1867,6 +1865,10 @@ class SessionStore:
                 if isinstance(locked, Err):
                     raise OSError(f"{candidate.name} generation이 사용 중입니다.")
                 gates.append((gate_path, locked.value))
+            self._barrier("before_generation_prune")
+            retained = atomic_write_json(session / "RETENTION.json", dict(retention))
+            if isinstance(retained, Err):
+                raise OSError("retention boundary를 기록하지 못했습니다.")
             prune_root = session / ".staging" / "prune"
             retry_mkdir(prune_root, parents=True, exist_ok=True)
             moved: list[Path] = []
@@ -1878,6 +1880,7 @@ class SessionStore:
                 moved.append(target)
             for target in moved:
                 shutil.rmtree(target)
+            completed = True
             try:
                 prune_root.rmdir()
                 prune_root.parent.rmdir()
@@ -1886,7 +1889,8 @@ class SessionStore:
         finally:
             for gate_path, gate in reversed(gates):
                 gate.close()
-                retry_unlink(gate_path, missing_ok=True)
+                if completed:
+                    retry_unlink(gate_path, missing_ok=True)
 
     def soft_delete(self, request: SessionMutationRequest) -> Result[SoftDeleteResult]:
         return self._move_session(request, to_trash=True)

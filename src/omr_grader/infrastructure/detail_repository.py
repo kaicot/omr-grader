@@ -29,7 +29,9 @@ from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
+    AnswerRecognition,
     AutomaticPage,
+    CellEvidence,
     CorrectionDraft,
     CorrectionEvent,
     EffectiveResponse,
@@ -65,6 +67,7 @@ class WorkItemDetail:
 class _OpenedDetail:
     lease: CommittedSnapshotLease
     rows: dict[str, dict[str, object]]
+    review_geometry: dict[str, dict[str, object]]
 
 
 def _require_snapshot(value: object, snapshot: SnapshotRef) -> None:
@@ -136,6 +139,43 @@ def _decode_correction_events(value: object) -> tuple[CorrectionEvent, ...]:
     if set(document) != {"schema_version", "events"} or document["schema_version"] != 1:
         raise ValueError("correction event envelope is invalid")
     return tuple(CorrectionEvent.from_dict(_mapping(event)) for event in _list(document["events"]))
+
+
+def _read_review_geometry(lease: CommittedSnapshotLease) -> dict[str, dict[str, object]]:
+    declared = _manifest_declares(lease, "review_geometry.json")
+    source = lease.open_allowlisted("review_geometry.json")
+    if declared != (not isinstance(source, Err)):
+        raise ValueError("declared review geometry is missing or unlisted")
+    if not declared:
+        return {}
+    assert not isinstance(source, Err)
+    with source.value:
+        document = _mapping(json.load(source.value))
+    if set(document) != {"schema_version", "pages"} or document["schema_version"] != 1:
+        raise ValueError("review geometry envelope is invalid")
+    pages = _list(document["pages"])
+    result: dict[str, dict[str, object]] = {}
+    for raw in pages:
+        page = _mapping(raw)
+        if set(page) != {"work_item_id", "evidence", "answers"}:
+            raise ValueError("review geometry page is invalid")
+        work_item_id = page["work_item_id"]
+        evidence = page["evidence"]
+        answers = page["answers"]
+        if (
+            not isinstance(work_item_id, str)
+            or not work_item_id
+            or not isinstance(evidence, list)
+            or not isinstance(answers, list)
+            or work_item_id in result
+        ):
+            raise ValueError("review geometry page is invalid")
+        # Parse every typed value before exposing the raw, manifest-authenticated
+        # geometry to the detail payload; no AutomaticPage is reconstructed.
+        tuple(CellEvidence.from_dict(_mapping(item)) for item in evidence)
+        tuple(AnswerRecognition.from_dict(_mapping(item)) for item in answers)
+        result[work_item_id] = page
+    return result
 
 
 def _manifest_declares(lease: CommittedSnapshotLease, path: str) -> bool:
@@ -429,6 +469,7 @@ class DetailRepository:
             values = raw["work_items"]
             if not isinstance(values, list):
                 raise ValueError("work_items must be list")
+            review_geometry = _read_review_geometry(lease)
             rows: dict[str, dict[str, object]] = {}
             public: list[DetailListRow] = []
             for item in values:
@@ -462,7 +503,7 @@ class DetailRepository:
                 lease,
             )
         handle_id = secrets.token_urlsafe(24)
-        self._opened[handle_id] = _OpenedDetail(lease, rows)
+        self._opened[handle_id] = _OpenedDetail(lease, rows, review_geometry)
         return Ok((DetailHandle(handle_id, lease.snapshot_ref), tuple(public)))
 
     def load_work_item(
@@ -488,6 +529,10 @@ class DetailRepository:
                 raise ValueError("detail document work item is invalid")
             _require_snapshot(document["snapshot"], opened.lease.snapshot_ref)
             payload = _mapping(document["payload"])
+            if "review_geometry" not in payload:
+                geometry = opened.review_geometry.get(work_item_id)
+                if geometry is not None:
+                    payload = {**payload, "review_geometry": geometry}
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return _error("DETAIL_MATERIALIZATION_INVALID", "선택한 상세 자료가 올바르지 않습니다.")
         image: bytes | None = None

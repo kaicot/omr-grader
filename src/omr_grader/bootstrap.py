@@ -320,6 +320,7 @@ def run(
     from omr_grader.application.settings_use_case import SettingsApplicationService, SettingsState
     from omr_grader.domain.enums import (
         ExamTerm,
+        SessionState,
         SnapshotPurpose,
         TargetKind,
     )
@@ -440,7 +441,7 @@ def run(
         [SessionCreateResult | CommitGenerationResult], Result[ConnectedSessionDisplay]
     ] | None = None
     displays: dict[str, DetailPageDisplay] = {}
-    detail_answer_keys: dict[str, AnswerKeySnapshot] = {}
+    detail_answer_keys: dict[str, AnswerKeySnapshot | None] = {}
 
     if runtime_paths is not None:
         store = SessionStore(runtime_paths)
@@ -485,14 +486,17 @@ def run(
             if entry is None:
                 detail_repository.close_detail(handle.handle_id)
                 return unavailable("DASHBOARD_SESSION_NOT_FOUND")
-            correction_snapshot = detail_repository.read_correction_snapshot(session_id, revision)
-            if isinstance(correction_snapshot, Err):
-                detail_repository.close_detail(handle.handle_id)
-                return correction_snapshot
-            closed_snapshot = correction_snapshot.value.lease.close()
-            if isinstance(closed_snapshot, Err):
-                detail_repository.close_detail(handle.handle_id)
-                return closed_snapshot
+            answer_key: AnswerKeySnapshot | None = None
+            if entry.state in {SessionState.GRADED, SessionState.FINALIZED}:
+                correction_snapshot = detail_repository.read_correction_snapshot(session_id, revision)
+                if isinstance(correction_snapshot, Err):
+                    detail_repository.close_detail(handle.handle_id)
+                    return correction_snapshot
+                closed_snapshot = correction_snapshot.value.lease.close()
+                if isinstance(closed_snapshot, Err):
+                    detail_repository.close_detail(handle.handle_id)
+                    return closed_snapshot
+                answer_key = correction_snapshot.value.answer_key
             students = tuple(
                 DetailStudentDisplay(
                     row.work_item_id,
@@ -518,7 +522,7 @@ def run(
                 handle.handle_id,
             )
             displays[handle.handle_id] = display
-            detail_answer_keys[handle.handle_id] = correction_snapshot.value.answer_key
+            detail_answer_keys[handle.handle_id] = answer_key
             return Ok(display)
 
         dashboard_detail = open_detail
@@ -535,9 +539,9 @@ def run(
                 or display.revision != request.revision
             ):
                 return unavailable("DETAIL_HANDLE_INVALID")
-            answer_key = detail_answer_keys.get(request.detail_handle)
-            if answer_key is None:
+            if request.detail_handle not in detail_answer_keys:
                 return unavailable("DETAIL_HANDLE_INVALID")
+            answer_key = detail_answer_keys[request.detail_handle]
             loaded = detail_repository.load_work_item(request.detail_handle, request.work_item_id)
             if isinstance(loaded, Err):
                 return loaded
@@ -576,7 +580,11 @@ def run(
                     for item in evidence
                     if item.ratio_rect is not None
                 )
-                outcomes = question_outcomes(response, answer_key)
+                outcomes = (
+                    question_outcomes(response, answer_key)
+                    if answer_key is not None
+                    else (None,) * len(response.answers)
+                )
                 answers = tuple(
                     DetailAnswerDisplay(question, value, True if outcome == CORRECT else False if outcome == INCORRECT else None)
                     for question, (value, outcome) in enumerate(

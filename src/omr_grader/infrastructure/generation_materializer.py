@@ -394,9 +394,7 @@ class GenerationMaterializer:
             page = pages.get(response.work_item_id)
             image_path: str | None = None
             if page is not None:
-                if persist_recognition:
-                    if not isinstance(page, AutomaticPage):
-                        raise ValueError("recognition detail requires an automatic page")
+                if persist_recognition and isinstance(page, AutomaticPage):
                     request.token.write_json(
                         f"evidence/{response.work_item_id}.json", page.to_dict()
                     )
@@ -438,9 +436,7 @@ class GenerationMaterializer:
                         page.page_ref.work_item_id, page.evidence, page.answers
                     ).to_dict()
                 )
-            if page is not None and persist_recognition:
-                if not isinstance(page, AutomaticPage):
-                    raise ValueError("recognition detail requires an automatic page")
+            if page is not None and persist_recognition and isinstance(page, AutomaticPage):
                 payload["recognition"] = page.to_dict()
                 payload["evidence_path"] = f"evidence/{response.work_item_id}.json"
             request.token.write_json(
