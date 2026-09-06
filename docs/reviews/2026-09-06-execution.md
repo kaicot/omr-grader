@@ -14,8 +14,11 @@
 - C: Terra high / Maxwell / 01a0754c-561d-7821-b7fe-b00726cd9f48
   - ui worktree. B 통합 후 main_window/scan/grading/theme와 Qt 의존성만 선행한다.
   - A의 detail_page/bootstrap/controller와 해당 테스트는 수정하지 않는다.
-- S: 통합 후보에서 Sol high 독립 안전성 검토 예정.
-- D: 구현 확정 후 Luna medium 문서/버전 정리 예정.
+- S: Sol high / Singer / 01a07559-c276-7221-a9be-017895bf046b.
+  - 호출 도구가 안전성 필터 오류를 반환하여 검토 결과를 받지 못함. 완료로 처리하지 않음.
+  - 같은 요청을 다른 모델로 우회하지 않았으며, 독립 검토는 미완료로 남음.
+- D: Luna medium / Popper / 01a0756e-22fd-7e41-b2c0-967e8af85c3a.
+  - README/AGENTS/릴리즈 노트 및 2.1.1 버전 정리.
 - 주 에이전트: 구현 코드는 직접 작성하지 않고 diff 검토·독립 검증·통합 및 최종 판정.
 
 전체 하위 모델 동시 실행은 2개 이하, 추론 high 이하, 고속 설정 미사용.
@@ -35,12 +38,20 @@
 
 - [x] 승인 및 모델 역할 기록
 - [x] 독립 worktree와 보존 fixture 준비
-- [ ] A runtime 구현 검토/통합
+- [x] A runtime 구현 검토/통합 (9ab3410까지)
 - [x] B build/verifier 구현 검토/통합 (20f9445까지, 통합 a19dd49)
-- [ ] C UI/의존성 구현 검토/통합
-- [ ] Sol 독립 검토와 지적 사항 해소
-- [ ] Luna 문서/버전 정리
+- [x] C UI/의존성 구현 검토/통합 (9e107fd까지)
+- [ ] Sol 독립 검토와 지적 사항 해소 — 호출 도구 차단으로 미완료
+- [x] Luna 문서/버전 정리
 - [ ] 확정 커밋에서 전체 검사·후보 빌드·strict smoke
+
+위 상태는 소스 확정 전 기록이다. 확정 커밋을 새로 복제한 후의 검사 결과와 실제
+EXE/ZIP hash는 소스를 다시 변경하지 않고 다음 외부 산출물로 기록한다.
+
+`D:\workspace\omr-grader-release-20260906\verification\FINAL_REPORT.md`
+
+따라서 기술적 빌드·실행 게이트가 통과하더라도 Sol 독립 검토를 포함한 전체 계획이
+완료됐다고 단정하지 않는다. main 병합·원격 push·공개 Release는 계속 승인 범위 밖이다.
 
 ## 독립 검증 중간 기록
 
@@ -66,3 +77,24 @@
   추적 파일이 아니므로 `retired-hydrated-tests/`로 이동 보관했다. 삭제하지 않았고 원본 저장소도 보존했다.
 - 화면 변경은 Impeccable의 기존 UI 유지/기능 접근성 원칙을 좁게 적용한다. Windows Qt 앱이므로
   모바일 플랫폼별 디자인 지침을 그대로 적용하지 않으며 OS 배율 변경을 자동화하지 않는다.
+
+## 통합 후 추가 확인
+
+- A 9ab3410의 JPEG 갱신까지 포함한 최신 독립 검사는 4종 모두 통과했다.
+  `evidence/independent-runtime-u46h8zgm/results.json`.
+- A+B 통합 83332ed에서 1051 passed, 12 skipped, 구 fake lease 계약 1 failed.
+  이 fixture는 C가 실제 manifest allowlist를 갖추도록 수정했다. Ruff와 mypy(86개 소스) 통과.
+- Qt 4종은 6.11.2로 확인하고 루트 constraints 파일을 단일 기준으로 정리했다.
+  새 가상환경의 설치·pip check 및 제3자 고지 생성 검사를 수행했다.
+- C의 양수/음수 화면 원점 검사에서 event loop 처리 후에도 native frame이 가용 영역에
+  완전히 포함됨을 주 에이전트가 재확인했다. 실제 Windows 배율 변경 검증과는 구별한다.
+- 합성 PDF 100페이지: 100 성공/0 실패, 50.787초, peak working set 430485504 bytes.
+- 합성 PDF 500페이지: 500 성공/0 실패, 181.704초, peak working set 1722544128 bytes.
+- 같은 500페이지 채점: 506.948초. Data는 1276683218→249125799 bytes,
+  파일 5518→1521개. 원본 501개 hash 불변, generation 내 대형 이미지/PDF 중복 0.
+  개발 중 소스의 단일 합성 실행 측정이며 최종 EXE 성능 인증이나 실물 정확도 증명이 아니다.
+- 진단용 onedir(9df43eb, 버전 2.1.0 표기)은 852개 payload 파일의 ZIP 검증과
+  `-Smoke Both -StrictShutdown`을 통과했다. 설정 6 저장/재실행 hash 일치, 읽기 전용
+  파일 불변/ACL 복원, 3회 실행의 정상 종료가 확인됐다. 최종 2.1.1 후보는 별도로 다시 검사한다.
+- 원본 OneDrive 경로가 Cloud reparse 속성이므로 빌드 가드를 완화하지 않고,
+  최종 소스·검증·배포 후보는 일반 폴더 `D:\workspace\omr-grader-release-20260906`에 둔다.
