@@ -59,12 +59,12 @@ class WorkerError:
         ):
             raise ValueError("invalid worker error fields")
 
-
-def _worker_error(error: object) -> WorkerError:
-    if isinstance(error, WorkerError):
-        return error
-    if isinstance(error, ErrorInfo):
-        return WorkerError(
+    @classmethod
+    def from_error_info(cls, error: ErrorInfo) -> WorkerError:
+        """Copy a diagnostic's scalar context into an owned immutable value."""
+        if not isinstance(error, ErrorInfo):
+            raise TypeError("worker diagnostics require ErrorInfo")
+        return cls(
             error.code,
             error.message_key,
             error.field_path,
@@ -72,6 +72,13 @@ def _worker_error(error: object) -> WorkerError:
             error.retryable,
             error.cause_type,
         )
+
+
+def _worker_error(error: object) -> WorkerError:
+    if isinstance(error, WorkerError):
+        return error
+    if isinstance(error, ErrorInfo):
+        return WorkerError.from_error_info(error)
     return WorkerError(
         "UI_OPERATION_FAILED",
         "error.ui_operation_failed",
