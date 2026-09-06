@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion -lt [version]'7.2') { throw 'PowerShell 7.2 or later is required.' }
 
 function Fail([string]$Message) { throw "PORTABLE_RELEASE_BUILD_FAILED: $Message" }
 function FullPath([string]$PathValue) {
@@ -82,7 +83,13 @@ New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
 $workChild = Join-Path $WorkRoot ("portable-build-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $workChild -ErrorAction Stop | Out-Null
 $reservationToken = [guid]::NewGuid().ToString('N')
-[IO.File]::WriteAllText($reservation, $reservationToken, [Text.UTF8Encoding]::new($false))
+try {
+    $stream = [IO.File]::Open($reservation, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes($reservationToken); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+} catch [IO.IOException] { Fail "output reservation collision; no existing artifact will be replaced: $reservation" }
+function Assert-OwnedReservation {
+    if (-not (Test-Path -LiteralPath $reservation -PathType Leaf) -or (Get-Content -LiteralPath $reservation -Raw) -ne $reservationToken) { Fail 'build reservation ownership was lost' }
+}
 
 $beforeSnapshot = Join-Path $workChild 'build-inputs-before.json'
 $stageRelease = Join-Path $workChild $releaseName
@@ -104,9 +111,12 @@ try {
     # Verify staged directory and exact ZIP bytes before publishing either.
     & $Python $releaseTool verify --release $stageRelease --archive $stageArchive --repository $repository
     if ($LASTEXITCODE -ne 0) { Fail 'staged release verification failed' }
-    Move-Item -LiteralPath $stageRelease -Destination $versionFolder -ErrorAction Stop
-    Move-Item -LiteralPath $stageArchive -Destination $ArchivePath -ErrorAction Stop
-    Move-Item -LiteralPath "$stageArchive.sha256" -Destination "$ArchivePath.sha256" -ErrorAction Stop
+    Assert-OwnedReservation
+    foreach ($path in @($versionFolder, $ArchivePath, "$ArchivePath.sha256")) { if (Test-Path -LiteralPath $path) { Fail "output appeared during build: $path" } }
+    [IO.Directory]::Move($stageRelease, $versionFolder)
+    [IO.File]::Move($stageArchive, $ArchivePath)
+    [IO.File]::Move("$stageArchive.sha256", "$ArchivePath.sha256")
+    Assert-OwnedReservation
     Remove-Item -LiteralPath $reservation -Force -ErrorAction Stop
     [PSCustomObject]@{
         result = 'BUILT_NOT_SMOKE_APPROVED'; release = $versionFolder
