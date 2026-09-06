@@ -397,16 +397,20 @@ def _archive_names(archive: zipfile.ZipFile) -> list[str]:
     aliases: set[str] = set()
     for info in archive.infolist():
         name = info.filename
-        _safe_relative(name, label="ZIP entry")
+        directory = info.is_dir()
+        candidate = name[:-1] if directory and name.endswith("/") else name
+        if directory and (not candidate or name.count("/") != candidate.count("/") + 1):
+            _fail(f"unsafe ZIP directory entry: {name!r}")
+        _safe_relative(candidate, label="ZIP entry")
         unix_type = (info.external_attr >> 16) & 0o170000
         if unix_type == 0o120000:
             _fail(f"ZIP entry is a symlink: {name!r}")
-        if info.is_dir():
-            continue
-        if name.casefold() in aliases:
+        alias = candidate.casefold()
+        if alias in aliases:
             _fail(f"duplicate/case-colliding ZIP entry: {name!r}")
-        aliases.add(name.casefold())
-        names.append(name)
+        aliases.add(alias)
+        if not directory:
+            names.append(name)
     return names
 
 
@@ -442,14 +446,21 @@ def _verify_archive(archive_path: Path, release: Path, receipt_bytes: bytes, rec
 
 
 def verify_release(release: Path, archive_path: Path, repository: Path | None = None) -> Verification:
-    release = release.resolve()
+    # Check raw caller paths first; resolve() would silently follow the very
+    # junction/symlink whose use the verifier must reject.
     if _is_symlink_or_reparse(release):
         _fail("release root is a symlink/reparse point")
+    if _is_symlink_or_reparse(archive_path):
+        _fail("archive is a symlink/reparse point")
+    release = release.absolute()
     allowed_root = {PAYLOAD_ROOT, "release-receipt.json"}
     root_names = [item.name for item in release.iterdir()]
     if set(root_names) != allowed_root or len(root_names) != len(allowed_root):
         _fail(f"release root inventory is invalid: {sorted(root_names)}")
     receipt_path = release / "release-receipt.json"
+    payload_path = release / PAYLOAD_ROOT
+    if _is_symlink_or_reparse(receipt_path) or _is_symlink_or_reparse(payload_path):
+        _fail("release receipt or payload root is a symlink/reparse point")
     receipt_bytes = receipt_path.read_bytes()
     receipt = _parse_receipt(receipt_bytes)
     if receipt.get("format") == 1:
@@ -467,7 +478,10 @@ def verify_release(release: Path, archive_path: Path, repository: Path | None = 
         snapshot = snapshot_inputs(repository)
         if snapshot["git_head"] != receipt["git_head"] or snapshot["inputs"] != receipt["build_inputs"]:
             _fail("source/build input provenance differs from receipt")
-    archive_hash = _verify_archive(archive_path.resolve(), release, receipt_bytes, receipt)
+    sidecar = Path(f"{archive_path}.sha256")
+    if _is_symlink_or_reparse(sidecar):
+        _fail("archive sidecar is a symlink/reparse point")
+    archive_hash = _verify_archive(archive_path.absolute(), release, receipt_bytes, receipt)
     return Verification(
         status="STRUCTURE_PASS",
         format=FORMAT,

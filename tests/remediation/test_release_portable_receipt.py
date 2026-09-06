@@ -75,6 +75,16 @@ def test_format_2_control_bundle_has_exact_disk_and_zip_binding(tmp_path: Path) 
     assert outcome.global_approval is False
 
 
+def test_normal_zip_directory_records_are_validated_but_not_payload_files(tmp_path: Path) -> None:
+    release, archive = _write_bundle(tmp_path)
+    with zipfile.ZipFile(archive, "a") as output:
+        # Compress-Archive-style directory entry: safe ancestor, no file bytes.
+        output.writestr(f"{release.name}/OMR Grader/_internal/", b"")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    Path(f"{archive}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
+    assert portable_release.verify_release(release, archive).status == "STRUCTURE_PASS"
+
+
 def test_extra_unrecorded_dll_is_rejected(tmp_path: Path) -> None:
     release, archive = _write_bundle(tmp_path)
     (release / "OMR Grader" / "_internal" / "surprise.dll").write_bytes(b"unrecorded")
