@@ -150,7 +150,11 @@ def observe_main_ready(
         except OSError:
             sensitivity = None
     persistence: dict[str, object] | None = (
-        {"default_sensitivity": sensitivity, "config_sha256": config_hash}
+        {
+            "phase": "written" if phase == "write" else "reopened",
+            "default_sensitivity": sensitivity,
+            "config_sha256": config_hash,
+        }
         if mode == "writable" and type(sensitivity) is int and config_hash is not None
         else None
     )
@@ -158,14 +162,18 @@ def observe_main_ready(
         "schema": 1,
         "pid": os.getpid(),
         "state": "main-ready",
-        "read_only": mode == "readonly",
-        "write_enabled": mode == "writable" and write_enabled,
+        # Report the authority the application actually has.  In a readonly
+        # smoke mode we intentionally do not persist even if this is wrong, but
+        # masking a mistaken writable authority would turn an R04 failure into
+        # a false PASS in the harness.
+        "read_only": not write_enabled,
+        "write_enabled": write_enabled,
         "affordances": {
             "config_persistence": bool(
-                mode == "writable" and write_enabled and settings_save is not None
+                write_enabled and settings_save is not None
             ),
             "session_persistence": bool(
-                mode == "writable" and write_enabled and session_persistence_available
+                write_enabled and session_persistence_available
             ),
         },
         "persistence_roundtrip": persistence_roundtrip,

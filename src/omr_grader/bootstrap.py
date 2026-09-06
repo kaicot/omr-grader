@@ -1225,7 +1225,7 @@ def run(
             0,
             lambda: observe_main_ready(
                 outcome.value.paths.root,
-                write_enabled=write_enabled,
+                write_enabled=controller.write_enabled,
                 settings_load=settings_load,
                 settings_save=settings_save,
                 settings_command=smoke_settings_command,
