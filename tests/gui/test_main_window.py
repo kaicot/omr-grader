@@ -224,16 +224,29 @@ def test_screen_resize_preserves_active_input_and_focus(qtbot) -> None:
     assert window.frameGeometry().height() <= 540
 
 
-def test_fit_clamps_the_decorated_frame_inside_available_geometry(qtbot) -> None:
+@pytest.mark.parametrize(
+    ("available", "requested_size", "requested_position"),
+    (
+        (QRect(0, 0, 960, 520), (1500, 800), (1500, 900)),
+        (QRect(-800, 0, 1204, 720), (700, 500), (-400, 100)),
+    ),
+)
+def test_fit_clamps_the_shown_decorated_frame_inside_available_geometry(
+    qtbot, available, requested_size, requested_position
+) -> None:
     window, _, _ = _window(qtbot)
-    available = QRect(100, 80, 960, 540)
+    QApplication.processEvents()
     window._initial_geometry_applied = True
-    window.resize(900, 500)
-    window.move(-400, -300)
+    window.resize(*requested_size)
+    window.move(*requested_position)
+    QApplication.processEvents()
 
     window._fit_to_available_geometry(available)
+    QApplication.processEvents()
 
     assert available.contains(window.frameGeometry())
+    if available.left() < 0:
+        assert window.frameGeometry().left() < 0
 
 
 def test_queued_focus_visibility_does_not_restore_stale_focus(qtbot) -> None:

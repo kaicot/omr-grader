@@ -257,7 +257,18 @@ class MainWindow(QMainWindow):
         left = min(max(frame.left(), available.left()), available.right() - frame.width() + 1)
         top = min(max(frame.top(), available.top()), available.bottom() - frame.height() + 1)
         if (left, top) != (frame.left(), frame.top()):
-            self.move(left + margins.left(), top + margins.top())
+            # A top-level QWidget.move() uses the native frame origin, not the
+            # client origin. The frame margins were needed only for the size cap.
+            self.move(left, top)
+            positioned_frame = self.frameGeometry()
+            if (positioned_frame.left(), positioned_frame.top()) != (left, top):
+                # Some Qt platform plugins translate a negative virtual-screen
+                # origin while positioning. Correct from the observed frame
+                # delta instead of assuming a title-bar or border thickness.
+                self.move(
+                    left - (positioned_frame.left() - left),
+                    top - (positioned_frame.top() - top),
+                )
 
     def _install_screen_tracking(self) -> None:
         if self._screen_tracking_installed:
