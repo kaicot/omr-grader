@@ -120,8 +120,9 @@ D:\OMR-Grader\
 - `-Smoke None`, `Writable` 단독, `ReadOnly` 단독 및 비엄격 smoke는 구조·부분 진단일
   뿐 전체 승인으로 안내하지 않습니다. 최종 기술 게이트는
   `-ReleaseRoot <dir> -Smoke Both -StrictShutdown`입니다.
-- WorkRoot는 새 고유 하위 폴더만 만드는 부모 경로입니다. 빌드 번호 21 후보는
-  `-BuildNumber 21`을 사용하며 기존 파일과 출력은 보존합니다.
+- WorkRoot는 새 고유 하위 폴더만 만드는 부모 경로입니다. 빌드 번호는 해당 버전
+  릴리즈 문서(`docs/releases/<버전>.md`)에 적힌 후보 번호를 `-BuildNumber`로
+  지정하며 기존 파일과 출력은 보존합니다.
 - OneDrive 동기화 루트처럼 Windows Cloud reparse 속성이 있는 경로는 저장소·출력
   경로의 ancestor로 사용하지 않습니다. 빌드 가드가 모든 reparse ancestor를 거부하므로
   코드를 완화하지 말고 일반 쓰기 가능 폴더에 체크아웃을 복사합니다. 일반 저장소의
