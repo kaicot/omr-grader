@@ -15,25 +15,16 @@ from omr_grader.domain.profile import BoundingBoxRatio, Profile, ProfileRegion
 _MIN_SCORE_GAIN: Final = 1.15
 _SCALE_STEPS: Final = tuple(value / 500 for value in range(450, 531))
 _MAX_OFFSET_RATIO: Final = 0.06
+_ALTERNATIVE_SCALE_SEPARATION: Final = 0.012
+_ALTERNATIVE_OFFSET_SEPARATION: Final = 8
 
 
 def register_profile_grid(image: NDArray[np.uint8], profile: Profile) -> Profile:
     """Fit one bounded scale/translation transform to every configured region."""
     if profile.page is None or not profile.regions or image.size == 0:
         return profile
-    gray = (
-        image
-        if image.ndim == 2
-        else np.asarray(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
-    )
-    _, thresholded = cv2.threshold(
-        gray,
-        0,
-        1,
-        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
-    )
-    ink: NDArray[np.float32] = np.asarray(thresholded, dtype=np.float32)
-    height, width = gray.shape[:2]
+    ink = _ink(image)
+    height, width = ink.shape[:2]
 
     scale_x, offset_x = _fit_horizontal(ink, profile.regions, width, height)
     scale_y, offset_y = _fit_vertical(
@@ -46,7 +37,81 @@ def register_profile_grid(image: NDArray[np.uint8], profile: Profile) -> Profile
     )
     if (scale_x, offset_x, scale_y, offset_y) == (1.0, 0, 1.0, 0):
         return profile
+    moved = _moved(profile, width, height, scale_x, offset_x, scale_y, offset_y)
+    return profile if moved is None else moved
 
+
+def registration_candidates(
+    image: NDArray[np.uint8], profile: Profile, limit: int = 4
+) -> tuple[Profile, ...]:
+    """Return the strongest distinct horizontal fits, each with its own vertical fit.
+
+    The printed table repeats its vertical rules, so a grid shrunk by about a tenth can
+    outscore the true fit. Callers re-read a weak page with these alternatives and keep
+    one only when it reads confidently.
+    """
+    if profile.page is None or not profile.regions or image.size == 0 or limit <= 0:
+        return ()
+    ink = _ink(image)
+    height, width = ink.shape[:2]
+    projection, lines = _horizontal_signal(ink, profile.regions, width, height)
+    scales = np.asarray(_SCALE_STEPS, dtype=np.float64)
+    reach = round(width * _MAX_OFFSET_RATIO)
+    offsets = np.arange(-reach, reach + 1)
+    coordinates = np.rint(
+        scales[:, None, None] * np.asarray(lines, dtype=np.float64)[None, None, :]
+        + offsets[None, :, None]
+    ).astype(np.int64)
+    inside = ((coordinates >= 0) & (coordinates < projection.size)).all(axis=2)
+    sampled = projection[np.clip(coordinates, 0, projection.size - 1)].sum(axis=2)
+    scores = np.where(inside, sampled, -1.0)
+    fits: list[tuple[float, int]] = []
+    candidates: list[Profile] = []
+    for flat in np.argsort(scores, axis=None, kind="stable")[::-1]:
+        scale_index, offset_index = np.unravel_index(flat, scores.shape)
+        if scores[scale_index, offset_index] <= 0 or len(fits) == limit:
+            break
+        scale_x, offset_x = float(scales[scale_index]), int(offsets[offset_index])
+        if any(
+            abs(scale_x - scale) <= _ALTERNATIVE_SCALE_SEPARATION
+            and abs(offset_x - offset) <= _ALTERNATIVE_OFFSET_SEPARATION
+            for scale, offset in fits
+        ):
+            continue
+        fits.append((scale_x, offset_x))
+        scale_y, offset_y = _fit_vertical(
+            ink, profile.regions, width, height, scale_x, offset_x
+        )
+        moved = _moved(profile, width, height, scale_x, offset_x, scale_y, offset_y)
+        if moved is not None:
+            candidates.append(moved)
+    return tuple(candidates)
+
+
+def _ink(image: NDArray[np.uint8]) -> NDArray[np.float32]:
+    gray = (
+        image
+        if image.ndim == 2
+        else np.asarray(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
+    )
+    _, thresholded = cv2.threshold(
+        gray,
+        0,
+        1,
+        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
+    )
+    return np.asarray(thresholded, dtype=np.float32)
+
+
+def _moved(
+    profile: Profile,
+    width: int,
+    height: int,
+    scale_x: float,
+    offset_x: int,
+    scale_y: float,
+    offset_y: int,
+) -> Profile | None:
     regions: list[ProfileRegion] = []
     for region in profile.regions:
         box = region.bbox_ratio
@@ -64,17 +129,17 @@ def register_profile_grid(image: NDArray[np.uint8], profile: Profile) -> Profile
             or transformed.x + transformed.w > 1
             or transformed.y + transformed.h > 1
         ):
-            return profile
+            return None
         regions.append(replace(region, bbox_ratio=transformed))
     return replace(profile, regions=tuple(regions))
 
 
-def _fit_horizontal(
+def _horizontal_signal(
     ink: NDArray[np.float32],
     regions: tuple[ProfileRegion, ...],
     width: int,
     height: int,
-) -> tuple[float, int]:
+) -> tuple[NDArray[np.float32], tuple[float, ...]]:
     minimum_y = max(
         0,
         round(min(float(region.bbox_ratio.y) for region in regions) * height) - 20,
@@ -97,6 +162,16 @@ def _fit_horizontal(
             float(region.bbox_ratio.x + region.bbox_ratio.w) * width,
         )
     )
+    return projection, lines
+
+
+def _fit_horizontal(
+    ink: NDArray[np.float32],
+    regions: tuple[ProfileRegion, ...],
+    width: int,
+    height: int,
+) -> tuple[float, int]:
+    projection, lines = _horizontal_signal(ink, regions, width, height)
     limit = round(width * _MAX_OFFSET_RATIO)
     offsets = range(-limit, limit + 1, 2)
     baseline = _line_score(projection, lines, 1.0, 0)

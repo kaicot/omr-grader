@@ -24,6 +24,12 @@ from omr_grader.domain.profile import Profile, ProfileRegion
 from omr_grader.recognition.thresholds import RecognitionThresholds, validate_thresholds
 
 MAX_IMAGE_PIXELS: Final = 100_000_000
+_UNMARKED_MAXIMUM: Final = 0.125
+"""Highest fill of an unmarked printed bubble on real scans was 0.122 (8,000 cells)."""
+_SINGLE_MARK_MINIMUM: Final = 0.14
+_SINGLE_MARK_SEPARATION: Final = 0.06
+_FAINT_MARK_MINIMUM: Final = 0.12
+_FAINT_MARK_SEPARATION: Final = 0.04
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,10 +313,41 @@ def _answer(
     question: int, candidates: list[CellEvidence], thresholds: RecognitionThresholds
 ) -> AnswerRecognition:
     selected, field_status = _classify(candidates, thresholds)
+    if thresholds.has_valid_calibration_provenance and field_status in (
+        FieldStatus.UNCERTAIN,
+        FieldStatus.BLANK,
+    ):
+        selected, field_status = _single_mark(candidates, selected, field_status)
     status = AnswerStatus(field_status.value)
     updated = _evidence_with_status(candidates, selected, field_status)
     choices = tuple(cast(int, updated[index].choice) for index in selected)
     return AnswerRecognition(question, AnswerValue(choices, status), updated)
+
+
+def _single_mark(
+    candidates: list[CellEvidence], selected: tuple[int, ...], status: FieldStatus
+) -> tuple[tuple[int, ...], FieldStatus]:
+    """Accept a small solid dot that stands clearly apart from four unmarked bubbles.
+
+    A dot covers little of the scored area, so its fill sits near the threshold even when
+    it is unmistakable. A weaker dot that still stands apart goes to review, not blank.
+    """
+    scores = tuple(float(cast(str, item.fill_score)) for item in candidates)
+    ranked = sorted(range(len(scores)), key=lambda index: -scores[index])
+    strongest, runner_up = scores[ranked[0]], scores[ranked[1]]
+    if (
+        strongest >= _SINGLE_MARK_MINIMUM
+        and runner_up <= _UNMARKED_MAXIMUM
+        and strongest - runner_up >= _SINGLE_MARK_SEPARATION
+    ):
+        return (ranked[0],), FieldStatus.NORMAL
+    if (
+        status is FieldStatus.BLANK
+        and strongest >= _FAINT_MARK_MINIMUM
+        and strongest - runner_up >= _FAINT_MARK_SEPARATION
+    ):
+        return (ranked[0],), FieldStatus.UNCERTAIN
+    return selected, status
 
 
 def _classify(

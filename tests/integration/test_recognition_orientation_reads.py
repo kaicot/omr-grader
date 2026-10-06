@@ -1,4 +1,4 @@
-"""Orientation is confirmed by reading the grid when profile landmarks mislead."""
+"""Orientation and registration are confirmed by reading the grid when they mislead."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import omr_grader.recognition.pipeline as pipeline
+import omr_grader.recognition.registration as registration
 from omr_grader.domain.enums import AnswerStatus, SourceKind
 from omr_grader.domain.errors import ErrorInfo, Ok
 from omr_grader.domain.models import PageRef
@@ -252,3 +253,67 @@ def test_failed_or_empty_reads_are_never_confident() -> None:
     failure = ErrorInfo("IMAGE_DECODE_FAILED", "error.image_decode_failed")
     assert not pipeline._confident_read(failure)
     assert not pipeline._confident_read(_read_with(0, 0))  # type: ignore[arg-type]
+
+
+def _fixed_orientation(monkeypatch: pytest.MonkeyPatch, rotation: int = 0) -> None:
+    scores = tuple(
+        OrientationScore(degrees, 0.9 if degrees == rotation else 0.1)
+        for degrees in (0, 90, 180, 270)
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "select_orientation",
+        lambda *_args, **_kwargs: Ok(OrientationDecision(rotation, 0.9, scores)),
+    )
+
+
+def test_a_grid_fitted_to_a_shrunken_alias_is_replaced_by_a_confident_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real scans locked onto a grid shrunk to 0.904 and shifted right; reproduce that fit.
+    profile = _profile()
+    _fixed_orientation(monkeypatch)
+    alias = registration._moved(profile, _WIDTH, _HEIGHT, 0.904, 60, 1.0, 0)
+    assert alias is not None
+    monkeypatch.setattr(pipeline, "register_profile_grid", lambda _image, _profile: alias)
+
+    result = recognize_page(_task(_sheet(profile), profile))
+
+    _assert_reads_every_mark(result)
+    assert isinstance(result, PipelineSuccess)
+    assert result.page.rotation_degrees == 0
+
+
+def test_a_confident_default_fit_is_never_second_guessed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile()
+    _fixed_orientation(monkeypatch)
+    searched: list[object] = []
+    monkeypatch.setattr(
+        pipeline,
+        "registration_candidates",
+        lambda *args, **kwargs: searched.append(args) or (),
+    )
+
+    result = recognize_page(_task(_sheet(profile), profile))
+
+    _assert_reads_every_mark(result)
+    assert searched == []
+
+
+def test_unconfident_alternative_fits_leave_the_default_read_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile()
+    _fixed_orientation(monkeypatch)
+    alias = registration._moved(profile, _WIDTH, _HEIGHT, 0.904, 60, 1.0, 0)
+    assert alias is not None
+    monkeypatch.setattr(pipeline, "register_profile_grid", lambda _image, _profile: alias)
+    monkeypatch.setattr(pipeline, "registration_candidates", lambda *_args, **_kwargs: (alias,))
+
+    result = recognize_page(_task(_sheet(profile), profile))
+
+    assert isinstance(result, PipelineSuccess)
+    clear = sum(answer.value.status is AnswerStatus.NORMAL for answer in result.page.answers)
+    assert clear < 90

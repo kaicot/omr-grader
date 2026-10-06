@@ -188,11 +188,28 @@ def test_threshold_edges_partial_tiny_and_close_marks_remain_conservative() -> N
         _id_mark(image, column, column)
 
     # The central scoring area is 48 by 7 pixels; 77 dark pixels sit at the
-    # threshold boundary and therefore require review rather than selection.
+    # threshold boundary. Alone in its row, that partial dot is the answer.
     image[101:108, 176:187] = 0
     edge = _read(image).answers[0].value
-    assert edge.status is AnswerStatus.UNCERTAIN
-    assert edge.choices == ()
+    assert edge.status is AnswerStatus.NORMAL
+    assert edge.choices == (3,)
+
+    # A second cell that is darker than any unmarked bubble keeps the row in review.
+    rival = image.copy()
+    rival[101:108, 256:264] = 0
+    rival_result = _read(rival).answers[0].value
+    assert rival_result.status is AnswerStatus.UNCERTAIN
+    assert rival_result.choices == ()
+
+    # A dot too faint to accept is surfaced for review instead of vanishing as a blank.
+    faint = np.full((1000, 1000), 255, dtype=np.uint8)
+    for column in range(8):
+        _id_mark(faint, column, column)
+    faint[101:108, 176:182] = 0
+    faint_result = _read(faint).answers[0]
+    assert faint_result.value.status is AnswerStatus.UNCERTAIN
+    assert faint_result.value.choices == (3,)
+    assert faint_result.cells[2].fill_score == "0.125"
 
     tiny = np.full((1000, 1000), 255, dtype=np.uint8)
     for column in range(8):

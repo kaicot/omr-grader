@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from omr_grader.domain.profile import parse_profile_bytes
-from omr_grader.recognition.registration import register_profile_grid
+from omr_grader.recognition.registration import register_profile_grid, registration_candidates
 
 
 def _profile():
@@ -44,11 +44,8 @@ def _profile():
     ).value
 
 
-def test_grid_registration_recovers_global_print_scale_and_offset() -> None:
-    profile = _profile()
+def _printed_table(profile, scale_x=0.94, offset_x=18, scale_y=0.96, offset_y=13):
     width, height = 600, 400
-    scale_x, offset_x = 0.94, 18
-    scale_y, offset_y = 0.96, 13
     image = np.full((height, width, 3), 255, dtype=np.uint8)
     for region in profile.regions:
         box = region.bbox_ratio
@@ -67,6 +64,12 @@ def test_grid_registration_recovers_global_print_scale_and_offset() -> None:
         for row in range(region.grid.rows + 1):
             y = round(top + region_height * row / region.grid.rows)
             cv2.line(image, (left, y), (right, y), (0, 0, 0), 2)
+    return image
+
+
+def test_grid_registration_recovers_global_print_scale_and_offset() -> None:
+    profile = _profile()
+    image = _printed_table(profile)
 
     registered = register_profile_grid(image, profile)
     answer = registered.regions[1].bbox_ratio
@@ -82,3 +85,26 @@ def test_grid_registration_keeps_an_aligned_profile_unchanged() -> None:
     image = np.full((400, 600, 3), 255, dtype=np.uint8)
 
     assert register_profile_grid(image, profile) == profile
+
+
+def test_registration_candidates_offer_distinct_fits_led_by_the_printed_one() -> None:
+    profile = _profile()
+    image = _printed_table(profile)
+
+    candidates = registration_candidates(image, profile)
+
+    assert 1 < len(candidates) <= 4
+    assert candidates[0] == register_profile_grid(image, profile)
+    lefts = [candidate.regions[1].bbox_ratio.x for candidate in candidates]
+    assert all(
+        abs(first - second) > Decimal("0.001")
+        for index, first in enumerate(lefts)
+        for second in lefts[index + 1 :]
+    )
+
+
+def test_registration_candidates_need_an_image_and_a_positive_limit() -> None:
+    profile = _profile()
+
+    assert registration_candidates(np.zeros((0, 0), dtype=np.uint8), profile) == ()
+    assert registration_candidates(_printed_table(profile), profile, limit=0) == ()

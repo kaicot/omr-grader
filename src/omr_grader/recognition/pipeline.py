@@ -39,17 +39,17 @@ from omr_grader.recognition.grid_reader import (
 from omr_grader.recognition.normalization import NormalizedRaster, normalize_page
 from omr_grader.recognition.orientation import rotate_right_angle, select_orientation
 from omr_grader.recognition.overlay import render_overlay
-from omr_grader.recognition.registration import register_profile_grid
+from omr_grader.recognition.registration import register_profile_grid, registration_candidates
 from omr_grader.recognition.thresholds import RecognitionThresholds
 
 _RASTER = NDArray[np.uint8]
 _HEADER_DIMENSIONS = tuple[int, int]
 _MAX_COLOR_CHANNELS: Final = 3
 _CONFIDENT_READ_RATIO: Final = 0.90
-"""Share of clear answers that makes a grid read trustworthy enough to set orientation.
+"""Share of clear answers that lets a grid read choose orientation or registration.
 
-A nearly point-symmetric answer table still yields many clear answers when read upside
-down (up to 60% on real scans), so only a confident read may overturn the landmarks.
+Wrong geometry still reads many clear answers on real scans (60% upside down, 84% with
+the grid one bubble sideways), so only a confident read may replace the default choice.
 """
 
 
@@ -207,15 +207,31 @@ def _read_oriented(
     recognition = read_grid(raster.pixels, registered_profile, task.thresholds)
     if isinstance(recognition, Err):
         return recognition.errors[0]
-    return raster, recognition.value
+    read = raster, recognition.value
+    if _confident_read(read):
+        return read
+    # The best line fit can be a scaled alias of the printed table. Re-read with the
+    # strongest alternative fits and keep the clearest one only if it reads confidently.
+    for candidate in registration_candidates(raster.pixels, task.profile):
+        if candidate.regions == registered_profile.regions:
+            continue
+        alternative = read_grid(raster.pixels, candidate, task.thresholds)
+        if isinstance(alternative, Err):
+            continue
+        option = raster, alternative.value
+        if _confident_read(option) and _clear_answers(option[1]) > _clear_answers(read[1]):
+            read = option
+    return read
+
+
+def _clear_answers(grid: GridRecognition) -> int:
+    return sum(answer.value.status is AnswerStatus.NORMAL for answer in grid.answers)
 
 
 def _confident_read(read: tuple[NormalizedRaster, GridRecognition] | ErrorInfo) -> bool:
     if isinstance(read, ErrorInfo) or not read[1].answers:
         return False
-    answers = read[1].answers
-    clear = sum(answer.value.status is AnswerStatus.NORMAL for answer in answers)
-    return clear >= _CONFIDENT_READ_RATIO * len(answers)
+    return _clear_answers(read[1]) >= _CONFIDENT_READ_RATIO * len(read[1].answers)
 
 
 def _page_contour(image: _RASTER, page_ref: PageRef, profile: Profile) -> Result[PageContour]:
