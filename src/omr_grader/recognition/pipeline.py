@@ -29,7 +29,7 @@ from omr_grader.ingestion.images import (
     MAX_SOURCE_BYTES,
     preflight_tiff,
 )
-from omr_grader.recognition.form_alignment import PageAlignment, align_page
+from omr_grader.recognition.form_alignment import align_page
 from omr_grader.recognition.grid_reader import _has_frozen_profile_invariants, read_grid
 from omr_grader.recognition.normalization import warp_page
 from omr_grader.recognition.orientation import rotate_right_angle
@@ -39,21 +39,6 @@ from omr_grader.recognition.thresholds import RecognitionThresholds
 _RASTER = NDArray[np.uint8]
 _HEADER_DIMENSIONS = tuple[int, int]
 _MAX_COLOR_CHANNELS: Final = 3
-_TRUSTED_INLIER_RATIO: Final = 0.65
-"""Share of form bubbles that must sit on printed circles for an automatic read.
-
-All 24 baseline pages matched 81-98% of their 580 bubbles.
-"""
-_TRUSTED_ROTATION_MARGIN: Final = 0.05
-"""Lead of the chosen rotation over the runner-up, as a share of form bubbles (baseline 12-14%)."""
-_TRUSTED_EXTRA_CIRCLES: Final = 0.2
-"""Printed circles the profile does not explain, as a share of its bubbles.
-
-A page of a larger form fits a smaller profile on every bubble the profile has, so only
-its extra printed circles show that questions would silently go unread. Baseline pages
-left at most 1% (100 questions) and 2.7% (50 questions) unexplained; 100-question pages
-read with the 50-question profile left 68-77%.
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +141,7 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
         task.profile,
         task.thresholds,
         bubble_radius=alignment.bubble_radius,
-        trusted=_alignment_is_trusted(alignment),
+        trusted=alignment.trusted,
     )
     if isinstance(recognition, Err):
         return _failure(task.page_ref, recognition.errors[0])
@@ -187,17 +172,6 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
         normalized.png_bytes, _coordinates(page_result), _png(overlay.value)
     )
     return PipelineSuccess(page_result, artifacts)
-
-
-def _alignment_is_trusted(alignment: PageAlignment) -> bool:
-    """Few matched bubbles, a near-tie between rotations or many printed circles the
-    profile does not have send the page to review."""
-    margin = (alignment.inliers - alignment.runner_up_inliers) / alignment.nodes
-    return (
-        alignment.inlier_ratio >= _TRUSTED_INLIER_RATIO
-        and margin >= _TRUSTED_ROTATION_MARGIN
-        and alignment.unexplained <= _TRUSTED_EXTRA_CIRCLES * alignment.nodes
-    )
 
 
 def _is_uint8_raster(value: object) -> TypeGuard[_RASTER]:

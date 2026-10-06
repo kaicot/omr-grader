@@ -12,7 +12,7 @@ import pytest
 
 from omr_grader.domain.enums import AnswerStatus, ProcessingStatus, StudentIdStatus
 from omr_grader.domain.errors import ErrorInfo, Ok
-from omr_grader.domain.profile import Profile
+from omr_grader.domain.profile import Profile, parse_profile_bytes
 from omr_grader.recognition.bubbles import find_bubbles
 from omr_grader.recognition.form_layout import layout_from_bubbles
 from omr_grader.recognition.form_profile import build_profile
@@ -28,6 +28,7 @@ from tests.helpers.omr_engine import (
     ReferenceSheet,
     make_page_ref,
     make_thresholds,
+    profile_from_page,
     reference_sheet,
 )
 from tests.helpers.synthetic_omr import (
@@ -37,6 +38,7 @@ from tests.helpers.synthetic_omr import (
     encode_png,
     paint_mark,
     render_sheet_with_geometry,
+    sample_answers,
 )
 
 NORMAL, BLANK, MULTIPLE = AnswerStatus.NORMAL, AnswerStatus.BLANK, AnswerStatus.MULTIPLE
@@ -247,9 +249,55 @@ def test_a_page_printed_with_more_bubbles_than_the_profile_describes_is_sent_to_
 
     result = _success(recognize_page(_task(_png(), profile_of_fifty)))
 
-    assert result.page.processing_status is ProcessingStatus.NEEDS_MANUAL_REVIEW, (
+    page = result.page
+    assert page.processing_status is ProcessingStatus.NEEDS_MANUAL_REVIEW, (
         f"processed with {sheet.geometry.question_count - 50} printed questions ignored"
     )
+    # Grading ignores the page status: every printed question must be withheld itself.
+    assert {answer.value.status for answer in page.answers[:50]} == {UNCERTAIN}
+    assert {answer.value.status for answer in page.answers[50:]} == {UNASKED}
+    assert page.student_id.status is StudentIdStatus.INVALID
+    assert page.student_id.value is None
+
+
+@pytest.mark.parametrize(("axis", "steps"), (("x", 1), ("x", -1), ("y", 1), ("y", -1)))
+def test_a_profile_block_drawn_one_bubble_off_withholds_every_value(axis: str, steps: int) -> None:
+    # Every other block still fits, so coverage, residual and rotation checks all pass.
+    sheet = reference_sheet()
+    wire = json.loads(sheet.payload)
+    block = next(region for region in wire["regions"] if region.get("question_start") == 81)
+    box, grid = block["bbox_ratio"], block["grid"]
+    pitch = box["w"] / grid["cols"] if axis == "x" else box["h"] / grid["rows"]
+    box[axis] = round(box[axis] + steps * pitch, 8)
+    parsed = parse_profile_bytes(json.dumps(wire).encode())
+    assert isinstance(parsed, Ok)
+
+    result = _success(recognize_page(_task(_png(), parsed.value)))
+
+    page = result.page
+    assert page.processing_status is ProcessingStatus.NEEDS_MANUAL_REVIEW
+    assert {answer.value.status for answer in page.answers} == {UNCERTAIN}
+    assert page.student_id.status is StudentIdStatus.INVALID
+
+
+@pytest.mark.parametrize("turn", (0, 180))
+def test_a_form_with_column_label_rings_reads_every_question_under_its_own_number(
+    turn: int,
+) -> None:
+    # The label rings stay on every page; the profile leaves them out and pages still fit.
+    answers = sample_answers()
+    image, _ = render_sheet_with_geometry(answers, "20261234", header_rings=True)
+    profile, _, layout = profile_from_page(image, "labelled")
+    assert [block.rows for block in layout.answer_blocks] == [20] * 5
+    page = image if turn == 0 else cv2.rotate(image, TURNS[turn])
+
+    result = _success(recognize_page(_task(encode_png(page), profile)))
+
+    assert result.page.processing_status is ProcessingStatus.PROCESSED
+    assert result.page.student_id.value == "20261234"
+    seen = {a.question: a.value.choices for a in result.page.answers if a.value.status is NORMAL}
+    expected = {q: choices_of(c) for q, c in answers.items() if len(choices_of(c)) == 1}
+    assert seen == expected
 
 
 def test_a_profile_that_is_upside_down_withholds_every_value() -> None:

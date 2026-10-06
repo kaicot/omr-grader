@@ -373,7 +373,9 @@ def test_without_a_detection_port_choosing_a_source_does_nothing(qtbot, monkeypa
     setup.controller.close()
 
 
-def test_detection_is_skipped_silently_while_another_operation_runs(qtbot, monkeypatch) -> None:
+def test_detection_waits_for_another_operation_and_then_runs_for_the_scans(
+    qtbot, monkeypatch
+) -> None:
     detected: list[tuple[str, ...]] = []
     started, release = Event(), Event()
 
@@ -396,12 +398,52 @@ def test_detection_is_skipped_silently_while_another_operation_runs(qtbot, monke
     assert started.wait(2)
 
     setup.choose_source()
+    # No result for earlier scans may stay up while the other operation runs.
+    assert setup.scan.form_status_label.text() == DETECTING
+    assert detected == []
+    release.set()
+    qtbot.waitUntil(lambda: detected == [PDF.paths], timeout=5000)
+    setup.finish(qtbot)
+
+    assert setup.scan.profile_combo.currentData().path == "saved.omrtemplate"
+    assert setup.scan.form_status_label.text() == (
+        f"자동 인식: {SUMMARY} · 저장된 양식 'saved.omrtemplate' 사용"
+    )
+    setup.controller.close()
+
+
+def test_a_profile_picked_by_hand_while_detection_runs_is_kept(qtbot, monkeypatch) -> None:
+    release = Event()
+    saves: list[object] = []
+
+    def detect(paths: tuple[str, ...]) -> Ok[FormDetection]:
+        release.wait(5)
+        return Ok(_detection())  # a new form would normally be offered and saved
+
+    setup = _setup(
+        qtbot,
+        monkeypatch,
+        "manual.omrtemplate",
+        form_detect=detect,
+        form_save=lambda payload, name: saves.append(name),
+    )
+    setup.choose_source()
+    combo = setup.scan.profile_combo
+    index = next(
+        i
+        for i in range(combo.count())
+        if getattr(combo.itemData(i), "path", None) == "manual.omrtemplate"
+    )
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)  # what a click on the list item sends
     release.set()
     setup.finish(qtbot)
 
-    assert detected == []
-    assert setup.scan.form_status_label.isHidden()
-    assert setup.scan.form_status_label.text() == ""
+    assert combo.currentData().path == "manual.omrtemplate"
+    assert saves == []
+    assert setup.scan.form_status_label.text() == (
+        f"자동 인식: {SUMMARY} · 직접 고른 프로필을 그대로 사용합니다"
+    )
     setup.controller.close()
 
 

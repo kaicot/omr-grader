@@ -9,7 +9,13 @@ import pytest
 from omr_grader.domain.errors import Err, ErrorInfo, Ok
 from omr_grader.domain.profile import Grid, parse_profile_bytes
 from omr_grader.recognition.form_alignment import align_page, profile_nodes
-from omr_grader.recognition.form_layout import FormLayout, LatticeBlock, detect_layout
+from omr_grader.recognition.bubbles import find_bubbles
+from omr_grader.recognition.form_layout import (
+    FormLayout,
+    LatticeBlock,
+    detect_layout,
+    layout_from_bubbles,
+)
 from omr_grader.recognition.form_profile import (
     FRAME_BUBBLE_RADIUS,
     MAX_QUESTIONS,
@@ -147,6 +153,33 @@ def test_cells_stay_on_the_rings_when_the_sample_pages_are_skewed_differently() 
     on_page = cv2.perspectiveTransform(nodes.reshape(-1, 1, 2), alignment.inverse).reshape(-1, 2)
     worst = float(np.hypot(*(on_page - sheet.geometry.centers).T).max())
     assert worst < 1.0, f"profile cells miss the printed rings by up to {worst:.2f} px"
+
+
+def test_a_sample_read_turned_over_is_left_out_even_when_it_comes_first() -> None:
+    # Its lattice pairs every node with the wrong bubble; averaged in, it ruins the ID grid.
+    sheet = reference_sheet()
+    flipped_gray = cv2.rotate(sheet.gray, cv2.ROTATE_180)
+    bubbles = find_bubbles(flipped_gray)
+    assert bubbles is not None
+    flipped = layout_from_bubbles(bubbles, flipped_gray)  # measured without turning it upright
+    assert (
+        flipped is not None
+        and flipped.rotation == 0
+        and flipped.signature == sheet.layout.signature
+    )
+    other_image, _ = render_sheet_with_geometry(sheet.answers, sheet.student_id, seed=4)
+    other = detect_layout(to_gray(other_image))
+    assert other is not None
+    size = (sheet.gray.shape[1], sheet.gray.shape[0])
+
+    built = build_profile([(flipped, size), (sheet.layout, size), (other, size)], "form")
+
+    assert isinstance(built, Ok)
+    alignment = align_page(sheet.gray, built.value[0])
+    assert alignment is not None and alignment.rotation == 0 and alignment.trusted
+    nodes = profile_nodes(built.value[0])[0]
+    on_page = cv2.perspectiveTransform(nodes.reshape(-1, 1, 2), alignment.inverse).reshape(-1, 2)
+    assert float(np.hypot(*(on_page - sheet.geometry.centers).T).max()) < 1.0
 
 
 def test_a_form_without_samples_is_not_found() -> None:

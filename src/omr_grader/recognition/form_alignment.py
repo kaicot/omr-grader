@@ -29,6 +29,21 @@ _MAX_ANCHOR_ANGLE: Final = np.radians(10.0)
 _MIN_INLIER_RATIO: Final = 0.5
 _REFINEMENTS: Final = 4
 _EXPLAINED_RADIUS: Final = 0.6
+_TRUSTED_INLIER_RATIO: Final = 0.65
+"""Share of form bubbles that must sit on printed circles for an automatic read.
+
+All 24 baseline pages matched 81-98% of their 580 bubbles.
+"""
+_TRUSTED_ROTATION_MARGIN: Final = 0.05
+"""Lead of the chosen rotation over the runner-up, as a share of form bubbles (baseline 12-14%)."""
+_TRUSTED_EXTRA_CIRCLES: Final = 0.2
+"""Printed circles the profile does not explain, as a share of its bubbles.
+
+A page of a larger form fits a smaller profile on every bubble the profile has, so only
+its extra printed circles show that questions would silently go unread. Baseline pages
+left at most 1% (100 questions) and 2.7% (50 questions) unexplained; 100-question pages
+read with the 50-question profile left 68-77%.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +60,8 @@ class PageAlignment:
     runner_up_inliers: int
     unexplained: int = 0
     """Printed circles inside the frame that no form bubble explains (a larger form)."""
+    shifted_regions: int = 0
+    """Regions that one row or column step would put on clearly more printed circles."""
 
     @property
     def inlier_ratio(self) -> float:
@@ -57,6 +74,23 @@ class PageAlignment:
             return 0.0
         margin = (self.inliers - self.runner_up_inliers) / self.nodes
         return float(max(0.0, min(1.0, self.inlier_ratio * min(1.0, 2 * margin + 0.5))))
+
+    @property
+    def trusted(self) -> bool:
+        """Whether values read through this fit may be confirmed without review.
+
+        Few matched bubbles, a near-tie between rotations, many printed circles the profile
+        does not have, or a region sitting one step off its printed rings all fail it.
+        """
+        if not self.nodes:
+            return False
+        margin = (self.inliers - self.runner_up_inliers) / self.nodes
+        return (
+            self.inlier_ratio >= _TRUSTED_INLIER_RATIO
+            and margin >= _TRUSTED_ROTATION_MARGIN
+            and self.unexplained <= _TRUSTED_EXTRA_CIRCLES * self.nodes
+            and self.shifted_regions == 0
+        )
 
 
 def profile_nodes(profile: Profile) -> tuple[NDArray[np.float64], tuple[ProfileRegion, ...]]:
@@ -111,7 +145,8 @@ def align_page(gray: NDArray[np.uint8], profile: Profile) -> PageAlignment | Non
         & (mapped[:, 1] >= 0)
         & (mapped[:, 1] < frame_height)
     ]
-    explained = _CircleIndex(frame_nodes, _EXPLAINED_RADIUS * bubble_radius).covers(inside)
+    limit = _EXPLAINED_RADIUS * bubble_radius
+    explained = _CircleIndex(frame_nodes, limit).covers(inside)
     return PageAlignment(
         rotation,
         forward,
@@ -122,7 +157,37 @@ def align_page(gray: NDArray[np.uint8], profile: Profile) -> PageAlignment | Non
         bubble_radius,
         runner_up,
         int(np.count_nonzero(~explained)),
+        _shifted_regions(_CircleIndex(mapped, limit), frame_nodes, regions),
     )
+
+
+def _shifted_regions(
+    circles: _CircleIndex, frame_nodes: NDArray[np.float64], regions: tuple[ProfileRegion, ...]
+) -> int:
+    """Regions that one row or column step would put on clearly more printed circles.
+
+    A region on its printed rings already covers a circle at every bubble, so no step can
+    gain. A region drawn one step off leaves its leading edge on bare paper and has a
+    full row or column of unexplained rings just behind it: the step recovers them.
+    """
+    shifted = 0
+    for region, (start, stop) in zip(regions, _region_slices(regions), strict=True):
+        rows, cols = region.grid.rows, region.grid.cols
+        grid = frame_nodes[start:stop].reshape(rows, cols, 2)
+        here = int(np.count_nonzero(circles.covers(grid.reshape(-1, 2))))
+        moves: list[tuple[NDArray[np.float64], int]] = []
+        if cols > 1:
+            across = np.diff(grid, axis=1).reshape(-1, 2).mean(axis=0)
+            moves += [(across, rows), (-across, rows)]
+        if rows > 1:
+            down = np.diff(grid, axis=0).reshape(-1, 2).mean(axis=0)
+            moves += [(down, cols), (-down, cols)]
+        for step, edge in moves:
+            moved = int(np.count_nonzero(circles.covers((grid + step).reshape(-1, 2))))
+            if moved - here >= max(3, edge / 2):
+                shifted += 1
+                break
+    return shifted
 
 
 def _fit(

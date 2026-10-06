@@ -271,6 +271,7 @@ class AppController(QObject):
         self._form_confirm_factory: FormConfirmFactory = FormConfirmDialog
         self._form_detection_paths: tuple[str, ...] | None = None
         self._form_detection_stale = False
+        self._form_detection_choices = 0
         self._bind_pages()
         self.main_window.set_close_requires_controller(True)
         self._apply_access(diagnostic)
@@ -1277,13 +1278,15 @@ class AppController(QObject):
         if detect is None or self._closing:
             return
         if self._active_bridge is not None and self._active_bridge.active:
-            # Detection only helps; the profile can still be chosen by hand meanwhile.
-            # A detection already running for other scans is re-run when it ends.
-            if self._form_detection_paths is not None:
-                self._form_detection_stale = True
+            # Detection only helps; the profile can still be chosen by hand meanwhile. It
+            # runs for the current scans once the other action ends, and no result for
+            # earlier scans stays on screen until then.
+            self._form_detection_stale = True
+            self.scan_page.set_form_detecting()
             return
         self._form_detection_paths = tuple(selection.paths)
         self._form_detection_stale = False
+        self._form_detection_choices = self.scan_page.manual_profile_choices
         self.scan_page.set_form_detecting()
         self._start_desktop_action(
             self.dashboard_page,
@@ -1305,6 +1308,12 @@ class AppController(QObject):
             return
         if not isinstance(result, FormDetection):
             self._fail_form_detection(_error_text(self._invalid_service_result()))
+            return
+        if self.scan_page.manual_profile_choices != self._form_detection_choices:
+            # A profile picked by hand while detection ran stands; nothing is saved either.
+            self.scan_page.set_form_detected(
+                f"자동 인식: {result.summary} · 직접 고른 프로필을 그대로 사용합니다"
+            )
             return
         profile_filename = result.profile_filename
         if profile_filename is None:

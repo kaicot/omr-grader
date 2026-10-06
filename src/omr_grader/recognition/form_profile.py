@@ -21,6 +21,12 @@ from omr_grader.domain.profile import Profile, parse_profile_bytes
 from omr_grader.recognition.form_layout import ANSWER_CHOICES, ID_DIGITS, FormLayout, LatticeBlock
 
 FRAME_BUBBLE_RADIUS: Final = 16.0
+_SAMPLE_FIT: Final = 0.5
+"""Median node misfit, in bubble radii, beyond which a sample page is not averaged in.
+
+Pages of one form agree to a small fraction of a radius; a page whose lattice was read
+turned over pairs every node with the wrong bubble and misses by many radii.
+"""
 MAX_QUESTIONS: Final = 100
 ID_COLUMNS: Final = 8
 
@@ -44,28 +50,38 @@ def build_profile(
     """Average same-signature layouts into one profile.
 
     ``samples`` pairs each page layout with that page's ``(width, height)`` in pixels.
-    Pages whose signature differs from the most common one are ignored.
+    Pages whose signature differs from the most common one are ignored, and so are pages
+    whose lattice does not agree with the most typical page (one read turned over).
     """
     if not samples:
         return Err((_issue("FORM_NOT_FOUND", "no page produced a bubble layout"),))
     signature, _ = Counter(layout.signature for layout, _ in samples).most_common(1)[0]
     chosen = [(layout, size) for layout, size in samples if layout.signature == signature]
-    reference, size = chosen[0]
+    stacked = [_nodes(layout) for layout, _ in chosen]
+    errors = np.asarray([[_misfit(nodes, other) for other in stacked] for nodes in stacked])
+    typical = int(np.argmin(np.median(errors, axis=1)))
+    reference, size = chosen[typical]
+    agreeing = [
+        index
+        for index in range(len(chosen))
+        if errors[index, typical] <= _SAMPLE_FIT * reference.radius
+    ]
     # Layouts are measured on the page turned upright; a quarter turn swaps its sides.
     width, height = size if reference.rotation in (0, 180) else (size[1], size[0])
     problem = supported(reference)
     if problem is not None:
         return Err((problem,))
     blocks = (*reference.id_blocks, *reference.answer_blocks)
-    stacked = [_nodes(layout) for layout, _ in chosen]
-    target = stacked[0]
-    aligned = [_similarity_apply(_similarity(nodes, target), nodes) for nodes in stacked]
+    target = stacked[typical]
+    aligned = [
+        _similarity_apply(_similarity(stacked[index], target), stacked[index]) for index in agreeing
+    ]
     mean = np.mean(aligned, axis=0)
 
     # Deskew around the page center and scale to the fixed frame bubble radius.
-    scale = FRAME_BUBBLE_RADIUS / float(np.median([layout.radius for layout, _ in chosen]))
-    # The averaged lattice lives in the first sample's frame, so it is deskewed by its own
-    # rows and columns; the other samples' skews no longer apply to it.
+    scale = FRAME_BUBBLE_RADIUS / float(np.median([chosen[index][0].radius for index in agreeing]))
+    # The averaged lattice lives in the typical sample's frame, so it is deskewed by its
+    # own rows and columns; the other samples' skews no longer apply to it.
     angle = -_lattice_skew(mean, blocks)
     center = np.array([width / 2, height / 2])
     rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
@@ -136,6 +152,12 @@ def _lattice_skew(nodes: NDArray[np.float64], blocks: Sequence[LatticeBlock]) ->
 def _nodes(layout: FormLayout) -> NDArray[np.float64]:
     blocks = (*layout.id_blocks, *layout.answer_blocks)
     return np.concatenate([block.nodes.reshape(-1, 2) for block in blocks])
+
+
+def _misfit(source: NDArray[np.float64], target: NDArray[np.float64]) -> float:
+    """Median distance, in ``target`` pixels, left after the best similarity onto ``target``."""
+    mapped = _similarity_apply(_similarity(source, target), source)
+    return float(np.median(np.hypot(*(mapped - target).T)))
 
 
 def _similarity(source: NDArray[np.float64], target: NDArray[np.float64]) -> NDArray[np.float64]:

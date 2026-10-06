@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -240,6 +240,42 @@ def test_a_saved_profile_that_fits_only_loosely_is_not_reused(
     assert isinstance(result, Ok)
     assert result.value.is_new
     assert result.value.generated_profile is not None
+
+
+def test_a_saved_profile_is_reused_on_pages_with_feed_wobble(
+    saved: SavedForm, scans: Scans, tmp_path: Path
+) -> None:
+    # A sideways wobble of about 0.5 mm no profile can follow: the saved one fits as well as
+    # a profile built from the wobbly page itself, so it is reused instead of asking again.
+    page = cv2.imdecode(np.fromfile(str(scans.first), np.uint8), cv2.IMREAD_GRAYSCALE)
+    height, width = page.shape
+    ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
+    wobbly = cv2.remap(
+        page, xs + 6.0 * np.sin(2 * np.pi * ys / 700.0), ys, cv2.INTER_LINEAR, borderValue=245
+    )
+    path = write_png(tmp_path / "wobbly.png", wobbly)
+
+    result = saved.detector.detect((str(path),))
+
+    assert isinstance(result, Ok)
+    assert result.value.profile_filename == saved.stored_name
+
+
+def test_a_fresh_profile_its_own_pages_do_not_trust_is_never_offered(
+    scans: Scans, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_align = form_detection.align_page
+
+    def one_block_off(gray: np.ndarray, profile: object) -> object:
+        fit = real_align(gray, profile)  # type: ignore[arg-type]
+        return None if fit is None else replace(fit, shifted_regions=1)
+
+    monkeypatch.setattr(form_detection, "align_page", one_block_off)
+
+    result = FormDetector(_store(tmp_path)).detect((str(scans.first),))
+
+    assert isinstance(result, Err)
+    assert result.errors[0].code == "FORM_GEOMETRY_INVALID"
 
 
 def test_a_form_of_another_structure_gets_its_own_profile(

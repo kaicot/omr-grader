@@ -22,7 +22,7 @@ from omr_grader.domain.profile import Profile
 from omr_grader.infrastructure.profile_store import ProfileStore
 from omr_grader.ingestion.images import enumerate_image_folder, enumerate_image_paths
 from omr_grader.ingestion.pdf import enumerate_pdf, render_pdf_page
-from omr_grader.recognition.form_alignment import align_page
+from omr_grader.recognition.form_alignment import PageAlignment, align_page
 from omr_grader.recognition.form_layout import FormLayout, detect_layout
 from omr_grader.recognition.form_profile import build_profile
 from omr_grader.recognition.orientation import rotate_right_angle
@@ -30,13 +30,17 @@ from omr_grader.recognition.orientation import rotate_right_angle
 MAX_SAMPLE_PAGES: Final = 12
 _MATCH_PAGES: Final = 3
 _MATCH_INLIER_RATIO: Final = 0.75
-_MATCH_RESIDUAL: Final = 0.1
-"""Largest median fit error of a saved profile to reuse, as a share of the bubble radius.
+_MATCH_PRECISION: Final = 1.3
+_MATCH_SLACK: Final = 0.03
+"""A saved profile is reused when its median fit error on each checked page, in bubble
+radii, is at most 1.3 times that of a profile built from these very pages plus 0.03.
 
-Generated profiles fit the baseline form to 0.05-0.07. The hand-drawn v3 template of the
-same form fits only to 0.15-0.20 and sends whole pages to review, so a precise profile
-is proposed instead of reusing it.
+A generated profile of the same form qualifies even on pages whose feed wobble no
+profile can follow. The hand-drawn v3 template of the baseline form fits at 0.15-0.20
+where a generated one fits at 0.05-0.07, sends whole pages to review, and is not reused.
 """
+_FALLBACK_ERROR: Final = 0.1
+"""Fit error limit on a page the fresh profile could not be fitted to at all."""
 _DETECTION_SESSION: Final = "scan-" + "0" * 32
 _PREVIEW_LONG_SIDE: Final = 1600
 
@@ -98,7 +102,16 @@ class FormDetector:
         question_count = sum(rows for _, rows in answers)
         first_gray, first_layout = members[0]
         preview = _preview(rotate_right_angle(first_gray, first_layout.rotation), first_layout)
-        existing = self._matching_profile(profile, [gray for gray, _ in members[:_MATCH_PAGES]])
+        checked = [gray for gray, _ in members[:_MATCH_PAGES]]
+        fresh = [align_page(gray, profile) for gray in checked]
+        # A profile that its own pages do not trust (an end row taken one step off, a page
+        # read turned over) is never offered: reading with it would only send pages to review.
+        if sum(1 for fit in fresh if fit is not None and fit.trusted) < -(-2 * len(fresh) // 3):
+            return _error(
+                "FORM_GEOMETRY_INVALID",
+                "자동 인식한 양식이 답안지에 정확히 맞지 않습니다. OMR 프로필을 직접 선택하세요.",
+            )
+        existing = self._matching_profile(profile, checked, fresh)
         suggested = f"자동양식_객관식{question_count}문항_{hashlib.sha256(payload).hexdigest()[:6]}"
         return Ok(
             FormDetection(
@@ -114,8 +127,14 @@ class FormDetector:
             )
         )
 
-    def _matching_profile(self, detected: Profile, pages: list[NDArray[np.uint8]]) -> str | None:
-        """A saved profile with the same structure that fits the sample pages precisely."""
+    def _matching_profile(
+        self,
+        detected: Profile,
+        pages: list[NDArray[np.uint8]],
+        fresh: list[PageAlignment | None],
+    ) -> str | None:
+        """A saved profile of the same structure that every checked page trusts and that
+        fits each of them about as precisely as ``detected`` (the fresh profile) does."""
         names = self.profiles.discover()
         if isinstance(names, Err):
             return None
@@ -124,21 +143,24 @@ class FormDetector:
             loaded = self.profiles.load(name)
             if isinstance(loaded, Err) or _signature(loaded.value) != _signature(detected):
                 continue
-            ratios: list[float] = []
-            errors: list[float] = []
-            for gray in pages:
-                alignment = align_page(gray, loaded.value)
-                ratios.append(0.0 if alignment is None else alignment.inlier_ratio)
-                errors.append(
-                    float("inf")
-                    if alignment is None
-                    else alignment.residual / alignment.bubble_radius
-                )
-            score = min(ratios) if ratios else 0.0
-            precise = bool(errors) and max(errors) <= _MATCH_RESIDUAL
-            if score >= _MATCH_INLIER_RATIO and precise and (best is None or score > best[0]):
+            fits = [align_page(gray, loaded.value) for gray in pages]
+            if not fits or not all(
+                fit is not None and fit.trusted and _as_precise(fit, own)
+                for fit, own in zip(fits, fresh, strict=True)
+            ):
+                continue
+            score = min(fit.inlier_ratio for fit in fits if fit is not None)
+            if score >= _MATCH_INLIER_RATIO and (best is None or score > best[0]):
                 best = (score, name)
         return None if best is None else best[1]
+
+
+def _as_precise(saved: PageAlignment, fresh: PageAlignment | None) -> bool:
+    """Whether a saved profile fits a page nearly as well as one built from the pages."""
+    error = saved.residual / saved.bubble_radius
+    if fresh is None:
+        return error <= _FALLBACK_ERROR
+    return error <= _MATCH_PRECISION * fresh.residual / fresh.bubble_radius + _MATCH_SLACK
 
 
 def _signature(profile: Profile) -> tuple[object, ...]:

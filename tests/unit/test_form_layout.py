@@ -165,6 +165,44 @@ def test_question_numbers_orient_a_form_whose_rings_print_no_digits(turn: int, s
     _assert_nodes_on_truth(layout, geometry, 1.0)
 
 
+def test_a_row_of_column_label_rings_above_each_block_is_not_taken_for_question_1() -> None:
+    # Unnumbered label rings one row above every block would shift each number by one.
+    image, geometry = render_sheet_with_geometry({}, "", header_rings=True)
+
+    layout = detect_layout(to_gray(image))
+
+    assert layout is not None
+    assert layout.signature == HUNDRED
+    assert _starts(layout) == (1, 21, 41, 61, 81)
+    _assert_nodes_on_truth(layout, geometry, 1.0)
+
+
+def test_a_plain_numbered_sheet_keeps_its_first_and_last_rows() -> None:
+    image, geometry = render_sheet_with_geometry({}, "", seed=5)
+
+    layout = detect_layout(to_gray(image))
+
+    assert layout is not None
+    assert [block.rows for block in layout.answer_blocks] == [20] * 5
+    _assert_nodes_on_truth(layout, geometry, 1.0)
+
+
+@pytest.mark.parametrize("share", (0.8, 0.9, 1.0))
+@pytest.mark.parametrize("turn", (0, 180))
+def test_a_student_marking_choice_1_almost_everywhere_does_not_turn_the_page(
+    share: float, turn: int
+) -> None:
+    # A marked (1) carries far more ink than a printed (5); marked rows are not compared.
+    answers = {question: 1 if question % 10 < 10 * share else 3 for question in range(1, 101)}
+    image, geometry = render_sheet_with_geometry(answers, "20261234", rotation=turn)
+
+    layout = detect_layout(to_gray(image))
+
+    assert layout is not None
+    assert layout.rotation == geometry.upright_rotation
+    assert _starts(layout) == (1, 21, 41, 61, 81)
+
+
 def test_bands_are_numbered_left_to_right_and_blocks_of_a_band_top_to_bottom() -> None:
     image, geometry = render_sheet_with_geometry({}, "", layout=((8, 8), (8, 8)))
 

@@ -31,6 +31,8 @@ ID_DIGITS: Final = 10
 CHOICES: Final = 5
 _UPSIDE_DOWN_MARGIN: Final = 0.01
 """Upright pages print (1) 0.025-0.042 lighter than (5) in the unmarked disk density."""
+_REMAP_ROWS: Final = 30_000
+"""OpenCV remap maps must stay under 32767 rows."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,11 +81,8 @@ def read_grid(
     height, width = gray.shape
     try:
         ring = _ring_radius(gray, _answer_centers(answer_regions, width, height), bubble_radius)
-    except (ArithmeticError, TypeError, ValueError):
-        return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
-    density = _density_map(gray, ring, thresholds.ink_floor)
-    disk = _disk(thresholds.disk_ratio * ring)
-    try:
+        density = _density_map(gray, ring, thresholds.ink_floor)
+        disk = _disk(thresholds.disk_ratio * ring)
         id_region = profile.id_region
         id_geometry = [
             [_cell(id_region, column, digit, width, height) for digit in range(ID_DIGITS)]
@@ -100,7 +99,8 @@ def read_grid(
         answer_raw = np.array(
             [[_fill(density, cell[2], disk) for cell in cells] for _, cells in rows]
         )
-    except (ArithmeticError, TypeError, ValueError):
+    except (ArithmeticError, TypeError, ValueError, cv2.error):
+        # OpenCV refuses some sizes of an odd profile frame; that page is reported, not raised.
         return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
     # Printed digits inside the bubbles carry ink of their own, darker on some printers;
     # only what lies above the unmarked level of the same digit counts as a mark.
@@ -195,17 +195,6 @@ def read_grid(
     return Ok(GridRecognition(id_result, tuple(answers), all_evidence, manual))
 
 
-def recognize_grid(
-    image: NDArray[np.generic],
-    profile: Profile,
-    thresholds: RecognitionThresholds,
-    *,
-    bubble_radius: float,
-) -> Result[GridRecognition]:
-    """Compatibility-free descriptive alias for the public grid reader."""
-    return read_grid(image, profile, thresholds, bubble_radius=bubble_radius)
-
-
 def _withheld_answer(answer: AnswerRecognition) -> AnswerRecognition:
     """Keep what was read as review evidence while confirming none of it."""
     if answer.value.status in {AnswerStatus.UNASKED, AnswerStatus.UNCERTAIN}:
@@ -282,17 +271,23 @@ def _ring_radius(gray: NDArray[np.uint8], centers: NDArray[np.float64], guess: f
     """
     radii = np.arange(0.55 * guess, 1.45 * guess, 0.25, dtype=np.float64)
     angles = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False)
-    xs = centers[:, 0, None, None] + radii[None, :, None] * np.cos(angles)[None, None, :]
-    ys = centers[:, 1, None, None] + radii[None, :, None] * np.sin(angles)[None, None, :]
-    # remap needs maps under 32767 rows and columns: one row per (bubble, radius).
-    sampled = cv2.remap(
-        gray,
-        xs.reshape(-1, len(angles)).astype(np.float32),
-        ys.reshape(-1, len(angles)).astype(np.float32),
-        cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_REPLICATE,
-    ).reshape(len(centers), len(radii), len(angles))
-    profile = np.median(sampled.astype(np.float64).mean(axis=2), axis=0)
+    # remap needs maps under 32767 rows: one row per (bubble, radius), so the bubbles are
+    # sampled in chunks whatever the frame resolution.
+    chunk = max(1, _REMAP_ROWS // len(radii))
+    means: list[NDArray[np.float64]] = []
+    for start in range(0, len(centers), chunk):
+        part = centers[start : start + chunk]
+        xs = part[:, 0, None, None] + radii[None, :, None] * np.cos(angles)[None, None, :]
+        ys = part[:, 1, None, None] + radii[None, :, None] * np.sin(angles)[None, None, :]
+        sampled = cv2.remap(
+            gray,
+            xs.reshape(-1, len(angles)).astype(np.float32),
+            ys.reshape(-1, len(angles)).astype(np.float32),
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        ).reshape(len(part), len(radii), len(angles))
+        means.append(sampled.astype(np.float64).mean(axis=2))
+    profile = np.median(np.concatenate(means), axis=0)
     return float(radii[int(np.argmin(profile))])
 
 

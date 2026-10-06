@@ -143,9 +143,10 @@ def _error(code: str, field_path: str) -> Err:
 def _questions_not_on_form(
     responses: tuple[EffectiveResponse, ...], key: AnswerKeySnapshot
 ) -> tuple[int, ...]:
-    """Asked questions that no scanned answer sheet prints (every response reads unasked).
+    """Asked questions that some answer sheet does not print (its response reads unasked).
 
-    Grading them would give every student zero, so the key must leave them unasked.
+    Grading them would give those students zero, so the key must leave them unasked. One
+    sheet is enough: a correction typed on another sheet must not unblock the question.
     """
     if not responses:
         return ()
@@ -153,7 +154,7 @@ def _questions_not_on_form(
         entry.question
         for entry in key.entries
         if entry.status is not KeyQuestionStatus.UNASKED
-        and all(
+        and any(
             response.answers[entry.question - 1].status is AnswerStatus.UNASKED
             for response in responses
         )

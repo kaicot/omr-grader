@@ -27,7 +27,6 @@ from omr_grader.recognition.grid_reader import (
     GridRecognition,
     question_count,
     read_grid,
-    recognize_grid,
 )
 from tests.helpers.omr_engine import make_thresholds
 from tests.helpers.synthetic_omr import apply_shading, paint_mark, paint_ring
@@ -639,11 +638,17 @@ def test_invalid_images_thresholds_radii_and_profiles_are_typed_errors() -> None
     )
 
 
-def test_recognize_grid_is_the_same_reader_under_a_descriptive_name() -> None:
-    frame = _frame()
-    page = _page(frame, STANDARD)
+def test_a_frame_drawn_at_high_resolution_is_read_without_hitting_opencv_limits() -> None:
+    # 500 bubbles of radius 25.6 px need more ring samples than one OpenCV remap allows.
+    frame = _frame((20, 20, 20, 20, 20))
+    scale = 1.6
+    page = cv2.resize(
+        _page(frame, {1: 3, 37: 5, 100: 1}), None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+    )
 
-    named = recognize_grid(page, frame.profile, make_thresholds(), bubble_radius=RING)
+    result = read_grid(page, frame.profile, make_thresholds(), bubble_radius=RING * scale)
 
-    assert isinstance(named, Ok)
-    assert named.value == _read(page, frame)
+    assert isinstance(result, Ok)
+    marked = {a.question: a.value.choices for a in result.value.answers if a.value.status is NORMAL}
+    assert marked == {1: (3,), 37: (5,), 100: (1,)}
+    assert result.value.student_id.value == "20250001"

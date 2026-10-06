@@ -296,7 +296,9 @@ class ScanPage(QWidget):
         self.roster_widget.browse_requested.connect(self.roster_browse_requested)
         self.sensitivity_slider.valueChanged.connect(self._set_sensitivity_label)
         self.exam_name_edit.textChanged.connect(self._update_gating)
+        self._manual_profile_choices = 0
         self.profile_combo.currentIndexChanged.connect(self._profile_changed)
+        self.profile_combo.activated.connect(self._profile_activated)
         self.run_button.clicked.connect(self._emit_recognition_request)
         self.fresh_response_button.clicked.connect(self._emit_fresh_response_request)
         self.cancel_button.clicked.connect(self._emit_cancel_request)
@@ -607,6 +609,14 @@ class ScanPage(QWidget):
     def _selected_profile(self) -> ValidatedProfileState | None:
         value = self.profile_combo.currentData()
         return value if isinstance(value, ValidatedProfileState) else None
+
+    def _profile_activated(self, *_: object) -> None:
+        self._manual_profile_choices += 1
+
+    @property
+    def manual_profile_choices(self) -> int:
+        """How many times the user has picked a profile in the list by hand."""
+        return self._manual_profile_choices
 
     def _profile_changed(self, *_: object) -> None:
         profile = self._selected_profile()

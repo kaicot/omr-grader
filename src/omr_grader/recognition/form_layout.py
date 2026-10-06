@@ -29,6 +29,16 @@ _DIGIT_GAP: Final = 1.5
 Real forms print (5) 3.6-11.8 levels darker than (1) in every answer block; rings without
 printed digits differ by less than 0.1, so they leave the decision to question numbers.
 """
+_MARKED_INK: Final = 30.0
+"""Gray levels above its row's median that make a bubble count as marked, not printed."""
+_NUMBER_INK: Final = 0.02
+"""Share of dark pixels where a row prints its number; real rows carry 0.05 or more."""
+_HEADER_INK: Final = 0.2
+"""An end row with less than this share of the median number ink has no number.
+
+On the real form the lightest first row, question 1, carried 0.43 of the median; a
+row of column-label rings above a block carries none.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,22 +96,21 @@ def detect_layout(gray: NDArray[np.uint8]) -> FormLayout | None:
     Lattices only line up in two of the four right angles. Of those two, the upright one
     has the lightest printed digit, (1), in the first column of the answer blocks and the
     heavier (5) in the last. Forms without printed digits fall back to question numbers
-    printed left of the first choice.
+    printed left of the first choice. The side is chosen on whole lattices; only then are
+    unnumbered end rows (column-label rings) dropped from the upright layout.
     """
     bubbles = find_bubbles(gray)
     if bubbles is None:
         return None
     height, width = gray.shape
-    best: tuple[tuple[int, int, int, float], FormLayout] | None = None
+    best: tuple[tuple[int, int, int, float], int, Bubbles, NDArray[np.uint8]] | None = None
     for rotation in RIGHT_ANGLES:
         points = rotate_points(bubbles.centers, rotation, width, height)
         turned = _turn(gray, rotation)
-        layout = layout_from_bubbles(
-            Bubbles(points, bubbles.radius_samples(), bubbles.radius), turned
-        )
+        rotated = Bubbles(points, bubbles.radius_samples(), bubbles.radius)
+        layout = layout_from_bubbles(rotated, turned)
         if layout is None:
             continue
-        layout = FormLayout(layout.radius, layout.skew_radians, layout.blocks, rotation)
         complete = int(len(layout.id_blocks) == 1 and bool(layout.answer_blocks))
         score = (
             complete,
@@ -110,8 +119,14 @@ def detect_layout(gray: NDArray[np.uint8]) -> FormLayout | None:
             _numbers_on_left(layout, turned),
         )
         if best is None or score > best[0]:
-            best = (score, layout)
-    return None if best is None else best[1]
+            best = (score, rotation, rotated, turned)
+    if best is None:
+        return None
+    _, rotation, rotated, turned = best
+    upright = layout_from_bubbles(rotated, turned, trim_unnumbered=True)
+    if upright is None:
+        return None
+    return FormLayout(upright.radius, upright.skew_radians, upright.blocks, rotation)
 
 
 def rotate_points(
@@ -144,9 +159,10 @@ def _turn(gray: NDArray[np.uint8], rotation: int) -> NDArray[np.uint8]:
 def _first_digit_lighter(layout: FormLayout, gray: NDArray[np.uint8]) -> int:
     """1 when the first column prints clearly less ink than the last, -1 for the opposite.
 
-    Each column prints one digit; the lower quartile over rows ignores marked bubbles and
-    the median over blocks ignores a block marked almost everywhere. Without a clear gap,
-    as on rings with no printed digits, the answer is 0 and question numbers decide.
+    Each column prints one digit. Only rows where neither end bubble is marked are
+    compared, so a student marking (1) almost everywhere cannot turn the page over.
+    Without a clear gap, as on rings with no printed digits, the answer is 0 and question
+    numbers decide.
     """
     blocks = [block for block in layout.answer_blocks if block.cols >= 2]
     if not blocks:
@@ -156,18 +172,30 @@ def _first_digit_lighter(layout: FormLayout, gray: NDArray[np.uint8]) -> int:
     inside = xx * xx + yy * yy <= (0.6 * layout.radius) ** 2
     height, width = gray.shape
 
-    def column_ink(block: LatticeBlock, column: int) -> float:
-        values: list[float] = []
-        for row in range(block.rows):
-            x, y = int(round(block.nodes[row, column, 0])), int(round(block.nodes[row, column, 1]))
-            if reach <= x < width - reach and reach <= y < height - reach:
-                patch = gray[y - reach : y + reach + 1, x - reach : x + reach + 1]
-                values.append(255.0 - float(np.mean(patch[inside])))
-        return float(np.percentile(values, 25)) if values else 0.0
+    def ink(block: LatticeBlock, row: int, column: int) -> float | None:
+        x, y = int(round(block.nodes[row, column, 0])), int(round(block.nodes[row, column, 1]))
+        if not (reach <= x < width - reach and reach <= y < height - reach):
+            return None
+        patch = gray[y - reach : y + reach + 1, x - reach : x + reach + 1]
+        return 255.0 - float(np.mean(patch[inside]))
 
-    gap = float(
-        np.median([column_ink(block, block.cols - 1) - column_ink(block, 0) for block in blocks])
-    )
+    block_gaps: list[float] = []
+    for block in blocks:
+        row_gaps: list[float] = []
+        for row in range(block.rows):
+            inks = [ink(block, row, column) for column in range(block.cols)]
+            if any(value is None for value in inks):
+                continue
+            known = [float(value) for value in inks if value is not None]
+            middle = float(np.median(known))
+            if known[0] - middle > _MARKED_INK or known[-1] - middle > _MARKED_INK:
+                continue
+            row_gaps.append(known[-1] - known[0])
+        if len(row_gaps) >= 3:
+            block_gaps.append(float(np.median(row_gaps)))
+    if not block_gaps:
+        return 0
+    gap = float(np.median(block_gaps))
     if gap >= _DIGIT_GAP:
         return 1
     if gap <= -_DIGIT_GAP:
@@ -199,8 +227,14 @@ def _numbers_on_left(layout: FormLayout, gray: NDArray[np.uint8]) -> float:
     return total
 
 
-def layout_from_bubbles(bubbles: Bubbles, gray: NDArray[np.uint8] | None) -> FormLayout | None:
-    """Group detected bubbles into lattices; ``gray`` resolves 5x10 grids when given."""
+def layout_from_bubbles(
+    bubbles: Bubbles, gray: NDArray[np.uint8] | None, *, trim_unnumbered: bool = False
+) -> FormLayout | None:
+    """Group detected bubbles into lattices; ``gray`` resolves 5x10 grids when given.
+
+    With ``trim_unnumbered`` (and ``gray`` of the upright page) an answer block's end row
+    that prints no question number while the others do is not taken for a question.
+    """
     radius = bubbles.radius
     points = bubbles.centers
     skew = _skew(points, radius)
@@ -243,6 +277,8 @@ def layout_from_bubbles(bubbles: Bubbles, gray: NDArray[np.uint8] | None) -> For
     if not blocks:
         return None
     classified = [_classify(block, gray, radius) for block in blocks]
+    if trim_unnumbered and gray is not None:
+        classified = [_trim_unnumbered_ends(block, gray) for block in classified]
     return FormLayout(radius, float(skew), _number(classified, column_pitch, skew))
 
 
@@ -310,6 +346,58 @@ def _classify(block: LatticeBlock, gray: NDArray[np.uint8] | None, radius: float
     else:
         kind = "other"
     return LatticeBlock(kind, block.cols, block.rows, block.nodes, block.detected, block.residual)
+
+
+def _trim_unnumbered_ends(block: LatticeBlock, gray: NDArray[np.uint8]) -> LatticeBlock:
+    """Drop a first or last row that prints no question number while every other row does.
+
+    Some forms print a row of column-label rings above an answer block. Taken as a
+    question it would shift every number of the block, so it is dropped, but only when
+    the block's own rows clearly carry numbers: forms without them are left alone.
+    """
+    if block.kind != "answer" or block.rows < 6:
+        return block
+    shares = _number_ink(block, gray)
+    inner = shares[1:-1]
+    if np.isnan(inner).any() or float(np.mean(inner >= _NUMBER_INK)) < 0.9:
+        return block
+    limit = min(_HEADER_INK * float(np.median(inner)), _NUMBER_INK)
+    first = 1 if bool(shares[0] < limit) else 0
+    last = block.rows - 1 if bool(shares[-1] < limit) else block.rows
+    if first == 0 and last == block.rows:
+        return block
+    return LatticeBlock(
+        block.kind,
+        block.cols,
+        last - first,
+        block.nodes[first:last],
+        block.detected,
+        block.residual,
+        block.question_start,
+    )
+
+
+def _number_ink(block: LatticeBlock, gray: NDArray[np.uint8]) -> NDArray[np.float64]:
+    """Share of dark pixels where each row prints its number, one step left of choice 1.
+
+    Rows whose number box leaves the page get NaN, so they are never judged.
+    """
+    height, width = gray.shape
+    across = block.nodes[:, 1] - block.nodes[:, 0]
+    down = np.diff(block.nodes[:, 0], axis=0)
+    half_width = 0.45 * float(np.median(np.hypot(across[:, 0], across[:, 1])))
+    half_height = 0.35 * float(np.median(np.hypot(down[:, 0], down[:, 1])))
+    shares = np.full(block.rows, np.nan)
+    for row in range(block.rows):
+        x, y = block.nodes[row, 0] - 1.05 * across[row]
+        left, right = int(x - half_width), int(x + half_width)
+        top, bottom = int(y - half_height), int(y + half_height)
+        if left < 0 or top < 0 or right > width or bottom > height or right <= left:
+            continue
+        patch = gray[top:bottom, left:right]
+        paper = float(np.percentile(patch, 90))
+        shares[row] = float(np.mean(patch < paper - 60))
+    return shares
 
 
 def _glyph_orientation(block: LatticeBlock, gray: NDArray[np.uint8] | None, radius: float) -> str:

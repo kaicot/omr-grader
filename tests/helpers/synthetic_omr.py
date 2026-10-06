@@ -108,6 +108,7 @@ class SheetOptions(TypedDict, total=False):
     jitter: bool
     decorations: bool
     digits: bool
+    header_rings: bool
     seed: int
     width: int
     height: int
@@ -215,6 +216,7 @@ def render_sheet_with_geometry(
     jitter: bool = True,
     decorations: bool = True,
     digits: bool = True,
+    header_rings: bool = False,
     seed: int = 0,
     width: int = PAGE_WIDTH,
     height: int = PAGE_HEIGHT,
@@ -231,6 +233,8 @@ def render_sheet_with_geometry(
     content in place. ``noise`` is the standard deviation of the scanner noise, ``blur``
     the optical blur in pixels, ``jitter`` offsets marks the way a hand would.
     ``digits=False`` prints empty rings, as on forms without numbered bubbles.
+    ``header_rings`` prints an unnumbered row of choice rings one row above every answer
+    block, as some forms label their columns.
     """
     if mark_radius is not None:
         radius = float(mark_radius)
@@ -248,7 +252,9 @@ def render_sheet_with_geometry(
     page: Image = np.full((height, width), PAPER_VALUE, dtype=np.uint8)
     id_nodes = _id_nodes(id_columns)
     block_nodes = tuple(_block_nodes(block) for block in blocks)
-    _draw_printing(page, id_nodes, blocks, block_nodes, ring_gray, decorations, digits)
+    _draw_printing(
+        page, id_nodes, blocks, block_nodes, ring_gray, decorations, digits, header_rings
+    )
     _draw_marks(page, id_nodes, blocks, block_nodes, answers or {}, student_id, radius, jitter, rng)
 
     quarter, fine = _split_rotation(rotation)
@@ -466,6 +472,7 @@ def _draw_printing(
     ring_gray: int,
     decorations: bool,
     digits: bool = True,
+    header_rings: bool = False,
 ) -> None:
     if decorations:
         cv2.putText(page, "ANSWER SHEET", (133, 190), _FONT, 1.4, (60,), 2, cv2.LINE_AA)
@@ -494,6 +501,10 @@ def _draw_printing(
                 )
             if decorations:
                 _question_number(page, str(block.start + row), nodes[row, 0])
+        if header_rings:
+            for column in range(CHOICES):
+                above = nodes[0, column] - (nodes[1, column] - nodes[0, column])
+                paint_ring(page, _xy(above), value=ring_gray, digit=column + 1 if digits else None)
 
 
 def _question_number(page: Image, label: str, first_choice: Points) -> None:
