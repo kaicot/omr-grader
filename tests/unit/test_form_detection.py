@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ from omr_grader.infrastructure.capabilities import CapabilityToken
 from omr_grader.infrastructure.form_detection import FormDetection, FormDetector
 from omr_grader.infrastructure.paths import ManagedPaths
 from omr_grader.infrastructure.profile_store import ProfileStore
+from omr_grader.recognition.form_alignment import align_page
+from omr_grader.recognition.form_profile import FRAME_BUBBLE_RADIUS
 from tests.helpers.omr_engine import reference_sheet
 from tests.helpers.synthetic_omr import (
     encode_png,
@@ -207,6 +210,36 @@ def test_a_page_of_another_form_among_the_samples_is_counted_but_does_not_block_
     # is counted as different and sent to review when read, but the saved form is reused.
     assert detection.profile_filename == saved.stored_name
     assert detection.generated_profile is None
+
+
+def test_a_saved_profile_that_fits_only_loosely_is_not_reused(
+    saved: SavedForm, scans: Scans, tmp_path: Path
+) -> None:
+    # Like a hand-drawn template of the same form: each block drawn up to 0.2 radius off in
+    # its own direction, close enough that every bubble still pairs with its printed ring.
+    wire = json.loads((saved.store.paths.profiles_dir / saved.stored_name).read_bytes())
+    width, height = wire["page"]["source_width"], wire["page"]["source_height"]
+    offsets = ((0.2, 0.0), (-0.2, 0.0), (0.0, 0.2), (0.0, -0.2), (0.15, 0.15), (-0.15, -0.15))
+    for region, (dx, dy) in zip(wire["regions"], offsets, strict=True):
+        box = region["bbox_ratio"]
+        box["x"] = round(box["x"] + dx * FRAME_BUBBLE_RADIUS / width, 8)
+        box["y"] = round(box["y"] + dy * FRAME_BUBBLE_RADIUS / height, 8)
+    store = _store(tmp_path)
+    drawn = store.paths.profiles_dir / "hand_drawn.omrtemplate"
+    drawn.write_text(json.dumps(wire), encoding="utf-8")
+    loaded = store.load(drawn.name)
+    assert isinstance(loaded, Ok)
+    page = cv2.imdecode(np.fromfile(str(scans.first), np.uint8), cv2.IMREAD_GRAYSCALE)
+    alignment = align_page(page, loaded.value)
+    # It would pass the structure and coverage checks; only its precision rules it out.
+    assert alignment is not None and alignment.inlier_ratio >= 0.75
+    assert alignment.residual / alignment.bubble_radius > 0.1
+
+    result = FormDetector(store).detect((str(scans.first),))
+
+    assert isinstance(result, Ok)
+    assert result.value.is_new
+    assert result.value.generated_profile is not None
 
 
 def test_a_form_of_another_structure_gets_its_own_profile(

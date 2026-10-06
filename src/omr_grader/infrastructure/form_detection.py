@@ -30,6 +30,13 @@ from omr_grader.recognition.orientation import rotate_right_angle
 MAX_SAMPLE_PAGES: Final = 12
 _MATCH_PAGES: Final = 3
 _MATCH_INLIER_RATIO: Final = 0.75
+_MATCH_RESIDUAL: Final = 0.1
+"""Largest median fit error of a saved profile to reuse, as a share of the bubble radius.
+
+Generated profiles fit the baseline form to 0.05-0.07. The hand-drawn v3 template of the
+same form fits only to 0.15-0.20 and sends whole pages to review, so a precise profile
+is proposed instead of reusing it.
+"""
 _DETECTION_SESSION: Final = "scan-" + "0" * 32
 _PREVIEW_LONG_SIDE: Final = 1600
 
@@ -108,7 +115,7 @@ class FormDetector:
         )
 
     def _matching_profile(self, detected: Profile, pages: list[NDArray[np.uint8]]) -> str | None:
-        """A saved profile with the same structure that fits the sample pages."""
+        """A saved profile with the same structure that fits the sample pages precisely."""
         names = self.profiles.discover()
         if isinstance(names, Err):
             return None
@@ -117,12 +124,19 @@ class FormDetector:
             loaded = self.profiles.load(name)
             if isinstance(loaded, Err) or _signature(loaded.value) != _signature(detected):
                 continue
-            ratios = []
+            ratios: list[float] = []
+            errors: list[float] = []
             for gray in pages:
                 alignment = align_page(gray, loaded.value)
                 ratios.append(0.0 if alignment is None else alignment.inlier_ratio)
+                errors.append(
+                    float("inf")
+                    if alignment is None
+                    else alignment.residual / alignment.bubble_radius
+                )
             score = min(ratios) if ratios else 0.0
-            if score >= _MATCH_INLIER_RATIO and (best is None or score > best[0]):
+            precise = bool(errors) and max(errors) <= _MATCH_RESIDUAL
+            if score >= _MATCH_INLIER_RATIO and precise and (best is None or score > best[0]):
                 best = (score, name)
         return None if best is None else best[1]
 
