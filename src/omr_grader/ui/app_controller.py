@@ -12,6 +12,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer
+from PySide6.QtWidgets import QDialog, QWidget
 
 from omr_grader.application.detail_presenter import (
     DetailLoadRequest,
@@ -61,11 +62,13 @@ from omr_grader.domain.enums import ExamTerm
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
+from omr_grader.infrastructure.form_detection import FormDetection
 from omr_grader.infrastructure.profile_store import ProfileCatalogItem
 from omr_grader.resources.messages import MESSAGE_CATALOG, get_message
 from omr_grader.ui.dashboard_model import DashboardSelection
 from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardPage, DashboardRequest
 from omr_grader.ui.detail_page import DetailPage
+from omr_grader.ui.form_confirm_dialog import FormConfirmDialog
 from omr_grader.ui.grading_page import GradingPage
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
 from omr_grader.ui.main_window import MainWindow
@@ -88,6 +91,7 @@ FreshResponsePicker = Callable[["FreshResponseIntent"], tuple[str, str] | None]
 FreshResponseSelectionImport = Callable[
     ["FreshResponseIntent", tuple[str, str]], Result[ConnectedSessionDisplay]
 ]
+FormConfirmFactory = Callable[[bytes, str, str | None, QWidget | None], QDialog]
 _LOGGER = logging.getLogger("omr_grader.ui.controller")
 IntentHandler = Callable[[GradingPageRequest], None]
 
@@ -136,6 +140,8 @@ class ServicePorts:
     result_navigation: IntentHandler | None = None
     profile_catalog: Callable[[], Result[tuple[ProfileCatalogItem, ...]]] | None = None
     profile_import: Callable[[ProfileImportRequest], Result[ProfileImportResult]] | None = None
+    form_detect: Callable[[tuple[str, ...]], Result[FormDetection]] | None = None
+    form_save: Callable[[bytes, str], Result[ProfileImportResult]] | None = None
     session_display: (
         Callable[[SessionCreateResult | CommitGenerationResult], Result[ConnectedSessionDisplay]]
         | None
@@ -180,6 +186,17 @@ def _dashboard_worker_value(result: object) -> object:
     # Preserve distinct outer warnings without presenting that duplicate twice.
     return _DashboardWorkerValue(
         listing.entries, warnings + tuple(item for item in outer if item not in warnings)
+    )
+
+
+def _mixed_form_warning(detection: FormDetection) -> str | None:
+    """Say how many checked pages look like another form, or ``None`` when all match."""
+    if detection.pages_matching >= detection.pages_checked:
+        return None
+    return (
+        f"확인한 {detection.pages_checked}쪽 가운데 "
+        f"{detection.pages_checked - detection.pages_matching}쪽은 양식이 달라 보입니다. "
+        "다른 양식의 답안지가 섞여 있는지 확인하세요."
     )
 
 
@@ -251,6 +268,9 @@ class AppController(QObject):
         self._desktop_success: Callable[[object], None] | None = None
         self._desktop_busy: Callable[[bool], None] | None = None
         self._pending_navigation_page: int | None = None
+        self._form_confirm_factory: FormConfirmFactory = FormConfirmDialog
+        self._form_detection_paths: tuple[str, ...] | None = None
+        self._form_detection_stale = False
         self._bind_pages()
         self.main_window.set_close_requires_controller(True)
         self._apply_access(diagnostic)
@@ -264,6 +284,7 @@ class AppController(QObject):
         self.scan_page.profile_browse_requested.connect(self._pick_profile)
         self.scan_page.profile_import_requested.connect(self._import_profile)
         self.scan_page.source_browse_requested.connect(self._pick_source)
+        self.scan_page.source_changed.connect(self._detect_form)
         self.scan_page.roster_browse_requested.connect(self._pick_roster)
         self.scan_page.sample_roster_requested.connect(self._sample_roster)
         self.grading_page.answer_key_browse_requested.connect(self._pick_answer_key)
@@ -893,6 +914,12 @@ class AppController(QObject):
             self._retired_bridges.popleft().deleteLater()
         if not self._closing:
             self.main_window.set_close_requires_controller(True)
+        if self._form_detection_stale and not self._closing:
+            self._form_detection_stale = False
+            self._form_detection_paths = None
+            current = self.scan_page.current_source()
+            if current is not None:
+                QTimer.singleShot(0, partial(self._detect_form, current))
 
     def _close_finished(self) -> None:
         if not self._closing or self._close_finished_handled:
@@ -924,7 +951,7 @@ class AppController(QObject):
     def _succeeded(self, result: object) -> None:
         if self._closing:
             return
-        if self._active_kind in {"desktop-service", "profile-import"}:
+        if self._active_kind in {"desktop-service", "profile-import", "form-detection"}:
             callback = self._desktop_success
             if callback is not None:
                 callback(result)
@@ -1040,6 +1067,15 @@ class AppController(QObject):
             f"operation_id={self._active_operation_id or 'none'} code={code} "
             f"context={context} cause={getattr(error, 'cause_type', None)}"
         )
+        if self._active_kind == "form-detection":
+            # Detection only helps choosing a profile, so it reports beside that choice.
+            current = self.scan_page.current_source()
+            expected, self._form_detection_paths = self._form_detection_paths, None
+            if expected is not None and current is not None and tuple(current.paths) != expected:
+                self._form_detection_stale = True
+                return
+            self._fail_form_detection(_error_text(error))
+            return
         if self._active_kind in {"desktop-service", "profile-import"}:
             text = _error_text(error)
             self.main_window.show_diagnostic(text)
@@ -1234,6 +1270,108 @@ class AppController(QObject):
             return
         self.settings_page.set_imported_profile(candidate, candidates)
         self.scan_page.select_profile(result.stored_name)
+
+    def _detect_form(self, selection: ImportSelection) -> None:
+        """Identify the form of newly chosen scans in the background."""
+        detect = self.services.form_detect
+        if detect is None or self._closing:
+            return
+        if self._active_bridge is not None and self._active_bridge.active:
+            # Detection only helps; the profile can still be chosen by hand meanwhile.
+            # A detection already running for other scans is re-run when it ends.
+            if self._form_detection_paths is not None:
+                self._form_detection_stale = True
+            return
+        self._form_detection_paths = tuple(selection.paths)
+        self._form_detection_stale = False
+        self.scan_page.set_form_detecting()
+        self._start_desktop_action(
+            self.dashboard_page,
+            partial(detect, selection.paths),
+            self._finish_form_detection,
+            self.dashboard_page.set_busy,
+            kind="form-detection",
+        )
+
+    def _finish_form_detection(self, result: object) -> None:
+        # Desktop actions never reset the "processing" status, and detection ends quietly.
+        self.main_window.set_status(get_message("status.ready"))
+        current = self.scan_page.current_source()
+        expected, self._form_detection_paths = self._form_detection_paths, None
+        if expected is not None and (current is None or tuple(current.paths) != expected):
+            # The user picked other scans (or cleared them) meanwhile: this result
+            # describes the old scans, so it is dropped and the new ones are detected.
+            self._form_detection_stale = current is not None
+            return
+        if not isinstance(result, FormDetection):
+            self._fail_form_detection(_error_text(self._invalid_service_result()))
+            return
+        profile_filename = result.profile_filename
+        if profile_filename is None:
+            self._confirm_new_form(result)
+            return
+        self._refresh_profile_catalog()
+        if self.scan_page.select_profile(profile_filename):
+            mixed = _mixed_form_warning(result)
+            self.scan_page.set_form_detected(
+                f"자동 인식: {result.summary} · 저장된 양식 '{profile_filename}' 사용"
+                + ("" if mixed is None else f" · {mixed}")
+            )
+        else:
+            self._fail_form_detection(
+                "저장된 양식을 목록에서 찾을 수 없습니다. OMR 프로필을 직접 선택하세요."
+            )
+
+    def _confirm_new_form(self, detection: FormDetection) -> None:
+        dialog = self._form_confirm_factory(
+            detection.preview_png, detection.summary, _mixed_form_warning(detection), self.main_window
+        )
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        dialog.deleteLater()
+        if not accepted:
+            self.scan_page.set_form_detection_failed(
+                "자동 인식한 양식을 사용하지 않았습니다. OMR 프로필을 직접 선택하세요."
+            )
+            return
+        self._save_detected_form(detection)
+
+    def _save_detected_form(self, detection: FormDetection) -> None:
+        if not self.write_enabled:
+            self._form_save_failed(ErrorInfo("ROOT_WRITE_DENIED", "error.root_write_denied"))
+            return
+        save = self.services.form_save
+        if save is None:
+            self._form_save_failed(self._unavailable())
+            return
+        payload = detection.generated_profile
+        if payload is None:
+            self._form_save_failed(self._invalid_service_result())
+            return
+        saved = save(payload, detection.suggested_filename)
+        if isinstance(saved, Err):
+            self._form_save_failed(saved.errors[0])
+            return
+        if not isinstance(saved, Ok) or not isinstance(saved.value, ProfileImportResult):
+            self._form_save_failed(self._invalid_service_result())
+            return
+        stored_name = saved.value.stored_name
+        self._refresh_profile_catalog()
+        if self.scan_page.select_profile(stored_name):
+            self.scan_page.set_form_detected(
+                f"새 양식으로 저장했습니다: {detection.summary} · '{stored_name}'"
+            )
+        else:
+            self._fail_form_detection(
+                "저장한 양식을 목록에서 찾을 수 없습니다. OMR 프로필을 직접 선택하세요."
+            )
+
+    def _form_save_failed(self, error: ErrorInfo) -> None:
+        self._present_error(self.scan_page, error)
+        self._fail_form_detection(_error_text(error))
+
+    def _fail_form_detection(self, message: str) -> None:
+        self.scan_page.set_form_detection_failed(message)
+        self.main_window.set_status(get_message("status.failed"))
 
     def _apply_settings_snapshot(self, settings: Settings, revision: int) -> None:
         self._settings_snapshot = settings

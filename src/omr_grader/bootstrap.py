@@ -334,6 +334,7 @@ def run(
     from omr_grader.infrastructure.config_store import config_revision
     from omr_grader.infrastructure.dashboard_repository import DashboardRepository
     from omr_grader.infrastructure.detail_repository import DetailRepository
+    from omr_grader.infrastructure.form_detection import FormDetector
     from omr_grader.infrastructure.grading_runtime import (
         CommittedGradingSnapshotReader,
         ResponseImportCommitCoordinator,
@@ -1172,6 +1173,8 @@ def run(
         settings_save=settings_save,
         profile_catalog=None if profiles is None else profiles.profile_catalog,
         profile_import=profile_import,
+        form_detect=None if profiles is None else FormDetector(profiles.store).detect,
+        form_save=None if profiles is None else profiles.store.save_generated,
         dashboard_load=dashboard_load,
         dashboard_detail=dashboard_detail,
         dashboard_delete=dashboard_delete,

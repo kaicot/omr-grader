@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from decimal import Decimal
 
 import pytest
@@ -45,6 +46,35 @@ def _template(*, page: bool = True, starts: bool = False) -> dict[str, object]:
     return result
 
 
+def _form(
+    answer_rows: Sequence[int], *, starts: bool = False, with_id: bool = True
+) -> dict[str, object]:
+    """A profile whose answer regions have the given row counts (a generated-form shape)."""
+    regions: list[dict[str, object]] = []
+    if with_id:
+        regions.append(
+            {
+                "name": "id",
+                "type": "id",
+                "bbox_ratio": {"x": 0, "y": 0, "w": 0.1, "h": 0.1},
+                "grid": {"cols": 8, "rows": 10},
+            }
+        )
+    first = 1
+    for index, rows in enumerate(answer_rows):
+        region: dict[str, object] = {
+            "name": f"answer_{index}",
+            "type": "answer",
+            "bbox_ratio": {"x": Decimal(index) / 8, "y": 0.2, "w": 0.1, "h": 0.7},
+            "grid": {"cols": 5, "rows": rows},
+        }
+        if starts:
+            region["question_start"] = first
+        first += rows
+        regions.append(region)
+    return {"schema_version": 1, "profile_name": "generated", "regions": regions}
+
+
 def _payload(value: dict[str, object]) -> bytes:
     return json.dumps(value, ensure_ascii=False, default=float).encode("utf-8")
 
@@ -64,7 +94,7 @@ def test_current_and_legacy_profiles_are_valid_and_legacy_warns() -> None:
     assert [warning.code for warning in legacy.warnings] == ["LEGACY_PAGE_METADATA"]
 
 
-def test_question_starts_must_have_exact_q1_to_q100_union() -> None:
+def test_explicit_question_starts_must_form_one_range_from_q1_without_gaps() -> None:
     valid = parse_profile_bytes(_payload(_template(starts=True)))
     assert isinstance(valid, Ok)
 
@@ -257,3 +287,102 @@ def test_practical_quota_boundaries_are_rejected() -> None:
     assert isinstance(parse_profile_bytes(_payload(too_long)), Err)
     assert isinstance(parse_profile_bytes(_payload(too_many)), Err)
     assert isinstance(parse_profile_bytes(json.dumps(deep).encode()), Err)
+
+
+@pytest.mark.parametrize("rows", ((1,), (5,), (20, 10), (20, 20, 10), (1, 1, 1), (60, 40), (100,)))
+@pytest.mark.parametrize("starts", (False, True))
+def test_answer_regions_may_cover_any_contiguous_range_from_q1(
+    rows: tuple[int, ...], starts: bool
+) -> None:
+    result = parse_profile_bytes(_payload(_form(rows, starts=starts)))
+
+    assert isinstance(result, Ok)
+    assert [region.grid.rows for region in result.value.answer_regions] == list(rows)
+    assert sum(region.grid.rows for region in result.value.answer_regions) == sum(rows)
+    assert result.value.id_region.grid.rows == 10
+    assert result.value.page is None
+
+
+def test_regions_may_be_listed_out_of_question_order_when_starts_are_explicit() -> None:
+    form = _form((20, 10), starts=True)
+    regions = form["regions"]
+    regions[1], regions[2] = regions[2], regions[1]  # type: ignore[index]
+
+    result = parse_profile_bytes(_payload(form))
+
+    assert isinstance(result, Ok)
+    assert [region.question_start for region in result.value.answer_regions] == [21, 1]
+
+
+def test_partial_forms_hash_the_same_with_implicit_and_explicit_question_starts() -> None:
+    implicit = parse_profile_bytes(_payload(_form((20, 20, 10))))
+    explicit = parse_profile_bytes(_payload(_form((20, 20, 10), starts=True)))
+    shorter = parse_profile_bytes(_payload(_form((20, 20))))
+
+    assert isinstance(implicit, Ok) and isinstance(explicit, Ok) and isinstance(shorter, Ok)
+    assert implicit.value.sha256 == explicit.value.sha256
+    assert implicit.value.sha256 != shorter.value.sha256
+
+
+@pytest.mark.parametrize(
+    "starts",
+    ((1, 22), (2, 22), (2, 1), (1, 20), (3, 23), (1, 21, 21)),
+    ids=("gap", "late-first", "swapped-late", "overlap", "both-late", "duplicate"),
+)
+def test_question_ranges_with_a_gap_or_overlap_or_late_start_are_rejected(
+    starts: tuple[int, ...],
+) -> None:
+    form = _form((20,) * len(starts), starts=True)
+    for region, start in zip(form["regions"][1:], starts, strict=True):  # type: ignore[index]
+        region["question_start"] = start
+
+    result = parse_profile_bytes(_payload(form))
+
+    assert isinstance(result, Err)
+    assert result.errors[0].code == "INVALID_PROFILE"
+
+
+@pytest.mark.parametrize("rows", ((20,) * 6, (100, 1), (50, 51), (21, 20, 20, 20, 20)))
+@pytest.mark.parametrize("starts", (False, True))
+def test_more_than_one_hundred_questions_are_rejected(rows: tuple[int, ...], starts: bool) -> None:
+    result = parse_profile_bytes(_payload(_form(rows, starts=starts)))
+
+    assert isinstance(result, Err)
+    assert result.errors[0].code == "INVALID_PROFILE"
+
+
+def test_a_single_region_cannot_exceed_one_hundred_rows() -> None:
+    result = parse_profile_bytes(_payload(_form((101,))))
+
+    assert isinstance(result, Err)
+
+
+def test_at_least_one_answer_region_is_required() -> None:
+    only_id = parse_profile_bytes(_payload(_form(())))
+    nothing = parse_profile_bytes(_payload({"profile_name": "empty", "regions": []}))
+
+    assert isinstance(only_id, Err)
+    assert only_id.errors[0].code == "INVALID_PROFILE"
+    assert isinstance(nothing, Err)
+
+
+def test_exactly_one_id_region_is_required() -> None:
+    no_id = parse_profile_bytes(_payload(_form((20, 20), with_id=False)))
+    two_ids = _form((20, 20))
+    second_id = dict(two_ids["regions"][0])  # type: ignore[index]
+    second_id["name"] = "second_id"
+    two_ids["regions"].append(second_id)  # type: ignore[attr-defined]
+
+    assert isinstance(no_id, Err)
+    assert isinstance(parse_profile_bytes(_payload(two_ids)), Err)
+
+
+def test_profile_exposes_its_id_region_and_answer_regions_in_file_order() -> None:
+    form = _form((20, 10), starts=True)
+    parsed = parse_profile_bytes(_payload(form))
+
+    assert isinstance(parsed, Ok)
+    profile = parsed.value
+    assert profile.id_region.name == "id"
+    assert [region.name for region in profile.answer_regions] == ["answer_0", "answer_1"]
+    assert [region.kind for region in profile.regions] == ["id", "answer", "answer"]

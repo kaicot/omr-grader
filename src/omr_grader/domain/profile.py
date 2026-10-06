@@ -426,8 +426,8 @@ def parse_profile_bytes(payload: bytes) -> Result[Profile]:
         answers = tuple(region for region in regions if region.kind == "answer")
         if len(ids) != 1:
             raise ValueError("exactly one id region is required")
-        if len(answers) != 5:
-            raise ValueError("exactly five answer regions are required")
+        if not answers:
+            raise ValueError("at least one answer region is required")
         starts = tuple(region.question_start for region in answers)
         if any(start is None for start in starts) and any(start is not None for start in starts):
             raise ValueError("question_start must be all absent or all present")
@@ -445,19 +445,13 @@ def parse_profile_bytes(payload: bytes) -> Result[Profile]:
                 )
                 for region in answers
             ]
-        if sum(region.grid.rows for region in answers) != 100:
-            raise ValueError("answer rows must total 100")
+        if sum(region.grid.rows for region in answers) > 100:
+            raise ValueError("answer rows must total at most 100")
         cursor = 1
         for interval in sorted(intervals, key=lambda item: item.start):
             if interval.start != cursor:
-                raise ValueError(
-                    "answer question ranges must cover Q1 through Q100 without gaps or overlaps"
-                )
+                raise ValueError("answer question ranges must run from Q1 without gaps or overlaps")
             cursor = interval.stop
-        if cursor != 101:
-            raise ValueError(
-                "answer question ranges must cover Q1 through Q100 without gaps or overlaps"
-            )
         profile_name = _text(root["profile_name"], "profile_name")
         canonical = _canonical_json(_semantic_wire(profile_name, page, regions, intervals)).encode(
             "utf-8"

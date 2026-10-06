@@ -177,5 +177,36 @@ class ProfileStore:
             return written
         return Ok(ProfileImportResult(filename.value, parsed.value.sha256), parsed.warnings)
 
+    def save_generated(self, payload: bytes, filename: str) -> Result[ProfileImportResult]:
+        """Store a profile generated from scans under a free name; never overwrite one."""
+        if not self._authorized():
+            return _error("ROOT_WRITE_DENIED", "프로필을 저장할 쓰기 권한이 없습니다.")
+        parsed = parse_profile_bytes(payload)
+        if isinstance(parsed, Err):
+            return parsed
+        stem = filename[: -len(".omrtemplate")] if filename.endswith(".omrtemplate") else filename
+        for attempt in range(1, 100):
+            candidate = f"{stem}.omrtemplate" if attempt == 1 else f"{stem}_{attempt}.omrtemplate"
+            name = validate_profile_filename(candidate)
+            if isinstance(name, Err):
+                return name
+            target = self.paths.profile_path(name.value)
+            if isinstance(target, Err):
+                return target
+            try:
+                if not target.value.parent.is_dir():
+                    return _error("MANAGED_PATH_INVALID", "프로필 폴더가 준비되지 않았습니다.")
+                if target.value.exists():
+                    continue
+            except OSError as exc:
+                return _error(
+                    "PROFILE_IMPORT_FAILED", "대상 프로필 경로를 확인할 수 없습니다.", cause=exc
+                )
+            written = atomic_write_bytes(target.value, payload)
+            if isinstance(written, Err):
+                return written
+            return Ok(ProfileImportResult(name.value, parsed.value.sha256), parsed.warnings)
+        return _error("PROFILE_COLLISION", "같은 이름의 자동 양식 프로필이 너무 많습니다.")
+
 
 __all__ = ["ProfileCatalogItem", "ProfileStore"]

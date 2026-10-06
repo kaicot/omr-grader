@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from omr_grader.domain.enums import CellStatus
+from omr_grader.domain.enums import AnswerStatus, CellStatus, KeyQuestionStatus
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import (
     AnswerKeyEntry,
@@ -51,10 +51,9 @@ def render_overlay(
         return _error("INVALID_OVERLAY_IMAGE", "image")
     if type(evidence) is not tuple or len(evidence) > MAX_OVERLAY_CELLS:
         return _error("INVALID_OVERLAY_EVIDENCE", "evidence")
+    # Questions the form does not print carry no geometry and are not drawn.
     if not all(
-        isinstance(item, CellEvidence)
-        and item.pixel_rect is not None
-        and item.ratio_rect is not None
+        isinstance(item, CellEvidence) and (item.pixel_rect is None) == (item.ratio_rect is None)
         for item in evidence
     ):
         return _error("INVALID_OVERLAY_EVIDENCE", "evidence")
@@ -73,7 +72,8 @@ def render_overlay(
         output = output[..., :3].copy()
     for cell in sorted(evidence, key=lambda item: item.index):
         rect = cell.pixel_rect
-        assert rect is not None
+        if rect is None:
+            continue
         if (
             rect.x < 0
             or rect.y < 0
@@ -121,7 +121,8 @@ def scale_overlay_evidence(
     for cell in evidence:
         rect = cell.pixel_rect
         if rect is None:
-            raise ValueError("overlay evidence requires pixel rectangles")
+            scaled.append(cell)
+            continue
         left = min(target_width - 1, max(0, round(rect.x * scale_x)))
         top = min(target_height - 1, max(0, round(rect.y * scale_y)))
         right = min(target_width, max(left + 1, round((rect.x + rect.w) * scale_x)))
@@ -145,6 +146,8 @@ def render_scored_overlay_scaled(
     """Resize first, then redraw all overlays using scaled destination coordinates."""
     if not isinstance(image, np.ndarray) or image.ndim not in (2, 3) or image.size == 0:
         return _error("INVALID_OVERLAY_IMAGE", "image")
+    if type(target_size) is not tuple or len(target_size) != 2:
+        return _error("INVALID_OVERLAY_IMAGE", "target_size")
     target_width, target_height = target_size
     if (
         any(type(value) is not int for value in target_size)
@@ -169,9 +172,9 @@ def render_scored_overlay_scaled(
         )
         for answer in answers
     )
-    prepared = np.clip(
-        image.astype(np.float32, copy=False), np.float32(0), np.float32(255)
-    ).astype(np.uint8, copy=False)
+    prepared = np.clip(image.astype(np.float32, copy=False), np.float32(0), np.float32(255)).astype(
+        np.uint8, copy=False
+    )
     resized = np.asarray(
         cv2.resize(prepared, target_size, interpolation=cv2.INTER_AREA),
         dtype=np.uint8,
@@ -185,10 +188,24 @@ def render_scored_overlay(
     answers: tuple[AnswerRecognition, ...],
     key_entries: tuple[AnswerKeyEntry, ...],
 ) -> Result[NDArray[np.uint8]]:
-    """Draw recognized IDs plus blue correct and red incorrect answer circles."""
-    base = render_overlay(image, evidence)
-    if isinstance(base, Err):
-        return base
+    """Draw the grading result on the clean page, with no cell boxes or labels.
+
+    A correct answer gets a thick blue circle. A wrong choice gets a thick red circle,
+    the right choice a thin blue one, and the question number a red slash, as a teacher
+    marks a lost question by hand. Rows still under review show orange circles. Unasked questions are not drawn. ``evidence`` is accepted for
+    call compatibility; only the answer cells are drawn.
+    """
+    del evidence
+    if (
+        not isinstance(image, np.ndarray)
+        or image.size == 0
+        or image.ndim not in (2, 3)
+        or image.shape[0] * image.shape[1] > MAX_OVERLAY_IMAGE_PIXELS
+        or not np.issubdtype(image.dtype, np.number)
+        or image.ndim == 3
+        and image.shape[2] not in (3, 4)
+    ):
+        return _error("INVALID_OVERLAY_IMAGE", "image")
     if (
         type(answers) is not tuple
         or type(key_entries) is not tuple
@@ -196,26 +213,68 @@ def render_scored_overlay(
         or not all(isinstance(item, AnswerKeyEntry) for item in key_entries)
     ):
         return _error("INVALID_OVERLAY_EVIDENCE", "answers")
-    output = base.value
-    keys = {entry.question: set(entry.answer.choices) for entry in key_entries}
+    output: NDArray[np.uint8] = np.clip(
+        image.astype(np.float32, copy=False), np.float32(0), np.float32(255)
+    ).astype(np.uint8, copy=True)
+    if output.ndim == 2:
+        output = np.asarray(cv2.cvtColor(output, cv2.COLOR_GRAY2BGR), dtype=np.uint8)
+    elif output.shape[2] == 4:
+        output = output[..., :3].copy()
+    keys = {entry.question: entry for entry in key_entries}
     for answer in answers:
-        correct = keys.get(answer.question, set())
-        selected = set(answer.value.choices)
-        for cell in answer.cells:
-            rect = cell.pixel_rect
-            if rect is None or cell.choice is None:
-                continue
-            color: tuple[int, int, int] | None = None
-            if cell.choice in selected and cell.choice not in correct:
-                color = INCORRECT_COLOR
-            elif cell.choice in correct:
-                color = CORRECT_COLOR
-            if color is None:
-                continue
-            center = (rect.x + rect.w // 2, rect.y + rect.h // 2)
-            axes = (max(2, rect.w // 2), max(2, rect.h // 2))
-            cv2.ellipse(output, center, axes, 0, 0, 360, color, max(2, min(axes) // 5))
+        entry = keys.get(answer.question)
+        status = answer.value.status
+        if entry is None or entry.status is KeyQuestionStatus.UNASKED:
+            continue
+        if status is AnswerStatus.UNASKED:
+            continue
+        cells = {
+            cell.choice: cell.pixel_rect
+            for cell in answer.cells
+            if cell.pixel_rect is not None and cell.choice is not None
+        }
+        if len(cells) != len(answer.cells):
+            continue
+        selected = answer.value.choices
+        right = entry.answer.choices
+        if status is AnswerStatus.UNCERTAIN:
+            for choice in selected:
+                _ring(output, cells[choice], REVIEW_COLOR, thick=True)
+            for choice in right:
+                _ring(output, cells[choice], CORRECT_COLOR, thick=False)
+            continue
+        if entry.status is KeyQuestionStatus.ALL or selected == right:
+            for choice in selected:
+                _ring(output, cells[choice], CORRECT_COLOR, thick=True)
+            continue
+        for choice in selected:
+            _ring(output, cells[choice], INCORRECT_COLOR, thick=True)
+        for choice in right:
+            _ring(output, cells[choice], CORRECT_COLOR, thick=False)
+        _slash(output, cells[min(cells)])
     return Ok(output)
+
+
+def _ring(
+    output: NDArray[np.uint8], rect: PixelRect, color: tuple[int, int, int], *, thick: bool
+) -> None:
+    center = (rect.x + rect.w // 2, rect.y + rect.h // 2)
+    radius = max(3, round(0.4 * min(rect.w, rect.h)))
+    width = max(2, radius // 4) if thick else max(1, radius // 9)
+    cv2.circle(output, center, radius, color, width, cv2.LINE_AA)
+
+
+def _slash(output: NDArray[np.uint8], first_choice: PixelRect) -> None:
+    """Red slash over the question number printed one cell left of the first choice.
+
+    The number stays readable through a single stroke, where a cross hid its digits.
+    """
+    cx = first_choice.x + first_choice.w // 2 - first_choice.w
+    cy = first_choice.y + first_choice.h // 2
+    dx = max(3, round(0.4 * first_choice.w))
+    dy = max(3, round(0.3 * first_choice.h))
+    width = max(2, round(first_choice.w / 14))
+    cv2.line(output, (cx - dx, cy + dy), (cx + dx, cy - dy), INCORRECT_COLOR, width, cv2.LINE_AA)
 
 
 def _color(cell: CellEvidence) -> tuple[int, int, int]:

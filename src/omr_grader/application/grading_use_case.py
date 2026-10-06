@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from omr_grader.domain.enums import OperationKind, SessionState
+from omr_grader.domain.enums import AnswerStatus, KeyQuestionStatus, OperationKind, SessionState
 from omr_grader.domain.errors import Err, ErrorInfo, Result
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
@@ -71,9 +71,25 @@ class GradingUseCase:
         if isinstance(validated, Err):
             return validated
         snapshot = committed.value
-        scores = score_effective(
-            ScoreInput(snapshot.responses, validated.value.snapshot), progress
-        )
+        missing = _questions_not_on_form(snapshot.responses, validated.value.snapshot)
+        if missing:
+            return Err(
+                (
+                    ErrorInfo(
+                        "ANSWER_KEY_NOT_ON_FORM",
+                        "error.answer_key_not_on_form",
+                        "answer_key",
+                        {
+                            "questions": _ranges(missing),
+                            "reason": (
+                                f"정답표의 {_ranges(missing)}번 문항은 답안지 양식에 없습니다. "
+                                "정답표에서 해당 문항의 정답을 비운 뒤 다시 채점하세요."
+                            ),
+                        },
+                    ),
+                )
+            )
+        scores = score_effective(ScoreInput(snapshot.responses, validated.value.snapshot), progress)
         source_artifacts = (
             (
                 (
@@ -81,8 +97,7 @@ class GradingUseCase:
                     validated.value.source_bytes,
                 ),
             )
-            if validated.value.source_name is not None
-            and validated.value.source_bytes is not None
+            if validated.value.source_name is not None and validated.value.source_bytes is not None
             else ()
         )
         mutation = GenerationMutation(
@@ -123,6 +138,40 @@ class GradingUseCase:
 
 def _error(code: str, field_path: str) -> Err:
     return Err((ErrorInfo(code, f"error.{code.lower()}", field_path),))
+
+
+def _questions_not_on_form(
+    responses: tuple[EffectiveResponse, ...], key: AnswerKeySnapshot
+) -> tuple[int, ...]:
+    """Asked questions that no scanned answer sheet prints (every response reads unasked).
+
+    Grading them would give every student zero, so the key must leave them unasked.
+    """
+    if not responses:
+        return ()
+    return tuple(
+        entry.question
+        for entry in key.entries
+        if entry.status is not KeyQuestionStatus.UNASKED
+        and all(
+            response.answers[entry.question - 1].status is AnswerStatus.UNASKED
+            for response in responses
+        )
+    )
+
+
+def _ranges(questions: tuple[int, ...]) -> str:
+    """Compact Korean-friendly ranges such as 51~60, 75."""
+    parts: list[str] = []
+    start = previous = questions[0]
+    for question in (*questions[1:], None):
+        if question is not None and question == previous + 1:
+            previous = question
+            continue
+        parts.append(str(start) if start == previous else f"{start}~{previous}")
+        if question is not None:
+            start = previous = question
+    return ", ".join(parts)
 
 
 __all__ = ["CommittedGradingSnapshot", "CommittedGradingSnapshotReader", "GradingUseCase"]

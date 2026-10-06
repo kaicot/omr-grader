@@ -1,11 +1,12 @@
-"""Pure profile-grid OMR recognition over a normalized page image."""
+"""Bubble-disk OMR recognition over a page warped into its profile frame."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final, cast
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 
@@ -24,12 +25,12 @@ from omr_grader.domain.profile import Profile, ProfileRegion
 from omr_grader.recognition.thresholds import RecognitionThresholds, validate_thresholds
 
 MAX_IMAGE_PIXELS: Final = 100_000_000
-_UNMARKED_MAXIMUM: Final = 0.125
-"""Highest fill of an unmarked printed bubble on real scans was 0.122 (8,000 cells)."""
-_SINGLE_MARK_MINIMUM: Final = 0.14
-_SINGLE_MARK_SEPARATION: Final = 0.06
-_FAINT_MARK_MINIMUM: Final = 0.12
-_FAINT_MARK_SEPARATION: Final = 0.04
+MAX_QUESTIONS: Final = 100
+ID_COLUMNS: Final = 8
+ID_DIGITS: Final = 10
+CHOICES: Final = 5
+_UPSIDE_DOWN_MARGIN: Final = 0.01
+"""Upright pages print (1) 0.025-0.042 lighter than (5) in the unmarked disk density."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,18 +44,30 @@ class GridRecognition:
 
 
 def read_grid(
-    image: NDArray[np.generic], profile: Profile, thresholds: RecognitionThresholds
+    image: NDArray[np.generic],
+    profile: Profile,
+    thresholds: RecognitionThresholds,
+    *,
+    bubble_radius: float,
+    trusted: bool = True,
 ) -> Result[GridRecognition]:
-    """Read the fixed 8x10 ID and Q1..Q100 answer grids from a normalized image."""
+    """Read the 8x10 ID grid and every answer row of a page warped into the profile frame.
+
+    ``bubble_radius`` is the printed bubble radius in frame pixels. Questions after the
+    last row printed on the form are returned as unasked with geometry-free evidence.
+    When ``trusted`` is false (a weak page alignment) or the page reads upside down, every
+    answer becomes uncertain and the ID invalid: grading only scores reviewed values.
+    """
     validated = validate_thresholds(thresholds)
     if isinstance(validated, Err):
         return validated
     gray = _grayscale(image)
     if gray is None:
         return _error("INVALID_NORMALIZED_IMAGE", "image")
-    height, width = gray.shape
     if type(profile) is not Profile:
         return _error("INVALID_PROFILE", "profile")
+    if not (np.isfinite(bubble_radius) and bubble_radius > 1.0):
+        return _error("INVALID_BUBBLE_RADIUS", "bubble_radius")
     try:
         frozen_profile = _has_frozen_profile_invariants(profile)
         answer_regions = _answer_regions_with_starts(profile)
@@ -63,15 +76,47 @@ def read_grid(
     if not frozen_profile or answer_regions is None:
         return _error("INVALID_FROZEN_PROFILE", "profile.regions")
 
+    height, width = gray.shape
+    try:
+        ring = _ring_radius(gray, _answer_centers(answer_regions, width, height), bubble_radius)
+    except (ArithmeticError, TypeError, ValueError):
+        return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
+    density = _density_map(gray, ring, thresholds.ink_floor)
+    disk = _disk(thresholds.disk_ratio * ring)
+    try:
+        id_region = profile.id_region
+        id_geometry = [
+            [_cell(id_region, column, digit, width, height) for digit in range(ID_DIGITS)]
+            for column in range(ID_COLUMNS)
+        ]
+        rows: list[tuple[int, list[tuple[PixelRect, RatioRect, tuple[float, float]]]]] = [
+            (start + row, [_cell(region, choice, row, width, height) for choice in range(CHOICES)])
+            for region, start in answer_regions
+            for row in range(region.grid.rows)
+        ]
+        id_raw = np.array(
+            [[_fill(density, cell[2], disk) for cell in column] for column in id_geometry]
+        )
+        answer_raw = np.array(
+            [[_fill(density, cell[2], disk) for cell in cells] for _, cells in rows]
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
+    # Printed digits inside the bubbles carry ink of their own, darker on some printers;
+    # only what lies above the unmarked level of the same digit counts as a mark.
+    id_marks = id_raw - _unmarked_level(id_raw)[None, :]
+    answer_levels = _unmarked_level(answer_raw)
+    answer_marks = answer_raw - answer_levels[None, :]
+    # The printed (1) carries the least ink of the five digits. A first column clearly
+    # heavier than the last means the form is read upside down, so nothing is trusted.
+    upside_down = float(answer_levels[0] - answer_levels[-1]) > _UPSIDE_DOWN_MARGIN
+
     evidence_index = 0
     id_cells: list[IdCell] = []
     try:
-        id_region = profile.id_region
-        for column in range(8):
+        for column, cells in enumerate(id_geometry):
             candidates: list[CellEvidence] = []
-            for digit in range(10):
-                rect, ratio = _cell_rect(id_region, column, digit, width, height)
-                score = _fill_score(gray, rect, thresholds)
+            for digit, (rect, ratio, _) in enumerate(cells):
                 candidates.append(
                     CellEvidence(
                         evidence_index,
@@ -80,7 +125,7 @@ def read_grid(
                         None,
                         rect,
                         ratio,
-                        _score_text(score),
+                        _score_text(id_marks[column, digit]),
                         False,
                         CellStatus.BLANK,
                     )
@@ -89,37 +134,61 @@ def read_grid(
             id_cells.append(_id_cell(candidates, thresholds))
 
         answers: list[AnswerRecognition] = []
-        for region, start in answer_regions:
-            for row in range(region.grid.rows):
-                question = start + row
-                candidates = []
-                for choice_offset in range(5):
-                    rect, ratio = _cell_rect(region, choice_offset, row, width, height)
-                    score = _fill_score(gray, rect, thresholds)
-                    candidates.append(
-                        CellEvidence(
-                            evidence_index,
-                            question,
-                            None,
-                            choice_offset + 1,
-                            rect,
-                            ratio,
-                            _score_text(score),
-                            False,
-                            CellStatus.BLANK,
-                        )
+        printed: set[int] = set()
+        for row_index, (question, cells) in enumerate(rows):
+            printed.add(question)
+            candidates = []
+            for choice_offset, (rect, ratio, _) in enumerate(cells):
+                candidates.append(
+                    CellEvidence(
+                        evidence_index,
+                        question,
+                        None,
+                        choice_offset + 1,
+                        rect,
+                        ratio,
+                        _score_text(answer_marks[row_index, choice_offset]),
+                        False,
+                        CellStatus.BLANK,
                     )
-                    evidence_index += 1
-                answers.append(_answer(question, candidates, thresholds))
+                )
+                evidence_index += 1
+            answers.append(_answer(question, candidates, thresholds))
+        for question in range(1, MAX_QUESTIONS + 1):
+            if question in printed:
+                continue
+            placeholders = tuple(
+                CellEvidence(
+                    evidence_index + offset,
+                    question,
+                    None,
+                    offset + 1,
+                    None,
+                    None,
+                    None,
+                    False,
+                    CellStatus.BLANK,
+                )
+                for offset in range(CHOICES)
+            )
+            evidence_index += CHOICES
+            answers.append(
+                AnswerRecognition(question, AnswerValue((), AnswerStatus.UNASKED), placeholders)
+            )
     except (ArithmeticError, StopIteration, TypeError, ValueError):
         return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
 
+    answers.sort(key=lambda item: item.question)
+    if upside_down or not trusted:
+        answers = [_withheld_answer(answer) for answer in answers]
+        id_cells = [_withheld_id_cell(cell) for cell in id_cells]
     id_result = _student_id(id_cells, thresholds)
     all_evidence = tuple(cell for item in id_result.cells for cell in item.candidates) + tuple(
         cell for item in answers for cell in item.cells
     )
     manual = (
-        (not thresholds.has_valid_calibration_provenance)
+        upside_down
+        or (not thresholds.has_valid_calibration_provenance)
         or id_result.status is not StudentIdStatus.NORMAL
         or any(answer.value.status is AnswerStatus.UNCERTAIN for answer in answers)
     )
@@ -127,10 +196,41 @@ def read_grid(
 
 
 def recognize_grid(
-    image: NDArray[np.generic], profile: Profile, thresholds: RecognitionThresholds
+    image: NDArray[np.generic],
+    profile: Profile,
+    thresholds: RecognitionThresholds,
+    *,
+    bubble_radius: float,
 ) -> Result[GridRecognition]:
     """Compatibility-free descriptive alias for the public grid reader."""
-    return read_grid(image, profile, thresholds)
+    return read_grid(image, profile, thresholds, bubble_radius=bubble_radius)
+
+
+def _withheld_answer(answer: AnswerRecognition) -> AnswerRecognition:
+    """Keep what was read as review evidence while confirming none of it."""
+    if answer.value.status in {AnswerStatus.UNASKED, AnswerStatus.UNCERTAIN}:
+        return answer
+    selected = tuple(index for index, cell in enumerate(answer.cells) if cell.selected)
+    cells = _evidence_with_status(list(answer.cells), selected, FieldStatus.UNCERTAIN)
+    return AnswerRecognition(
+        answer.question, AnswerValue(answer.value.choices, AnswerStatus.UNCERTAIN), cells
+    )
+
+
+def _withheld_id_cell(cell: IdCell) -> IdCell:
+    if cell.status is FieldStatus.UNCERTAIN:
+        return cell
+    selected = tuple(index for index, item in enumerate(cell.candidates) if item.selected)
+    return IdCell(
+        None,
+        FieldStatus.UNCERTAIN,
+        _evidence_with_status(list(cell.candidates), selected, FieldStatus.UNCERTAIN),
+    )
+
+
+def question_count(profile: Profile) -> int:
+    """Number of questions printed on the form described by ``profile``."""
+    return sum(region.grid.rows for region in profile.answer_regions)
 
 
 def _grayscale(image: NDArray[np.generic]) -> NDArray[np.uint8] | None:
@@ -162,6 +262,107 @@ def _grayscale(image: NDArray[np.generic]) -> NDArray[np.uint8] | None:
     return np.clip(source, np.float32(0), np.float32(255)).astype(np.uint8, copy=False)
 
 
+def _answer_centers(
+    answer_regions: tuple[tuple[ProfileRegion, int], ...], width: int, height: int
+) -> NDArray[np.float64]:
+    centers: list[tuple[float, float]] = []
+    for region, _ in answer_regions:
+        for row in range(region.grid.rows):
+            for column in range(region.grid.cols):
+                centers.append(_cell(region, column, row, width, height)[2])
+    return np.asarray(centers, dtype=np.float64)
+
+
+def _ring_radius(gray: NDArray[np.uint8], centers: NDArray[np.float64], guess: float) -> float:
+    """Radius of the printed bubble ring, measured on the page itself.
+
+    The median over every answer bubble of the mean brightness around a circle is
+    darkest on the printed ring. Filled bubbles are a minority, so they do not move
+    the median, and the result does not depend on how circles were first detected.
+    """
+    radii = np.arange(0.55 * guess, 1.45 * guess, 0.25, dtype=np.float64)
+    angles = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False)
+    xs = centers[:, 0, None, None] + radii[None, :, None] * np.cos(angles)[None, None, :]
+    ys = centers[:, 1, None, None] + radii[None, :, None] * np.sin(angles)[None, None, :]
+    # remap needs maps under 32767 rows and columns: one row per (bubble, radius).
+    sampled = cv2.remap(
+        gray,
+        xs.reshape(-1, len(angles)).astype(np.float32),
+        ys.reshape(-1, len(angles)).astype(np.float32),
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    ).reshape(len(centers), len(radii), len(angles))
+    profile = np.median(sampled.astype(np.float64).mean(axis=2), axis=0)
+    return float(radii[int(np.argmin(profile))])
+
+
+def _density_map(gray: NDArray[np.uint8], radius: float, ink_floor: float) -> NDArray[np.float32]:
+    """Ink density in 0..1 relative to the local paper white.
+
+    A closing wider than a bubble removes marks and print, leaving the paper's own
+    brightness, so shading and uneven scanner light do not change the reading. Paper is
+    0 and anything at or below ``ink_floor`` of the paper brightness is 1; light pencil
+    counts in proportion to its darkness.
+    """
+    # The paper level is smooth by construction, so it is estimated on a reduced copy.
+    factor = max(1, int(radius // 4))
+    small = cv2.resize(
+        gray,
+        (max(1, gray.shape[1] // factor), max(1, gray.shape[0] // factor)),
+        interpolation=cv2.INTER_AREA,
+    )
+    size = int(4.4 * radius / factor) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+    paper_small = cv2.morphologyEx(small, cv2.MORPH_CLOSE, kernel)
+    paper_small = cv2.GaussianBlur(paper_small, (0, 0), radius / factor)
+    paper = cv2.resize(paper_small, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
+    relative = gray.astype(np.float32) / np.maximum(paper.astype(np.float32), 1.0)
+    return np.asarray(np.clip((1.0 - relative) / (1.0 - ink_floor), 0.0, 1.0), dtype=np.float32)
+
+
+def _unmarked_level(raw: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Typical density of each printed digit when it is left unmarked.
+
+    ``raw`` has one row per question (or ID column) and one column per printed digit.
+    The strongest cell of every row is left out, so a student who marks the same choice
+    everywhere cannot turn that choice into the reference.
+    """
+    strongest = np.argmax(raw, axis=1)
+    rest = [
+        raw[row, col]
+        for row in range(raw.shape[0])
+        for col in range(raw.shape[1])
+        if col != strongest[row]
+    ]
+    fallback = float(np.median(rest)) if rest else 0.0
+    levels = []
+    for col in range(raw.shape[1]):
+        values = [raw[row, col] for row in range(raw.shape[0]) if strongest[row] != col]
+        levels.append(float(np.median(values)) if values else fallback)
+    return np.asarray(levels, dtype=np.float64)
+
+
+def _disk(radius: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    reach = int(np.ceil(radius))
+    yy, xx = np.mgrid[-reach : reach + 1, -reach : reach + 1]
+    inside = xx * xx + yy * yy <= radius * radius
+    return xx[inside].astype(np.float64), yy[inside].astype(np.float64)
+
+
+def _fill(
+    density: NDArray[np.float32],
+    center: tuple[float, float],
+    disk: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> float:
+    height, width = density.shape
+    xs = np.rint(center[0] + disk[0]).astype(np.intp)
+    ys = np.rint(center[1] + disk[1]).astype(np.intp)
+    inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+    if not inside.any():
+        raise ValueError("bubble lies outside the normalized image")
+    return float(density[ys[inside], xs[inside]].sum() / disk[0].size)
+
+
 def _answer_regions_with_starts(
     profile: Profile,
 ) -> tuple[tuple[ProfileRegion, int], ...] | None:
@@ -183,7 +384,9 @@ def _answer_regions_with_starts(
     questions = tuple(
         question for region, start in mapped for question in range(start, start + region.grid.rows)
     )
-    return tuple(mapped) if questions == tuple(range(1, 101)) else None
+    if not questions or len(questions) > MAX_QUESTIONS:
+        return None
+    return tuple(mapped) if questions == tuple(range(1, len(questions) + 1)) else None
 
 
 def _has_frozen_profile_invariants(profile: Profile) -> bool:
@@ -191,10 +394,10 @@ def _has_frozen_profile_invariants(profile: Profile) -> bool:
     if len(id_regions) != 1:
         return False
     id_region = id_regions[0]
-    if id_region.grid.cols != 8 or id_region.grid.rows != 10:
+    if id_region.grid.cols != ID_COLUMNS or id_region.grid.rows != ID_DIGITS:
         return False
     answer_regions = profile.answer_regions
-    if not answer_regions or any(region.grid.cols != 5 for region in answer_regions):
+    if not answer_regions or any(region.grid.cols != CHOICES for region in answer_regions):
         return False
     if not all(_valid_ratio_region(region) for region in (id_region, *answer_regions)):
         return False
@@ -215,9 +418,9 @@ def _valid_ratio_region(region: ProfileRegion) -> bool:
     )
 
 
-def _cell_rect(
+def _cell(
     region: ProfileRegion, column: int, row: int, width: int, height: int
-) -> tuple[PixelRect, RatioRect]:
+) -> tuple[PixelRect, RatioRect, tuple[float, float]]:
     bbox = region.bbox_ratio
     x_ratio = bbox.x + bbox.w * Decimal(column) / Decimal(region.grid.cols)
     y_ratio = bbox.y + bbox.h * Decimal(row) / Decimal(region.grid.rows)
@@ -229,6 +432,10 @@ def _cell_rect(
     bottom = round((y_ratio + h_ratio) * height)
     if left < 0 or top < 0 or right > width or bottom > height or right <= left or bottom <= top:
         raise ValueError("cell is outside normalized image")
+    center = (
+        float((x_ratio + w_ratio / 2) * width),
+        float((y_ratio + h_ratio / 2) * height),
+    )
     return (
         PixelRect(left, top, right - left, bottom - top),
         RatioRect(
@@ -237,73 +444,33 @@ def _cell_rect(
             canonical_fraction(w_ratio),
             canonical_fraction(h_ratio),
         ),
+        center,
     )
 
 
-def _fill_score(
-    image: NDArray[np.uint8], rect: PixelRect, thresholds: RecognitionThresholds
-) -> float:
-    margin_x = int(rect.w * thresholds.inner_margin_ratio)
-    margin_y = int(rect.h * thresholds.inner_margin_ratio)
-    left, right = rect.x + margin_x, rect.x + rect.w - margin_x
-    top, bottom = rect.y + margin_y, rect.y + rect.h - margin_y
-    if right <= left or bottom <= top:
-        raise ValueError("cell marking area is empty")
-    inner = image[top:bottom, left:right]
-    ring = np.concatenate(
-        (
-            image[rect.y : top, rect.x : rect.x + rect.w].reshape(-1),
-            image[bottom : rect.y + rect.h, rect.x : rect.x + rect.w].reshape(-1),
-            image[top:bottom, rect.x : left].reshape(-1),
-            image[top:bottom, right : rect.x + rect.w].reshape(-1),
-        )
+def _decide(
+    candidates: list[CellEvidence], thresholds: RecognitionThresholds
+) -> tuple[tuple[int, ...], FieldStatus]:
+    """One clear mark with every rival unmarked, or blank; anything in between is reviewed."""
+    scores = tuple(float(cast(str, item.fill_score)) for item in candidates)
+    if not thresholds.has_valid_calibration_provenance:
+        plausible = tuple(i for i, s in enumerate(scores) if s > thresholds.blank_ceiling)
+        return plausible, FieldStatus.UNCERTAIN
+    marked = tuple(i for i, s in enumerate(scores) if s >= thresholds.mark_threshold)
+    gray_zone = tuple(
+        i for i, s in enumerate(scores) if thresholds.blank_ceiling < s < thresholds.mark_threshold
     )
-    if ring.size == 0:
-        raise ValueError("cell background area is empty")
-    # The upper quartile resists dark ink leaking into the ring.  The cutoff
-    # requires meaningful contrast from that local background, rather than
-    # treating absolute darkness as a mark.
-    background = float(np.percentile(ring, 75))
-    median = float(np.median(ring))
-    spread = float(np.median(np.abs(ring.astype(np.float32) - median)))
-    required_contrast = max(12.0, 3.0 * spread)
-    adaptive_cutoff = background - required_contrast
-    otsu_cutoff = _otsu_threshold(inner)
-    local_cutoff = min(float(thresholds.dark_pixel_threshold), adaptive_cutoff)
-    if otsu_cutoff is not None:
-        local_cutoff = min(
-            local_cutoff,
-            otsu_cutoff + max(8.0, (background - otsu_cutoff) * 0.25),
-        )
-    # A near-black ring cannot establish the required contrast.  In
-    # particular, this rejects uniformly saturated dark cells instead of
-    # accepting them through an absolute-darkness fallback.
-    if background <= required_contrast or local_cutoff < 0.0:
-        return 0.0
-    return float(np.count_nonzero(inner.astype(np.float32) <= local_cutoff) / inner.size)
-
-
-def _otsu_threshold(values: NDArray[np.uint8]) -> float | None:
-    histogram = np.bincount(values.reshape(-1), minlength=256).astype(np.float64)
-    total = float(values.size)
-    if total <= 0:
-        raise ValueError("empty Otsu sample")
-    levels = np.arange(256, dtype=np.float64)
-    cumulative_weight = np.cumsum(histogram)
-    cumulative_mean = np.cumsum(histogram * levels)
-    total_mean = cumulative_mean[-1]
-    denominator = cumulative_weight * (total - cumulative_weight)
-    variance = np.zeros(256, dtype=np.float64)
-    valid = denominator > 0
-    variance[valid] = (
-        total_mean * cumulative_weight[valid] - cumulative_mean[valid] * total
-    ) ** 2 / denominator[valid]
-    peak = float(np.max(variance))
-    return float(np.argmax(variance)) if peak > 0.0 else None
+    if not marked and not gray_zone:
+        return (), FieldStatus.BLANK
+    if gray_zone:
+        return tuple(sorted((*marked, *gray_zone))), FieldStatus.UNCERTAIN
+    if len(marked) == 1:
+        return marked, FieldStatus.NORMAL
+    return marked, FieldStatus.MULTIPLE
 
 
 def _id_cell(candidates: list[CellEvidence], thresholds: RecognitionThresholds) -> IdCell:
-    selected, status = _classify(candidates, thresholds, clear_boundary_winner=True)
+    selected, status = _decide(candidates, thresholds)
     updated = _evidence_with_status(candidates, selected, status)
     digit = str(updated[selected[0]].digit) if status is FieldStatus.NORMAL else None
     return IdCell(digit, status, updated)
@@ -312,78 +479,11 @@ def _id_cell(candidates: list[CellEvidence], thresholds: RecognitionThresholds) 
 def _answer(
     question: int, candidates: list[CellEvidence], thresholds: RecognitionThresholds
 ) -> AnswerRecognition:
-    selected, field_status = _classify(candidates, thresholds)
-    if thresholds.has_valid_calibration_provenance and field_status in (
-        FieldStatus.UNCERTAIN,
-        FieldStatus.BLANK,
-    ):
-        selected, field_status = _single_mark(candidates, selected, field_status)
+    selected, field_status = _decide(candidates, thresholds)
     status = AnswerStatus(field_status.value)
     updated = _evidence_with_status(candidates, selected, field_status)
     choices = tuple(cast(int, updated[index].choice) for index in selected)
     return AnswerRecognition(question, AnswerValue(choices, status), updated)
-
-
-def _single_mark(
-    candidates: list[CellEvidence], selected: tuple[int, ...], status: FieldStatus
-) -> tuple[tuple[int, ...], FieldStatus]:
-    """Accept a small solid dot that stands clearly apart from four unmarked bubbles.
-
-    A dot covers little of the scored area, so its fill sits near the threshold even when
-    it is unmistakable. A weaker dot that still stands apart goes to review, not blank.
-    """
-    scores = tuple(float(cast(str, item.fill_score)) for item in candidates)
-    ranked = sorted(range(len(scores)), key=lambda index: -scores[index])
-    strongest, runner_up = scores[ranked[0]], scores[ranked[1]]
-    if (
-        strongest >= _SINGLE_MARK_MINIMUM
-        and runner_up <= _UNMARKED_MAXIMUM
-        and strongest - runner_up >= _SINGLE_MARK_SEPARATION
-    ):
-        return (ranked[0],), FieldStatus.NORMAL
-    if (
-        status is FieldStatus.BLANK
-        and strongest >= _FAINT_MARK_MINIMUM
-        and strongest - runner_up >= _FAINT_MARK_SEPARATION
-    ):
-        return (ranked[0],), FieldStatus.UNCERTAIN
-    return selected, status
-
-
-def _classify(
-    candidates: list[CellEvidence],
-    thresholds: RecognitionThresholds,
-    *,
-    clear_boundary_winner: bool = False,
-) -> tuple[tuple[int, ...], FieldStatus]:
-    scores = tuple(float(cast(str, item.fill_score)) for item in candidates)
-    strongest = max(scores)
-    selected = tuple(
-        index
-        for index, score in enumerate(scores)
-        if score >= thresholds.mark_threshold
-        and (
-            score == strongest
-            or score >= thresholds.mark_threshold + thresholds.ambiguity_margin
-        )
-    )
-    ordered = sorted(scores, reverse=True)
-    close = (
-        len(ordered) > 1
-        and ordered[0] >= thresholds.mark_threshold
-        and (ordered[0] - ordered[1] <= thresholds.ambiguity_margin)
-    )
-    boundary = abs(ordered[0] - thresholds.mark_threshold) <= thresholds.ambiguity_margin
-    if clear_boundary_winner and ordered[0] - ordered[1] > thresholds.ambiguity_margin:
-        boundary = False
-    if not thresholds.has_valid_calibration_provenance or close or boundary:
-        # Preserve potential selections as evidence while refusing automation.
-        return selected, FieldStatus.UNCERTAIN
-    if not selected:
-        return (), FieldStatus.BLANK
-    if len(selected) == 1:
-        return selected, FieldStatus.NORMAL
-    return selected, FieldStatus.MULTIPLE
 
 
 def _evidence_with_status(
@@ -409,37 +509,24 @@ def _evidence_with_status(
 
 
 def _student_id(cells: list[IdCell], thresholds: RecognitionThresholds) -> StudentIdRecognition:
-    active_cells = list(cells)
-    normalized_cells = list(cells)
-    strong_threshold = thresholds.mark_threshold + thresholds.ambiguity_margin
-    while active_cells:
-        trailing = active_cells[-1]
-        strongest = max(float(cast(str, item.fill_score)) for item in trailing.candidates)
-        if trailing.status is FieldStatus.BLANK or strongest < strong_threshold:
-            active_cells.pop()
-            if trailing.status is not FieldStatus.BLANK:
-                normalized_cells[len(active_cells)] = IdCell(
-                    None,
-                    FieldStatus.BLANK,
-                    tuple(
-                        replace(item, selected=False, status=CellStatus.BLANK)
-                        for item in trailing.candidates
-                    ),
-                )
-            continue
-        break
+    """Digits must run from the first column; only trailing columns may stay blank."""
+    last = max(
+        (index for index, cell in enumerate(cells) if cell.status is not FieldStatus.BLANK),
+        default=-1,
+    )
+    active = cells[: last + 1]
     complete = (
         thresholds.has_valid_calibration_provenance
-        and bool(active_cells)
-        and all(cell.status is FieldStatus.NORMAL for cell in active_cells)
+        and bool(active)
+        and all(cell.status is FieldStatus.NORMAL for cell in active)
     )
     if complete:
         return StudentIdRecognition(
-            "".join(cell.selected_digit or "" for cell in active_cells),
+            "".join(cell.selected_digit or "" for cell in active),
             StudentIdStatus.NORMAL,
-            tuple(normalized_cells),
+            tuple(cells),
         )
-    return StudentIdRecognition(None, StudentIdStatus.INVALID, tuple(normalized_cells))
+    return StudentIdRecognition(None, StudentIdStatus.INVALID, tuple(cells))
 
 
 def canonical_fraction(value: Decimal | float | int) -> str:
@@ -455,7 +542,7 @@ def canonical_fraction(value: Decimal | float | int) -> str:
 
 
 def _score_text(value: float) -> str:
-    return canonical_fraction(value)
+    return canonical_fraction(min(1.0, max(0.0, float(value))))
 
 
 def _error(code: str, field_path: str) -> Err:

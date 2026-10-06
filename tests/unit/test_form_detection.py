@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import fitz
+import numpy as np
+import pytest
+
+from omr_grader.domain.errors import Err, Ok
+from omr_grader.domain.profile import parse_profile_bytes
+from omr_grader.infrastructure import form_detection
+from omr_grader.infrastructure.capabilities import CapabilityToken
+from omr_grader.infrastructure.form_detection import FormDetection, FormDetector
+from omr_grader.infrastructure.paths import ManagedPaths
+from omr_grader.infrastructure.profile_store import ProfileStore
+from tests.helpers.omr_engine import reference_sheet
+from tests.helpers.synthetic_omr import (
+    encode_png,
+    render_sheet_with_geometry,
+    sample_answers,
+    to_gray,
+    write_png,
+)
+
+ANSWER_BLOCKS = ((1, 20), (21, 20), (41, 20), (61, 20), (81, 20))
+SUMMARY = "학번 8자리 · 객관식 100문항 (1~20, 21~40, 41~60, 61~80, 81~100)"
+
+
+def _store(root: Path) -> ProfileStore:
+    paths = ManagedPaths.from_root(root)
+    paths.profiles_dir.mkdir()
+    return ProfileStore(paths, CapabilityToken.for_testing(root))
+
+
+@dataclass(frozen=True, slots=True)
+class Scans:
+    """Synthetic scans of two exam forms, written as PNG files."""
+
+    folder: Path
+    first: Path
+    second: Path
+    sideways: Path
+    short_form: Path
+    blank: Path
+    pdf: Path
+
+
+@dataclass(frozen=True, slots=True)
+class SavedForm:
+    """A store holding the profile generated from the two scans of the 100-question form."""
+
+    store: ProfileStore
+    detector: FormDetector
+    first_detection: FormDetection
+    stored_name: str
+
+
+@pytest.fixture(scope="module")
+def scans(tmp_path_factory: pytest.TempPathFactory) -> Scans:
+    folder = tmp_path_factory.mktemp("scans")
+    sheet = reference_sheet()
+    other_page, _ = render_sheet_with_geometry(
+        sample_answers(), "20250002", rotation=0.8, shift=(20.0, -10.0), seed=3
+    )
+    sideways, _ = render_sheet_with_geometry(sample_answers(), "20250003", rotation=90, seed=4)
+    pdf = folder / "scan.pdf"
+    document = fitz.open()
+    document.new_page(width=842, height=595).insert_image(
+        fitz.Rect(0, 0, 842, 595), stream=encode_png(sheet.image)
+    )
+    document.save(str(pdf))
+    document.close()
+    return Scans(
+        folder,
+        write_png(folder / "first.png", sheet.gray),
+        write_png(folder / "second.png", to_gray(other_page)),
+        write_png(folder / "sideways.png", to_gray(sideways)),
+        write_png(folder / "short.png", reference_sheet((20, 20, 10)).gray),
+        write_png(folder / "blank.png", np.full((600, 900), 245, dtype=np.uint8)),
+        pdf,
+    )
+
+
+@pytest.fixture(scope="module")
+def saved(tmp_path_factory: pytest.TempPathFactory, scans: Scans) -> SavedForm:
+    store = _store(tmp_path_factory.mktemp("portable"))
+    detector = FormDetector(store)
+    detected = detector.detect((str(scans.first), str(scans.second)))
+    assert isinstance(detected, Ok)
+    assert detected.value.generated_profile is not None
+    stored = store.save_generated(
+        detected.value.generated_profile, detected.value.suggested_filename
+    )
+    assert isinstance(stored, Ok)
+    return SavedForm(store, detector, detected.value, stored.value.stored_name)
+
+
+def test_the_first_detection_describes_a_new_form_and_offers_its_profile(
+    saved: SavedForm,
+) -> None:
+    detection = saved.first_detection
+
+    assert detection.is_new
+    assert detection.profile_filename is None
+    assert detection.id_digits == 8
+    assert detection.question_count == 100
+    assert detection.answer_blocks == ANSWER_BLOCKS
+    assert (detection.pages_checked, detection.pages_matching) == (2, 2)
+    assert detection.summary == SUMMARY
+    assert re.fullmatch(
+        r"자동양식_객관식100문항_[0-9a-f]{6}\.omrtemplate", detection.suggested_filename
+    )
+    assert detection.generated_profile is not None
+    profile = parse_profile_bytes(detection.generated_profile)
+    assert isinstance(profile, Ok)
+    starts = [region.question_start for region in profile.value.answer_regions]
+    assert starts == [start for start, _ in ANSWER_BLOCKS]
+    # The preview is the first page, long side 1600, with the found bubbles drawn on it.
+    preview = cv2.imdecode(np.frombuffer(detection.preview_png, np.uint8), cv2.IMREAD_COLOR)
+    assert preview.shape == (1131, 1600, 3)
+    assert not np.array_equal(preview[..., 0], preview[..., 1])  # colored marks were added
+
+
+def test_saving_the_generated_profile_stores_it_beside_the_portable_data(saved: SavedForm) -> None:
+    detection = saved.first_detection
+    stored = saved.store.paths.profiles_dir / saved.stored_name
+
+    assert saved.stored_name == detection.suggested_filename
+    assert stored.read_bytes() == detection.generated_profile
+    assert saved.store.discover() == Ok((saved.stored_name,))
+
+
+def test_the_saved_profile_is_found_again_instead_of_generating_a_new_one(
+    saved: SavedForm, scans: Scans
+) -> None:
+    again = saved.detector.detect((str(scans.first),))
+
+    assert isinstance(again, Ok)
+    detection = again.value
+    assert not detection.is_new
+    assert detection.profile_filename == saved.stored_name
+    assert detection.generated_profile is None
+    assert (detection.question_count, detection.answer_blocks) == (100, ANSWER_BLOCKS)
+    assert (detection.pages_checked, detection.pages_matching) == (1, 1)
+    assert detection.summary == SUMMARY
+
+
+def test_a_page_scanned_sideways_matches_the_saved_profile_and_previews_upright(
+    saved: SavedForm, scans: Scans
+) -> None:
+    result = saved.detector.detect((str(scans.sideways),))
+
+    assert isinstance(result, Ok)
+    assert result.value.profile_filename == saved.stored_name
+    preview = cv2.imdecode(np.frombuffer(result.value.preview_png, np.uint8), cv2.IMREAD_COLOR)
+    assert preview.shape[1] > preview.shape[0]  # landscape again, not the sideways scan
+
+
+def test_every_image_in_a_folder_is_sampled_and_other_files_are_ignored(
+    saved: SavedForm, scans: Scans, tmp_path: Path
+) -> None:
+    (tmp_path / "scan1.png").write_bytes(scans.first.read_bytes())
+    (tmp_path / "notes.txt").write_text("not a scan")
+
+    result = saved.detector.detect((str(tmp_path),))
+
+    assert isinstance(result, Ok)
+    assert result.value.pages_checked == 1
+    assert result.value.profile_filename == saved.stored_name
+
+
+def test_the_pages_of_a_pdf_are_rendered_and_detected(saved: SavedForm, scans: Scans) -> None:
+    result = saved.detector.detect((str(scans.pdf),))
+
+    assert isinstance(result, Ok)
+    assert result.value.question_count == 100
+    assert result.value.pages_checked == 1
+    assert result.value.profile_filename == saved.stored_name
+
+
+def test_only_the_first_pages_of_a_large_selection_are_sampled(
+    saved: SavedForm, scans: Scans, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(form_detection, "MAX_SAMPLE_PAGES", 1)
+
+    result = saved.detector.detect((str(scans.first), str(scans.second), str(scans.sideways)))
+
+    assert isinstance(result, Ok)
+    assert result.value.pages_checked == 1
+
+
+def test_a_page_of_another_form_among_the_samples_is_counted_but_does_not_block_reuse(
+    saved: SavedForm, scans: Scans
+) -> None:
+    selection = (str(scans.first), str(scans.second), str(scans.short_form))
+
+    result = saved.detector.detect(selection)
+
+    assert isinstance(result, Ok)
+    detection = result.value
+    assert (detection.pages_checked, detection.pages_matching) == (3, 2)
+    assert detection.question_count == 100  # the form most pages have
+    # Only pages of the detected form are fitted against saved profiles: the short page
+    # is counted as different and sent to review when read, but the saved form is reused.
+    assert detection.profile_filename == saved.stored_name
+    assert detection.generated_profile is None
+
+
+def test_a_form_of_another_structure_gets_its_own_profile(
+    saved: SavedForm, scans: Scans, tmp_path: Path
+) -> None:
+    store = _store(tmp_path)
+    (store.paths.profiles_dir / saved.stored_name).write_bytes(
+        (saved.store.paths.profiles_dir / saved.stored_name).read_bytes()
+    )
+    detector = FormDetector(store)
+
+    short = detector.detect((str(scans.short_form),))
+    assert isinstance(short, Ok)
+    assert short.value.is_new  # the saved 100-question profile does not fit
+    assert short.value.question_count == 50
+    assert short.value.answer_blocks == ((1, 20), (21, 20), (41, 10))
+    assert short.value.summary == "학번 8자리 · 객관식 50문항 (1~20, 21~40, 41~50)"
+    assert short.value.generated_profile is not None
+    stored = store.save_generated(short.value.generated_profile, short.value.suggested_filename)
+    assert isinstance(stored, Ok)
+
+    again = detector.detect((str(scans.short_form),))
+    full = detector.detect((str(scans.first),))
+    assert isinstance(again, Ok) and isinstance(full, Ok)
+    assert again.value.profile_filename == stored.value.stored_name
+    assert full.value.profile_filename == saved.stored_name
+    assert stored.value.stored_name != saved.stored_name
+
+
+def test_unreadable_selections_are_reported(saved: SavedForm, scans: Scans, tmp_path: Path) -> None:
+    empty_folder = tmp_path / "empty"
+    empty_folder.mkdir()
+
+    for selection in ((), (str(tmp_path / "missing.png"),), (str(empty_folder),)):
+        result = saved.detector.detect(selection)
+        assert isinstance(result, Err)
+        assert result.errors[0].code == "SCAN_SOURCE_EMPTY"
+
+    blank = saved.detector.detect((str(scans.blank),))
+    assert isinstance(blank, Err)
+    assert blank.errors[0].code == "FORM_NOT_FOUND"
+    assert blank.errors[0].message_key == "error.form_not_found"
+
+
+def test_a_form_the_app_cannot_grade_is_reported_instead_of_saved(
+    saved: SavedForm, tmp_path: Path
+) -> None:
+    narrow, _ = render_sheet_with_geometry({}, "", id_columns=5)
+
+    result = saved.detector.detect((str(write_png(tmp_path / "narrow.png", to_gray(narrow))),))
+
+    assert isinstance(result, Err)
+    assert result.errors[0].code == "FORM_ID_UNSUPPORTED"
+
+
+def test_a_detection_reads_as_a_summary_and_knows_whether_it_is_new() -> None:
+    new = FormDetection(
+        None, b"{}", "x.omrtemplate", 8, 50, ((1, 20), (21, 20), (41, 10)), 3, 3, b""
+    )
+    known = FormDetection("x.omrtemplate", None, "x.omrtemplate", 8, 5, ((1, 5),), 1, 1, b"")
+
+    assert new.is_new and not known.is_new
+    assert new.summary == "학번 8자리 · 객관식 50문항 (1~20, 21~40, 41~50)"
+    assert known.summary == "학번 8자리 · 객관식 5문항 (1~5)"

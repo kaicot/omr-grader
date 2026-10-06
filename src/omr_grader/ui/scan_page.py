@@ -89,6 +89,7 @@ class ScanPage(QWidget):
     reset_requested = Signal()
     sample_roster_requested = Signal()
     source_browse_requested = Signal(object)
+    source_changed = Signal(object)
     roster_browse_requested = Signal(object)
     profile_browse_requested = Signal()
     profile_import_requested = Signal(object)
@@ -103,6 +104,7 @@ class ScanPage(QWidget):
         self._write_enabled = True
         self._busy = False
         self._profile_importing = False
+        self._form_detecting = False
         self._operation_id: str | None = None
         self._cancellable = True
         self._build_ui()
@@ -167,6 +169,12 @@ class ScanPage(QWidget):
         profile_layout.setContentsMargins(0, 0, 0, 0)
         profile_layout.addWidget(self.profile_combo, 1)
         profile_layout.addWidget(self.profile_import_button)
+        self.form_status_label = QLabel(exam_card)
+        self.form_status_label.setObjectName("formStatusLabel")
+        self.form_status_label.setAccessibleName("답안지 양식 자동 인식 상태")
+        self.form_status_label.setWordWrap(True)
+        self.form_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.form_status_label.hide()
         self.profile_widget = ImportDropWidget(ImportKind.PROFILE, exam_card)
         self.profile_widget.setObjectName("profileImportWidget")
         self.profile_summary = QLabel("검증된 OMR 프로필을 선택하거나 불러오세요.", exam_card)
@@ -175,6 +183,7 @@ class ScanPage(QWidget):
         self.profile_summary.setWordWrap(False)
         exam_form.addRow("1. 시험명 입력 *", self.exam_name_edit)
         exam_form.addRow("인식 프로필 *", profile_row)
+        exam_form.addRow("", self.form_status_label)
         exam_form.addRow("프로필 끌어놓기", self.profile_widget)
         exam_form.addRow("프로필 정보", self.profile_summary)
         for field in (
@@ -423,6 +432,38 @@ class ScanPage(QWidget):
         self.progress_label.setText(message)
         self._update_gating()
 
+    def current_source(self) -> ImportSelection | None:
+        """The scan source the next recognition would read."""
+        return self._source
+
+    def set_form_detecting(self) -> None:
+        """Show that the answer-sheet form is being identified; scanning waits for it."""
+        self._form_detecting = True
+        self._set_form_status("답안지 양식을 자동으로 확인하는 중입니다…", "")
+        self._update_gating()
+
+    def set_form_detected(self, text: str) -> None:
+        if not isinstance(text, str) or not text:
+            raise ValueError("text must be a non-empty string")
+        self._form_detecting = False
+        self._set_form_status(text, "success")
+        self._update_gating()
+
+    def set_form_detection_failed(self, message: str) -> None:
+        if not isinstance(message, str) or not message:
+            raise ValueError("message must be a non-empty string")
+        self._form_detecting = False
+        self._set_form_status(message, "error")
+        self._update_gating()
+
+    def _set_form_status(self, text: str, role: str) -> None:
+        label = self.form_status_label
+        label.setText(text)
+        label.setProperty("role", role)
+        label.style().unpolish(label)
+        label.style().polish(label)
+        label.setVisible(bool(text))
+
     def set_session(self, session_id: str | None, label: str | None = None) -> None:
         if session_id is not None and (not isinstance(session_id, str) or not session_id):
             raise ValueError("session_id must be a non-empty string or None")
@@ -543,6 +584,9 @@ class ScanPage(QWidget):
             return
         self._source = selection
         self._update_gating()
+        # set_source() also arrives here (the drop widget emits selection_changed), so this
+        # one emit covers drops, browsing and programmatic selection exactly once.
+        self.source_changed.emit(selection)
 
     def _roster_selected(self, selection: ImportSelection) -> None:
         if self._busy or selection.kind is not ImportKind.ROSTER:
@@ -629,6 +673,8 @@ class ScanPage(QWidget):
                     break
         self.roster_status.setText("명단이 없으면 이름은 ‘미등록’으로 표시됩니다.")
         self.progress_label.setText("입력 항목을 모두 선택하면 인식을 시작할 수 있습니다.")
+        self._form_detecting = False
+        self._set_form_status("", "")
         self._update_gating()
 
     def _can_run(self) -> bool:
@@ -637,6 +683,7 @@ class ScanPage(QWidget):
             self._write_enabled
             and not self._busy
             and not self._profile_importing
+            and not self._form_detecting
             and bool(self.exam_name_edit.text().strip())
             and profile is not None
             and profile.validated

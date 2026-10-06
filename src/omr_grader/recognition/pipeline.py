@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import struct
-from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Final, TypeGuard, cast
@@ -13,8 +12,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from omr_grader.domain.enums import AnswerStatus, ProcessingStatus, SourceKind, StudentIdStatus
-from omr_grader.domain.errors import Err, ErrorContextValue, ErrorInfo, Ok, Result
+from omr_grader.domain.enums import ProcessingStatus, StudentIdStatus
+from omr_grader.domain.errors import Err, ErrorContextValue, ErrorInfo
 from omr_grader.domain.models import (
     AutomaticPage,
     EvidenceSummary,
@@ -30,26 +29,30 @@ from omr_grader.ingestion.images import (
     MAX_SOURCE_BYTES,
     preflight_tiff,
 )
-from omr_grader.recognition.geometry import PageContour, detect_page_contour
-from omr_grader.recognition.grid_reader import (
-    GridRecognition,
-    _has_frozen_profile_invariants,
-    read_grid,
-)
-from omr_grader.recognition.normalization import NormalizedRaster, normalize_page
-from omr_grader.recognition.orientation import rotate_right_angle, select_orientation
+from omr_grader.recognition.form_alignment import PageAlignment, align_page
+from omr_grader.recognition.grid_reader import _has_frozen_profile_invariants, read_grid
+from omr_grader.recognition.normalization import warp_page
+from omr_grader.recognition.orientation import rotate_right_angle
 from omr_grader.recognition.overlay import render_overlay
-from omr_grader.recognition.registration import register_profile_grid, registration_candidates
 from omr_grader.recognition.thresholds import RecognitionThresholds
 
 _RASTER = NDArray[np.uint8]
 _HEADER_DIMENSIONS = tuple[int, int]
 _MAX_COLOR_CHANNELS: Final = 3
-_CONFIDENT_READ_RATIO: Final = 0.90
-"""Share of clear answers that lets a grid read choose orientation or registration.
+_TRUSTED_INLIER_RATIO: Final = 0.65
+"""Share of form bubbles that must sit on printed circles for an automatic read.
 
-Wrong geometry still reads many clear answers on real scans (60% upside down, 84% with
-the grid one bubble sideways), so only a confident read may replace the default choice.
+All 24 baseline pages matched 81-98% of their 580 bubbles.
+"""
+_TRUSTED_ROTATION_MARGIN: Final = 0.05
+"""Lead of the chosen rotation over the runner-up, as a share of form bubbles (baseline 12-14%)."""
+_TRUSTED_EXTRA_CIRCLES: Final = 0.2
+"""Printed circles the profile does not explain, as a share of its bubbles.
+
+A page of a larger form fits a smaller profile on every bubble the profile has, so only
+its extra printed circles show that questions would silently go unread. Baseline pages
+left at most 1% (100 questions) and 2.7% (50 questions) unexplained; 100-question pages
+read with the 50-question profile left 68-77%.
 """
 
 
@@ -132,128 +135,69 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
     if isinstance(decoded, ErrorInfo):
         return _failure(task.page_ref, decoded)
     image = decoded
-    gray = _gray(image)
-    orientation = select_orientation(
-        gray,
-        _orientation_scorer(task.profile),
-        minimum_confidence=0.50,
-        tie_margin=0.05,
-        preferred_rotation=0,
+    alignment = align_page(_gray(image), task.profile)
+    if alignment is None:
+        return _failure(
+            task.page_ref,
+            _error("FORM_NOT_FOUND", "encoded_raster", "printed bubbles do not match the form"),
+        )
+    page = cast(Page, task.profile.page)
+    raster = warp_page(
+        rotate_right_angle(image, alignment.rotation),
+        alignment.forward,
+        (page.source_width, page.source_height),
+        alignment.inlier_ratio,
     )
-    if isinstance(orientation, Err):
-        return _failure(task.page_ref, orientation.errors[0])
-    rotation = orientation.value.rotation_degrees
-    confidence = orientation.value.confidence
-    read = _read_oriented(image, rotation, task)
-    if not _confident_read(read):
-        # Profile landmarks cannot always tell a page from its 180-degree turn, so a
-        # weak read is retried upside down and replaced only by a confident read there.
-        opposite_rotation = (rotation + 180) % 360
-        opposite = _read_oriented(image, opposite_rotation, task)
-        if _confident_read(opposite):
-            rotation, read = opposite_rotation, opposite
-            confidence = next(
-                item.score
-                for item in orientation.value.scores
-                if item.rotation_degrees == opposite_rotation
-            )
-    if isinstance(read, ErrorInfo):
-        return _failure(task.page_ref, read)
-    raster, grid = read
+    if isinstance(raster, Err):
+        return _failure(task.page_ref, raster.errors[0])
+    normalized = raster.value
+    recognition = read_grid(
+        normalized.pixels,
+        task.profile,
+        task.thresholds,
+        bubble_radius=alignment.bubble_radius,
+        trusted=_alignment_is_trusted(alignment),
+    )
+    if isinstance(recognition, Err):
+        return _failure(task.page_ref, recognition.errors[0])
+    grid = recognition.value
     status = (
         ProcessingStatus.NEEDS_MANUAL_REVIEW
         if grid.needs_manual_review
         else ProcessingStatus.PROCESSED
     )
-    page = AutomaticPage(
+    page_result = AutomaticPage(
         1,
         task.page_ref,
         status,
-        rotation,
-        _decimal(confidence),
-        _decimal(raster.confidence),
-        (int(raster.pixels.shape[1]), int(raster.pixels.shape[0])),
-        _matrix_text(raster.homography_forward),
-        _matrix_text(raster.homography_inverse),
+        alignment.rotation,
+        _decimal(alignment.confidence),
+        _decimal(normalized.confidence),
+        (int(normalized.pixels.shape[1]), int(normalized.pixels.shape[0])),
+        _matrix_text(normalized.homography_forward),
+        _matrix_text(normalized.homography_inverse),
         grid.student_id,
         grid.answers,
         grid.evidence,
     )
-    overlay = render_overlay(raster.pixels, grid.evidence)
+    overlay = render_overlay(normalized.pixels, grid.evidence)
     if isinstance(overlay, Err):
         return _failure(task.page_ref, overlay.errors[0])
-    artifacts = RecognitionArtifacts(raster.png_bytes, _coordinates(page), _png(overlay.value))
-    return PipelineSuccess(page, artifacts)
-
-
-def _read_oriented(
-    image: _RASTER, rotation: int, task: PipelineInput
-) -> tuple[NormalizedRaster, GridRecognition] | ErrorInfo:
-    rotated = rotate_right_angle(image, rotation)
-    contour = _page_contour(rotated, task.page_ref, task.profile)
-    if isinstance(contour, Err):
-        return contour.errors[0]
-    normalized = normalize_page(
-        rotated,
-        contour.value,
-        (task.profile.page.source_width, task.profile.page.source_height)
-        if task.profile.page is not None
-        else (0, 0),
+    artifacts = RecognitionArtifacts(
+        normalized.png_bytes, _coordinates(page_result), _png(overlay.value)
     )
-    if isinstance(normalized, Err):
-        return normalized.errors[0]
-    raster = normalized.value
-    registered_profile = register_profile_grid(raster.pixels, task.profile)
-    recognition = read_grid(raster.pixels, registered_profile, task.thresholds)
-    if isinstance(recognition, Err):
-        return recognition.errors[0]
-    read = raster, recognition.value
-    if _confident_read(read):
-        return read
-    # The best line fit can be a scaled alias of the printed table. Re-read with the
-    # strongest alternative fits and keep the clearest one only if it reads confidently.
-    for candidate in registration_candidates(raster.pixels, task.profile):
-        if candidate.regions == registered_profile.regions:
-            continue
-        alternative = read_grid(raster.pixels, candidate, task.thresholds)
-        if isinstance(alternative, Err):
-            continue
-        option = raster, alternative.value
-        if _confident_read(option) and _clear_answers(option[1]) > _clear_answers(read[1]):
-            read = option
-    return read
+    return PipelineSuccess(page_result, artifacts)
 
 
-def _clear_answers(grid: GridRecognition) -> int:
-    return sum(answer.value.status is AnswerStatus.NORMAL for answer in grid.answers)
-
-
-def _confident_read(read: tuple[NormalizedRaster, GridRecognition] | ErrorInfo) -> bool:
-    if isinstance(read, ErrorInfo) or not read[1].answers:
-        return False
-    return _clear_answers(read[1]) >= _CONFIDENT_READ_RATIO * len(read[1].answers)
-
-
-def _page_contour(image: _RASTER, page_ref: PageRef, profile: Profile) -> Result[PageContour]:
-    expected_aspect_ratio = (
-        float(profile.page.aspect_ratio) if profile.page is not None else None
+def _alignment_is_trusted(alignment: PageAlignment) -> bool:
+    """Few matched bubbles, a near-tie between rotations or many printed circles the
+    profile does not have send the page to review."""
+    margin = (alignment.inliers - alignment.runner_up_inliers) / alignment.nodes
+    return (
+        alignment.inlier_ratio >= _TRUSTED_INLIER_RATIO
+        and margin >= _TRUSTED_ROTATION_MARGIN
+        and alignment.unexplained <= _TRUSTED_EXTRA_CIRCLES * alignment.nodes
     )
-    if page_ref.source_kind is SourceKind.PDF and expected_aspect_ratio is not None:
-        height, width = image.shape[:2]
-        actual_aspect_ratio = width / height
-        aspect_error = abs(actual_aspect_ratio - expected_aspect_ratio) / expected_aspect_ratio
-        if aspect_error <= 0.05:
-            corners = np.array(
-                (
-                    (0.0, 0.0),
-                    (float(width - 1), 0.0),
-                    (float(width - 1), float(height - 1)),
-                    (0.0, float(height - 1)),
-                ),
-                dtype=np.float32,
-            )
-            return Ok(PageContour(corners, 1.0 - aspect_error, 0.0))
-    return detect_page_contour(image, expected_aspect_ratio=expected_aspect_ratio)
 
 
 def _is_uint8_raster(value: object) -> TypeGuard[_RASTER]:
@@ -339,66 +283,6 @@ def _has_valid_frozen_profile(profile: object) -> bool:
         )
     except (ArithmeticError, AttributeError, TypeError, ValueError):
         return False
-
-
-def _orientation_scorer(profile: Profile) -> Callable[[_RASTER], float]:
-    page = cast(Page, profile.page)
-    expected = float(page.aspect_ratio)
-
-    def score(image: _RASTER) -> float:
-        height, width = image.shape
-        if height <= 0 or width <= 0:
-            return 0.0
-        ratio = width / height
-        aspect_score = max(0.0, 1.0 - abs(ratio - expected) / max(expected, ratio))
-        contour = detect_page_contour(image, expected_aspect_ratio=expected)
-        contour_score = contour.value.confidence if not isinstance(contour, Err) else 0.0
-        landmark_score = _landmark_score(image, profile)
-        return 0.35 * aspect_score + 0.35 * contour_score + 0.30 * landmark_score
-
-    return score
-
-
-def _landmark_score(image: _RASTER, profile: Profile) -> float:
-    """Measure configured landmark ink against each region's rotated control."""
-    height, width = image.shape
-    signals: list[float] = []
-    id_signal = 0.0
-    for region in profile.regions:
-        occupied = _region_occupancy(image, region, width, height)
-        control = _region_occupancy(image, region, width, height, rotated_control=True)
-        signal = max(0.0, min(1.0, (occupied - control) / 0.08))
-        signals.append(signal)
-        if region.kind == "id":
-            id_signal = signal
-    answer_signals = [
-        signal
-        for region, signal in zip(profile.regions, signals, strict=True)
-        if region.kind == "answer"
-    ]
-    return 0.70 * id_signal + 0.30 * float(np.mean(answer_signals))
-
-
-def _region_occupancy(
-    image: _RASTER,
-    region: ProfileRegion,
-    width: int,
-    height: int,
-    *,
-    rotated_control: bool = False,
-) -> float:
-    box = region.bbox_ratio
-    x = float(box.x)
-    y = float(box.y)
-    box_width = float(box.w)
-    box_height = float(box.h)
-    if rotated_control:
-        x, y = 1.0 - x - box_width, 1.0 - y - box_height
-    left = int(x * width)
-    top = int(y * height)
-    right = max(left + 1, int((x + box_width) * width))
-    bottom = max(top + 1, int((y + box_height) * height))
-    return float(np.mean(image[top:bottom, left:right] < 180))
 
 
 def _dimension_error(width: int, height: int) -> str | None:

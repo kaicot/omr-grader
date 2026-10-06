@@ -1,4 +1,4 @@
-"""Pure perspective normalization and coordinate conversion for OMR pages."""
+"""Warp a scanned page into its profile frame and keep the reversible transforms."""
 
 from __future__ import annotations
 
@@ -10,47 +10,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
-from omr_grader.recognition.geometry import PageContour
 
 Image = NDArray[np.uint8]
 Matrix = NDArray[np.float32]
 PointArray = NDArray[np.float32]
-
-
-@dataclass(frozen=True, slots=True)
-class RatioRoi:
-    """A rectangular ROI expressed against normalized page width and height."""
-
-    x: float
-    y: float
-    width: float
-    height: float
-
-    def __post_init__(self) -> None:
-        values = (self.x, self.y, self.width, self.height)
-        if not all(np.isfinite(value) for value in values) or self.x < 0 or self.y < 0:
-            raise ValueError("ROI coordinates must be finite and non-negative")
-        if (
-            self.width <= 0
-            or self.height <= 0
-            or self.x + self.width > 1
-            or self.y + self.height > 1
-        ):
-            raise ValueError("ROI must be contained in the normalized page")
-
-
-@dataclass(frozen=True, slots=True)
-class PixelRoi:
-    """An integer, in-bounds rectangle in normalized pixel coordinates."""
-
-    x: int
-    y: int
-    width: int
-    height: int
-
-    def __post_init__(self) -> None:
-        if min(self.x, self.y) < 0 or self.width <= 0 or self.height <= 0:
-            raise ValueError("pixel ROI must have non-negative origin and positive size")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,77 +62,6 @@ class NormalizedRaster:
         object.__setattr__(self, "homography_inverse", inverse)
 
 
-def normalize_page(
-    image: Image,
-    contour: PageContour,
-    normalized_size: tuple[int, int],
-) -> Result[NormalizedRaster]:
-    """Perspective-warp a page to a canonical lossless PNG raster.
-
-    The forward matrix maps source pixels to normalized pixels; the inverse maps
-    normalized pixels back to the original scan. No file or session state is used.
-    """
-    if not _is_uint8_raster(image):
-        return Err((_error("PAGE_NOT_FOUND", "unsupported source raster"),))
-    width, height = normalized_size
-    if not 2 <= width <= 20_000 or not 2 <= height <= 20_000 or width * height > 100_000_000:
-        raise ValueError("normalized_size is outside the safe raster bounds")
-    source = _float32_points(contour.corners)
-    if (
-        np.min(source[:, 0]) < 0
-        or np.min(source[:, 1]) < 0
-        or np.max(source[:, 0]) >= image.shape[1]
-        or np.max(source[:, 1]) >= image.shape[0]
-    ):
-        return Err((_error("PAGE_NOT_FOUND", "page contour is outside source bounds"),))
-    destination = np.array(
-        ((0, 0), (width - 1, 0), (width - 1, height - 1), (0, height - 1)),
-        dtype=np.float32,
-    )
-    forward = _float32_matrix(cv2.getPerspectiveTransform(source, destination))
-    inverse = _float32_matrix(cv2.getPerspectiveTransform(destination, source))
-    normalized = _uint8_raster(
-        cv2.warpPerspective(
-            image,
-            forward,
-            (width, height),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(255, 255, 255),
-        )
-    )
-    encoded, png = cv2.imencode(
-        ".png",
-        normalized,
-        (cv2.IMWRITE_PNG_COMPRESSION, 3),
-    )
-    if not bool(encoded):
-        return Err((_error("PAGE_NOT_FOUND", "normalized raster could not be PNG encoded"),))
-    return Ok(NormalizedRaster(normalized.copy(), bytes(png), forward, inverse, contour.confidence))
-
-
-def ratio_roi_to_pixels(roi: RatioRoi, normalized_size: tuple[int, int]) -> PixelRoi:
-    """Convert an in-bounds ratio ROI using enclosing integer pixel boundaries."""
-    width, height = normalized_size
-    if width <= 0 or height <= 0:
-        raise ValueError("normalized_size must be positive")
-    left = int(np.floor(roi.x * width))
-    top = int(np.floor(roi.y * height))
-    right = int(np.ceil((roi.x + roi.width) * width))
-    bottom = int(np.ceil((roi.y + roi.height) * height))
-    left, top = max(0, left), max(0, top)
-    right, bottom = min(width, right), min(height, bottom)
-    return PixelRoi(left, top, right - left, bottom - top)
-
-
-def transform_points(points: PointArray, homography: Matrix) -> PointArray:
-    """Apply a homogeneous transform to N source points without mutating either input."""
-    source = _float32_points(points)
-    matrix = _float32_matrix(homography)
-    transformed = cv2.perspectiveTransform(source.reshape(-1, 1, 2), matrix)
-    return _float32_points(np.asarray(transformed).reshape(-1, 2))
-
-
 def _is_uint8_raster(value: object) -> bool:
     raster = np.asarray(value)
     return (
@@ -193,16 +85,49 @@ def _float32_matrix(value: object) -> Matrix:
     return matrix
 
 
-def _float32_points(value: object) -> PointArray:
-    points = np.asarray(value, dtype=np.float32)
-    if points.ndim != 2 or points.shape[1] != 2 or not np.isfinite(points).all():
-        raise ValueError("points must be a finite Nx2 float32 matrix")
-    return points
-
-
 def _error(code: str, detail: str) -> ErrorInfo:
     return ErrorInfo(
         code,
         f"error.{code.lower()}",
         context={"manual_review": True, "detail": detail},
+    )
+
+
+def warp_page(
+    image: Image,
+    forward: NDArray[np.float64],
+    normalized_size: tuple[int, int],
+    confidence: float,
+) -> Result[NormalizedRaster]:
+    """Warp a page into its profile frame with a homography fitted on printed bubbles."""
+    if not _is_uint8_raster(image):
+        return Err((_error("PAGE_NOT_FOUND", "unsupported source raster"),))
+    width, height = normalized_size
+    if not 2 <= width <= 20_000 or not 2 <= height <= 20_000 or width * height > 100_000_000:
+        raise ValueError("normalized_size is outside the safe raster bounds")
+    matrix = np.asarray(forward, dtype=np.float64)
+    if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+        return Err((_error("PAGE_NOT_FOUND", "alignment homography is invalid"),))
+    inverse = np.linalg.inv(matrix)
+    normalized = _uint8_raster(
+        cv2.warpPerspective(
+            image,
+            matrix,
+            (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(255, 255, 255),
+        )
+    )
+    encoded, png = cv2.imencode(".png", normalized, (cv2.IMWRITE_PNG_COMPRESSION, 1))
+    if not bool(encoded):
+        return Err((_error("PAGE_NOT_FOUND", "normalized raster could not be PNG encoded"),))
+    return Ok(
+        NormalizedRaster(
+            normalized.copy(),
+            bytes(png),
+            _float32_matrix(matrix.astype(np.float32)),
+            _float32_matrix(inverse.astype(np.float32)),
+            float(min(1.0, max(0.0, confidence))),
+        )
     )
