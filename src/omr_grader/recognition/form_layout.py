@@ -8,6 +8,7 @@ or missing circles are recovered from their neighbours.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -33,12 +34,16 @@ _MARKED_INK: Final = 30.0
 """Gray levels above its row's median that make a bubble count as marked, not printed."""
 _NUMBER_INK: Final = 0.02
 """Share of dark pixels where a row prints its number; real rows carry 0.05 or more."""
-_HEADER_INK: Final = 0.2
-"""An end row with less than this share of the median number ink has no number.
+_HEADER_INK: Final = 0.15
+_EMPTY_CELL_INK: Final = 0.015
+"""An end row whose number cell holds less than both 0.15 of the median number ink and
+this share of dark pixels prints no number.
 
-On the real form the lightest first row, question 1, carried 0.43 of the median; a
-row of column-label rings above a block carries none.
+On the real form the lightest first row, question 1, carried 0.43 of the median, and a
+thin synthetic "1" 0.30; an empty label-row cell carries none.
 """
+_HEADER_PAGES: Final = 3
+"""Sample pages needed before a first row that nobody marks may be taken for a header."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,23 +172,13 @@ def _first_digit_lighter(layout: FormLayout, gray: NDArray[np.uint8]) -> int:
     blocks = [block for block in layout.answer_blocks if block.cols >= 2]
     if not blocks:
         return 0
-    reach = max(2, int(layout.radius))
-    yy, xx = np.mgrid[-reach : reach + 1, -reach : reach + 1]
-    inside = xx * xx + yy * yy <= (0.6 * layout.radius) ** 2
-    height, width = gray.shape
-
-    def ink(block: LatticeBlock, row: int, column: int) -> float | None:
-        x, y = int(round(block.nodes[row, column, 0])), int(round(block.nodes[row, column, 1]))
-        if not (reach <= x < width - reach and reach <= y < height - reach):
-            return None
-        patch = gray[y - reach : y + reach + 1, x - reach : x + reach + 1]
-        return 255.0 - float(np.mean(patch[inside]))
-
     block_gaps: list[float] = []
     for block in blocks:
         row_gaps: list[float] = []
         for row in range(block.rows):
-            inks = [ink(block, row, column) for column in range(block.cols)]
+            inks = [
+                _bubble_ink(block, row, column, gray, layout.radius) for column in range(block.cols)
+            ]
             if any(value is None for value in inks):
                 continue
             known = [float(value) for value in inks if value is not None]
@@ -361,7 +356,7 @@ def _trim_unnumbered_ends(block: LatticeBlock, gray: NDArray[np.uint8]) -> Latti
     inner = shares[1:-1]
     if np.isnan(inner).any() or float(np.mean(inner >= _NUMBER_INK)) < 0.9:
         return block
-    limit = min(_HEADER_INK * float(np.median(inner)), _NUMBER_INK)
+    limit = min(_HEADER_INK * float(np.median(inner)), _EMPTY_CELL_INK)
     first = 1 if bool(shares[0] < limit) else 0
     last = block.rows - 1 if bool(shares[-1] < limit) else block.rows
     if first == 0 and last == block.rows:
@@ -375,6 +370,104 @@ def _trim_unnumbered_ends(block: LatticeBlock, gray: NDArray[np.uint8]) -> Latti
         block.residual,
         block.question_start,
     )
+
+
+def drop_unmarked_header_rows(
+    samples: Sequence[tuple[FormLayout, NDArray[np.uint8]]],
+) -> tuple[list[FormLayout], int]:
+    """Drop the first row of an answer block that no sample page marks.
+
+    Column-label rings above a block with a label or a table rule in their number cell
+    look numbered on any one page, but no student ever marks them. On at least three
+    pages of the most common structure, a first row marked on none of them while the
+    row below is marked on two thirds and the block on half its rows is dropped from
+    every one of those layouts. Last rows are never judged: an exam may leave the last
+    questions of a block unused. ``samples`` pair each layout with its page as scanned.
+    Returns every layout (others unchanged) and how many block rows were dropped.
+    """
+    layouts = [layout for layout, _ in samples]
+    if not layouts:
+        return layouts, 0
+    common = Counter(layout.signature for layout in layouts).most_common(1)[0][0]
+    group = [index for index, layout in enumerate(layouts) if layout.signature == common]
+    if len(group) < _HEADER_PAGES:
+        return layouts, 0
+    marks: list[list[list[bool | None]]] = []
+    for index in group:
+        layout, page = samples[index]
+        turned = _turn(page, layout.rotation)
+        marks.append([_row_marks(block, turned, layout.radius) for block in layout.answer_blocks])
+    headers: set[int] = set()
+    for block in range(len(layouts[group[0]].answer_blocks)):
+        rows = [page[block] for page in marks]
+        if len(rows[0]) < 6:
+            continue
+        first = sum(1 for row in rows if row[0] is True)
+        second = sum(1 for row in rows if row[1] is True)
+        inner = [mark for row in rows for mark in row[1:-1] if mark is not None]
+        if (
+            first == 0
+            and all(row[0] is not None for row in rows)
+            and 3 * second >= 2 * len(rows)
+            and inner
+            and 2 * sum(inner) >= len(inner)
+        ):
+            headers.add(block)
+    if not headers:
+        return layouts, 0
+    for index in group:
+        layouts[index] = _without_first_rows(layouts[index], headers)
+    return layouts, len(headers)
+
+
+def _without_first_rows(layout: FormLayout, headers: set[int]) -> FormLayout:
+    """The layout with the first row of the given answer blocks removed, renumbered."""
+    answers = layout.answer_blocks
+    renamed: dict[int, LatticeBlock] = {}
+    start = 1
+    for position, block in enumerate(answers):
+        skip = 1 if position in headers else 0
+        rows = block.rows - skip
+        renamed[id(block)] = LatticeBlock(
+            block.kind,
+            block.cols,
+            rows,
+            block.nodes[skip:],
+            block.detected,
+            block.residual,
+            start,
+        )
+        start += rows
+    blocks = tuple(renamed.get(id(block), block) for block in layout.blocks)
+    return FormLayout(layout.radius, layout.skew_radians, blocks, layout.rotation)
+
+
+def _row_marks(block: LatticeBlock, gray: NDArray[np.uint8], radius: float) -> list[bool | None]:
+    """Whether each row carries a mark: a bubble far darker than the row's median."""
+    found: list[bool | None] = []
+    for row in range(block.rows):
+        inks = [_bubble_ink(block, row, column, gray, radius) for column in range(block.cols)]
+        known = [value for value in inks if value is not None]
+        if len(known) != len(inks):
+            found.append(None)
+            continue
+        found.append(max(known) - float(np.median(known)) > _MARKED_INK)
+    return found
+
+
+def _bubble_ink(
+    block: LatticeBlock, row: int, column: int, gray: NDArray[np.uint8], radius: float
+) -> float | None:
+    """Mean darkness inside 0.6 of the bubble radius, or ``None`` at the page edge."""
+    reach = max(2, int(radius))
+    height, width = gray.shape
+    x, y = int(round(block.nodes[row, column, 0])), int(round(block.nodes[row, column, 1]))
+    if not (reach <= x < width - reach and reach <= y < height - reach):
+        return None
+    yy, xx = np.mgrid[-reach : reach + 1, -reach : reach + 1]
+    inside = xx * xx + yy * yy <= (0.6 * radius) ** 2
+    patch = gray[y - reach : y + reach + 1, x - reach : x + reach + 1]
+    return 255.0 - float(np.mean(patch[inside]))
 
 
 def _number_ink(block: LatticeBlock, gray: NDArray[np.uint8]) -> NDArray[np.float64]:

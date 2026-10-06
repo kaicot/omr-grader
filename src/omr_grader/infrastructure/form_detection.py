@@ -23,7 +23,11 @@ from omr_grader.infrastructure.profile_store import ProfileStore
 from omr_grader.ingestion.images import enumerate_image_folder, enumerate_image_paths
 from omr_grader.ingestion.pdf import enumerate_pdf, render_pdf_page
 from omr_grader.recognition.form_alignment import PageAlignment, align_page
-from omr_grader.recognition.form_layout import FormLayout, detect_layout
+from omr_grader.recognition.form_layout import (
+    FormLayout,
+    detect_layout,
+    drop_unmarked_header_rows,
+)
 from omr_grader.recognition.form_profile import build_profile
 from omr_grader.recognition.orientation import rotate_right_angle
 
@@ -58,6 +62,8 @@ class FormDetection:
     pages_checked: int
     pages_matching: int
     preview_png: bytes
+    dropped_header_rows: int = 0
+    """Answer blocks whose first row no sample page marked, so it was left out as a header."""
 
     @property
     def is_new(self) -> bool:
@@ -86,6 +92,9 @@ class FormDetector:
                 found.append((gray, layout))
         if not found:
             return _error("FORM_NOT_FOUND", "답안지에서 OMR 양식을 찾지 못했습니다.")
+        # Label rings above a block that no student marks are not question 1 of the block.
+        layouts, dropped = drop_unmarked_header_rows([(layout, gray) for gray, layout in found])
+        found = [(gray, layout) for (gray, _), layout in zip(found, layouts, strict=True)]
         built = build_profile(
             [(layout, (gray.shape[1], gray.shape[0])) for gray, layout in found], "자동 인식 양식"
         )
@@ -124,6 +133,7 @@ class FormDetector:
                 len(pages),
                 sum(1 for _, layout in found if _layout_signature(layout) == majority),
                 preview,
+                dropped,
             )
         )
 

@@ -10,6 +10,7 @@ from omr_grader.recognition.form_layout import (
     FormLayout,
     LatticeBlock,
     detect_layout,
+    drop_unmarked_header_rows,
     layout_from_bubbles,
     rotate_points,
 )
@@ -201,6 +202,82 @@ def test_a_student_marking_choice_1_almost_everywhere_does_not_turn_the_page(
     assert layout is not None
     assert layout.rotation == geometry.upright_rotation
     assert _starts(layout) == (1, 21, 41, 61, 81)
+
+
+def _answered(shift: int, count: int = 100) -> dict[int, int]:
+    return {question: (question + shift) % 5 + 1 for question in range(1, count + 1)}
+
+
+def _pages(
+    count: int, answered: int = 100, **options: object
+) -> list[tuple[FormLayout, np.ndarray]]:
+    """Detected layouts of ``count`` sheets, each answering questions 1..``answered``."""
+    found = []
+    for page in range(count):
+        image, _ = render_sheet_with_geometry(
+            _answered(page, answered),
+            "20261234",
+            seed=page,
+            **options,  # type: ignore[arg-type]
+        )
+        gray = to_gray(image)
+        layout = detect_layout(gray)
+        assert layout is not None
+        found.append((layout, gray))
+    return found
+
+
+@pytest.mark.parametrize(("label", "in_table"), (("No.", False), ("0", False), (None, True)))
+def test_label_rows_no_student_marks_are_dropped_given_three_pages(
+    label: str | None, in_table: bool
+) -> None:
+    # A label or a table rule in the number cell defeats the one-page number check.
+    found = _pages(3, header_rings=True, header_label=label, header_in_table=in_table)
+    assert [block.rows for block in found[0][0].answer_blocks] == [21] * 5
+
+    layouts, dropped = drop_unmarked_header_rows(found)
+
+    assert dropped == 5
+    for layout in layouts:
+        assert layout.signature == HUNDRED
+        assert _starts(layout) == (1, 21, 41, 61, 81)
+
+
+def test_two_pages_are_not_enough_to_drop_a_header_row() -> None:
+    found = _pages(2, header_rings=True, header_label="No.")
+
+    layouts, dropped = drop_unmarked_header_rows(found)
+
+    assert dropped == 0
+    assert [block.rows for block in layouts[0].answer_blocks] == [21] * 5
+
+
+def test_a_short_exam_on_a_long_card_keeps_every_row() -> None:
+    # Unused questions leave rows unmarked at the end of blocks and in whole blocks.
+    found = _pages(3, answered=30)
+
+    layouts, dropped = drop_unmarked_header_rows(found)
+
+    assert dropped == 0
+    assert all(layout.signature == HUNDRED for layout in layouts)
+
+
+def test_a_first_question_nobody_answered_is_dropped_and_reported() -> None:
+    # The documented trade-off: on three or more pages a question 1 that every student
+    # left blank looks like a header row. The count it reports (99) lets the user notice.
+    found = []
+    for page in range(3):
+        answers = {q: a for q, a in _answered(page).items() if q != 1}
+        image, _ = render_sheet_with_geometry(answers, "20261234", seed=page)
+        gray = to_gray(image)
+        layout = detect_layout(gray)
+        assert layout is not None
+        found.append((layout, gray))
+
+    layouts, dropped = drop_unmarked_header_rows(found)
+
+    assert dropped == 1
+    assert layouts[0].question_count == 99
 
 
 def test_bands_are_numbered_left_to_right_and_blocks_of_a_band_top_to_bottom() -> None:

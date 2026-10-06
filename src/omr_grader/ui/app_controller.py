@@ -189,6 +189,16 @@ def _dashboard_worker_value(result: object) -> object:
     )
 
 
+def _header_rows_note(detection: FormDetection) -> str | None:
+    """Say that unmarked first rows were left out, so a wrong cut can be noticed."""
+    if detection.dropped_header_rows <= 0:
+        return None
+    return (
+        f"문항 블록 {detection.dropped_header_rows}곳의 맨 윗줄은 어느 답안지에서도 칠해지지 "
+        "않아 머리글로 보고 문항에서 뺐습니다. 1번이 빠지지 않았는지 문항 범위를 확인하세요."
+    )
+
+
 def _mixed_form_warning(detection: FormDetection) -> str | None:
     """Say how many checked pages look like another form, or ``None`` when all match."""
     if detection.pages_matching >= detection.pages_checked:
@@ -1332,8 +1342,16 @@ class AppController(QObject):
             )
 
     def _confirm_new_form(self, detection: FormDetection) -> None:
+        notes = [
+            note
+            for note in (_header_rows_note(detection), _mixed_form_warning(detection))
+            if note is not None
+        ]
         dialog = self._form_confirm_factory(
-            detection.preview_png, detection.summary, _mixed_form_warning(detection), self.main_window
+            detection.preview_png,
+            detection.summary,
+            " ".join(notes) if notes else None,
+            self.main_window,
         )
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
         dialog.deleteLater()

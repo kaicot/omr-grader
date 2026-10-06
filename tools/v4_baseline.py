@@ -31,7 +31,10 @@ from omr_grader.domain.enums import AnswerStatus, ProcessingStatus, SourceKind  
 from omr_grader.domain.errors import Err  # noqa: E402
 from omr_grader.domain.models import PageRef  # noqa: E402
 from omr_grader.domain.profile import Profile  # noqa: E402
-from omr_grader.recognition.form_layout import detect_layout  # noqa: E402
+from omr_grader.recognition.form_layout import (  # noqa: E402
+    detect_layout,
+    drop_unmarked_header_rows,
+)
 from omr_grader.recognition.form_profile import build_profile  # noqa: E402
 from omr_grader.recognition.pipeline import PipelineInput, PipelineSuccess, recognize_page  # noqa: E402
 from omr_grader.recognition.thresholds import (  # noqa: E402
@@ -244,12 +247,18 @@ def run_variant(baseline: Path, sensitivity: int, keep: int = 50) -> list[PartRe
 
 
 def learn_profile(pages: list[bytes], name: str) -> Profile:
-    samples = []
+    """Build a profile from pages the way form detection does (header rows included)."""
+    found = []
     for encoded in pages:
         gray = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
         layout = detect_layout(gray)
         if layout is not None:
-            samples.append((layout, (gray.shape[1], gray.shape[0])))
+            found.append((layout, gray))
+    layouts, _ = drop_unmarked_header_rows(found)
+    samples = [
+        (layout, (gray.shape[1], gray.shape[0]))
+        for layout, (_, gray) in zip(layouts, found, strict=True)
+    ]
     built = build_profile(samples, name)
     if isinstance(built, Err):
         raise RuntimeError(f"profile could not be built: {built.errors[0].code}")

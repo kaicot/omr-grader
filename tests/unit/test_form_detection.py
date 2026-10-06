@@ -278,6 +278,38 @@ def test_a_fresh_profile_its_own_pages_do_not_trust_is_never_offered(
     assert result.errors[0].code == "FORM_GEOMETRY_INVALID"
 
 
+@pytest.mark.parametrize("empty_cells", (0, 1))
+def test_label_rows_above_the_blocks_are_left_out_and_reported(
+    tmp_path: Path, empty_cells: int
+) -> None:
+    # Three pages print "No." in the label row's number cell; one more page may print
+    # the label row with an empty cell (which the one-page check already drops).
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    paths = []
+    for page in range(3 + empty_cells):
+        answers = {q: (q + page) % 5 + 1 for q in range(1, 101)}
+        label = "No." if page < 3 else None
+        image, _ = render_sheet_with_geometry(
+            answers, "20261234", seed=page, header_rings=True, header_label=label
+        )
+        paths.append(str(write_png(folder / f"page{page}.png", to_gray(image))))
+
+    result = FormDetector(_store(tmp_path)).detect(tuple(paths))
+
+    assert isinstance(result, Ok)
+    detection = result.value
+    assert detection.question_count == 100
+    assert detection.answer_blocks == ANSWER_BLOCKS
+    assert detection.dropped_header_rows == 5
+    assert detection.generated_profile is not None
+    profile = parse_profile_bytes(detection.generated_profile)
+    assert isinstance(profile, Ok)
+    page = cv2.imdecode(np.fromfile(paths[1], np.uint8), cv2.IMREAD_GRAYSCALE)
+    fit = align_page(page, profile.value)
+    assert fit is not None and fit.trusted
+
+
 def test_a_form_of_another_structure_gets_its_own_profile(
     saved: SavedForm, scans: Scans, tmp_path: Path
 ) -> None:

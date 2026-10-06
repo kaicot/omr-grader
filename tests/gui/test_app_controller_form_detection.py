@@ -41,6 +41,7 @@ def _detection(
     profile_filename: str | None = None,
     generated_profile: bytes | None = b'{"profile_name": "generated"}',
     pages_matching: int = 3,
+    dropped_header_rows: int = 0,
 ) -> FormDetection:
     return FormDetection(
         profile_filename,
@@ -52,6 +53,7 @@ def _detection(
         3,
         pages_matching,
         _png(),
+        dropped_header_rows,
     )
 
 
@@ -227,18 +229,28 @@ def test_new_form_is_saved_selected_and_reported_after_confirmation(qtbot, monke
 
 
 @pytest.mark.parametrize(
-    ("matching", "warning"),
+    ("matching", "dropped", "warning"),
     (
-        (3, None),
+        (3, 0, None),
         (
             2,
-            "확인한 3쪽 가운데 1쪽은 양식이 달라 보입니다. "
-            "다른 양식의 답안지가 섞여 있는지 확인하세요.",
+            0,
+            "확인한 3쪽 가운데 1쪽은 양식이 달라 보입니다. 다른 양식의 답안지가 섞여 있는지 확인하세요.",
+        ),
+        (
+            3,
+            2,
+            "문항 블록 2곳의 맨 윗줄은 어느 답안지에서도 칠해지지 않아 머리글로 보고 문항에서 뺐습니다. 1번이 빠지지 않았는지 문항 범위를 확인하세요.",
+        ),
+        (
+            2,
+            2,
+            "문항 블록 2곳의 맨 윗줄은 어느 답안지에서도 칠해지지 않아 머리글로 보고 문항에서 뺐습니다. 1번이 빠지지 않았는지 문항 범위를 확인하세요. 확인한 3쪽 가운데 1쪽은 양식이 달라 보입니다. 다른 양식의 답안지가 섞여 있는지 확인하세요.",
         ),
     ),
 )
 def test_confirmation_uses_the_real_dialog_and_warns_about_mixed_pages(
-    qtbot, monkeypatch, matching, warning
+    qtbot, monkeypatch, matching, dropped, warning
 ) -> None:
     seen: dict[str, object] = {}
 
@@ -256,7 +268,9 @@ def test_confirmation_uses_the_real_dialog_and_warns_about_mixed_pages(
     setup = _setup(
         qtbot,
         monkeypatch,
-        form_detect=lambda paths: Ok(_detection(pages_matching=matching)),
+        form_detect=lambda paths: Ok(
+            _detection(pages_matching=matching, dropped_header_rows=dropped)
+        ),
     )
     assert setup.controller._form_confirm_factory is FormConfirmDialog
 

@@ -109,6 +109,8 @@ class SheetOptions(TypedDict, total=False):
     decorations: bool
     digits: bool
     header_rings: bool
+    header_label: str | None
+    header_in_table: bool
     seed: int
     width: int
     height: int
@@ -217,6 +219,8 @@ def render_sheet_with_geometry(
     decorations: bool = True,
     digits: bool = True,
     header_rings: bool = False,
+    header_label: str | None = None,
+    header_in_table: bool = False,
     seed: int = 0,
     width: int = PAGE_WIDTH,
     height: int = PAGE_HEIGHT,
@@ -234,7 +238,8 @@ def render_sheet_with_geometry(
     the optical blur in pixels, ``jitter`` offsets marks the way a hand would.
     ``digits=False`` prints empty rings, as on forms without numbered bubbles.
     ``header_rings`` prints an unnumbered row of choice rings one row above every answer
-    block, as some forms label their columns.
+    block, as some forms label their columns; ``header_label`` prints a word in that row's
+    number cell and ``header_in_table`` draws the block's table around the header too.
     """
     if mark_radius is not None:
         radius = float(mark_radius)
@@ -253,7 +258,16 @@ def render_sheet_with_geometry(
     id_nodes = _id_nodes(id_columns)
     block_nodes = tuple(_block_nodes(block) for block in blocks)
     _draw_printing(
-        page, id_nodes, blocks, block_nodes, ring_gray, decorations, digits, header_rings
+        page,
+        id_nodes,
+        blocks,
+        block_nodes,
+        ring_gray,
+        decorations,
+        digits,
+        header_rings,
+        header_label,
+        header_in_table,
     )
     _draw_marks(page, id_nodes, blocks, block_nodes, answers or {}, student_id, radius, jitter, rng)
 
@@ -473,6 +487,8 @@ def _draw_printing(
     decorations: bool,
     digits: bool = True,
     header_rings: bool = False,
+    header_label: str | None = None,
+    header_in_table: bool = False,
 ) -> None:
     if decorations:
         cv2.putText(page, "ANSWER SHEET", (133, 190), _FONT, 1.4, (60,), 2, cv2.LINE_AA)
@@ -486,11 +502,10 @@ def _draw_printing(
         if decorations:
             _name_box(page, id_nodes)
     for block, nodes in zip(blocks, block_nodes, strict=True):
-        _table(
-            page,
-            nodes[0, 0] - (_TABLE_LEFT, _BORDER_MARGIN),
-            nodes[-1, -1] + (_TABLE_RIGHT, _BORDER_MARGIN),
-        )
+        top = nodes[0, 0] - (_TABLE_LEFT, _BORDER_MARGIN)
+        if header_rings and header_in_table:
+            top = top - (nodes[1, 0] - nodes[0, 0]) * (0, 1)
+        _table(page, top, nodes[-1, -1] + (_TABLE_RIGHT, _BORDER_MARGIN))
         for row in range(block.rows):
             for column in range(CHOICES):
                 paint_ring(
@@ -505,6 +520,8 @@ def _draw_printing(
             for column in range(CHOICES):
                 above = nodes[0, column] - (nodes[1, column] - nodes[0, column])
                 paint_ring(page, _xy(above), value=ring_gray, digit=column + 1 if digits else None)
+            if header_label:
+                _question_number(page, header_label, nodes[0, 0] - (nodes[1, 0] - nodes[0, 0]))
 
 
 def _question_number(page: Image, label: str, first_choice: Points) -> None:
