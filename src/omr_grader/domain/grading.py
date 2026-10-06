@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from omr_grader.application.dto import ScoreInput, ScoreResult, ScoreSet, ScoreStatistics
 from omr_grader.domain.enums import AnswerKeySnapshotKind, AnswerStatus, KeyQuestionStatus
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
+from omr_grader.domain.score_average import score_average
 
 REVIEW = "검토"
 CORRECT = "O"
@@ -119,7 +120,7 @@ def score_effective(
             if not scores
             else ScoreStatistics(
                 len(scores),
-                sum(scores, Decimal("0")) / len(scores),
+                score_average(scores),
                 max(scores),
                 min(scores),
             )

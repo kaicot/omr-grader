@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -8,6 +10,7 @@ from PySide6.QtWidgets import QHeaderView, QMessageBox, QPushButton
 from omr_grader.domain.enums import ExamTerm, SessionState
 from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.ui.dashboard_model import (
+    COLUMN_AVERAGE,
     COLUMN_EXAM_NAME,
     COLUMN_GRADED_AT,
     COLUMN_MANAGEMENT,
@@ -283,3 +286,17 @@ def test_dashboard_search_updates_visible_rows_immediately(qtbot) -> None:
 
     assert page.model.rowCount() == 1
     assert page.model.entry_at(0).session_id == "session-a"
+
+
+@pytest.mark.parametrize(
+    ("average", "shown"),
+    (("75.333333333333", "75.33점"), ("78.5", "78.5점"), ("80", "80점")),
+)
+def test_average_column_rounds_to_two_fraction_digits(average: str, shown: str) -> None:
+    entry = replace(_entry("session-a", "졸업고사"), average_score=average)
+    model = DashboardTableModel()
+    model.set_entries((entry,))
+
+    index = model.index(0, COLUMN_AVERAGE)
+    assert model.data(index, Qt.ItemDataRole.DisplayRole) == shown
+    assert model.data(index, Qt.ItemDataRole.ToolTipRole) == shown

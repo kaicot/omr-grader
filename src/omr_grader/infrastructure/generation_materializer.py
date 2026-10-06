@@ -41,6 +41,7 @@ from omr_grader.domain.models import (
     RosterSnapshot,
     SessionRecord,
 )
+from omr_grader.domain.score_average import with_rounded_average
 from omr_grader.infrastructure.atomic_io import atomic_write_bytes, atomic_write_json
 from omr_grader.infrastructure.io_retry import retry_mkdir, retry_unlink
 from omr_grader.infrastructure.result_layout import (
@@ -1043,7 +1044,8 @@ def _validate_parent_combined(parent: dict[str, object], manifest: SessionManife
             EffectiveResponse.from_dict(_mapping(value)) for value in _array(parent, "responses")
         )
         answer_key = AnswerKeySnapshot.from_dict(_object(parent, "answer_key"))
-        if scores != _score_set_wire(score_effective(ScoreInput(responses, answer_key))):
+        recomputed = _score_set_wire(score_effective(ScoreInput(responses, answer_key)))
+        if with_rounded_average(scores) != recomputed:
             raise ValueError("canonical parent scores do not match recomputed scores")
 
 

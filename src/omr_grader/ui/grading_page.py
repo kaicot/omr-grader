@@ -278,6 +278,11 @@ class GradingPage(QWidget):
         if not isinstance(error, str) or not error.strip():
             raise ValueError("error must be nonempty str")
         self.error_label.setText(f"• {error}")
+        if self._validation is not None and self._validation.is_valid:
+            # A later operation such as grading failed; the validated key is still usable.
+            self.validation_status_label.setText("정답표 검증 완료 (이상 없음)")
+            self._refresh_state()
+            return
         self.validation_status_label.setText("정답표 검증 오류를 수정하세요.")
         self._validation = AnswerKeyValidationDisplay(
             self._answer_key_path,

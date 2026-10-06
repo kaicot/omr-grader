@@ -232,3 +232,18 @@ def test_result_navigation_is_cleared_when_connected_identity_changes(qtbot) -> 
     page.result_navigation_requested.connect(requests.append)
     QTest.mouseClick(page.result_button, Qt.MouseButton.LeftButton)
     assert requests == []
+
+
+def test_a_failed_grading_run_keeps_the_validated_answer_key_usable(qtbot) -> None:
+    page = _ready_page(qtbot)
+    assert page.grade_button.isEnabled()
+
+    page.set_error(
+        "작업을 완료하지 못했습니다. 입력과 실행 환경을 확인하세요.\n"
+        "오류 코드: DASHBOARD_SESSION_NOT_FOUND"
+    )
+
+    assert "DASHBOARD_SESSION_NOT_FOUND" in page.error_label.text()
+    assert page.validation_status_label.text() == "정답표 검증 완료 (이상 없음)"
+    assert page.grade_button.isEnabled()
+    assert page.question_count_label.text() == "30 문항"

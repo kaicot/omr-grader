@@ -11,7 +11,7 @@
 - EXE가 있는 폴더 자체가 포터블 루트입니다.
 - `%APPDATA%`, `%LOCALAPPDATA%`, 사용자 문서 폴더로 데이터를 자동 이전하지 않습니다.
 - 소스 실행 시에는 `main.py`가 있는 저장소 루트가 포터블 루트가 됩니다.
-- 현재 제품 버전은 `2.1.1`입니다.
+- 현재 제품 버전은 `2.1.2`입니다.
 
 ## 권장 설치 위치
 
@@ -110,7 +110,7 @@ D:\OMR-Grader\
   `release-receipt.json`과 ZIP SHA-256 파일을 보존합니다.
 - 빌드 후에는 `tools/verify-portable-folder.ps1 -Smoke Both`로 부분 smoke를 실행할 수
   있지만, 이 결과를 전체 승인으로 안내하지 않습니다.
-- 2.1.1 최종 기술 게이트는 반드시 `-StrictShutdown`을 포함합니다.
+- 최종 기술 게이트는 반드시 `-StrictShutdown`을 포함합니다.
 - 비엄격 smoke의 `forced_cleanup`·부분 범위 진단 결과는 제품 실행·포터블 저장 검증과
   분리해 기록하며 전체 승인으로 해석하지 않습니다.
 - 검증기는 `OMR Grader.exe`, `_internal\`, 현재 `Data/` 포터블 계약, receipt의 파일

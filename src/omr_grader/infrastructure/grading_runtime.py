@@ -46,6 +46,7 @@ from omr_grader.domain.models import (
     SessionManifest,
     SessionRecord,
 )
+from omr_grader.domain.score_average import round_average
 from omr_grader.infrastructure.session_store import SessionCommitCoordinator, SessionStore
 
 _APP_VERSION = "omr-grader"
@@ -519,7 +520,10 @@ class CommittedGradingSnapshotReader:
             rows,
             ScoreStatistics(
                 _integer(stats["participant_count"]),
-                None if stats["average_score"] is None else _decimal(stats["average_score"]),
+                # 2.1.0–2.1.1 committed unrounded averages; amend them in the current form.
+                None
+                if stats["average_score"] is None
+                else round_average(_decimal(stats["average_score"])),
                 None if stats["highest_score"] is None else _decimal(stats["highest_score"]),
                 None if stats["lowest_score"] is None else _decimal(stats["lowest_score"]),
             ),

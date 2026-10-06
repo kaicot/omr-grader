@@ -19,6 +19,7 @@ from omr_grader.domain.models import (
     SessionRecord,
     validate_portable_component,
 )
+from omr_grader.domain.score_average import round_average
 from omr_grader.infrastructure.dashboard_index import (
     ActiveLeaseDiscovery,
     DashboardIndexBuild,
@@ -110,7 +111,7 @@ def _semantic_statistics(
         parsed = (Decimal(average), Decimal(highest), Decimal(lowest))
         if any(value < 0 for value in parsed) or not parsed[2] <= parsed[0] <= parsed[1]:
             return None
-        return (record, count, average, highest, lowest)
+        return (record, count, format(round_average(parsed[0]), "f"), highest, lowest)
     except (OSError, ValueError, TypeError, KeyError, InvalidOperation, json.JSONDecodeError):
         return None
 

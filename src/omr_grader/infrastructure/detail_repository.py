@@ -38,6 +38,7 @@ from omr_grader.domain.models import (
     ImportedResponseRef,
     SessionRecord,
 )
+from omr_grader.domain.score_average import with_rounded_average
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,7 +412,7 @@ class DetailRepository:
             if len({item.work_item_id for item in responses}) != len(responses):
                 raise ValueError("duplicate effective work item")
             answer_key = AnswerKeySnapshot.from_dict(_mapping(canonical["answer_key"]))
-            if canonical["scores"] != _score_set_wire(
+            if with_rounded_average(canonical["scores"]) != _score_set_wire(
                 score_effective(ScoreInput(responses, answer_key))
             ):
                 raise ValueError("canonical scores do not match recomputed scores")

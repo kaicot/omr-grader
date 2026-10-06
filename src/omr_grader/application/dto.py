@@ -27,6 +27,7 @@ from omr_grader.domain.models import (
     SessionRecord,
     validate_portable_component,
 )
+from omr_grader.domain.score_average import round_average, score_average
 
 from .validation_token import ResponseValidationToken, ValidatedBackup
 
@@ -845,7 +846,7 @@ class ScoreSet:
         scores = tuple(cast(Decimal, row.score) for row in scored_rows)
         if scores:
             if (
-                self.statistics.average_score != sum(scores) / len(scores)
+                round_average(cast(Decimal, self.statistics.average_score)) != score_average(scores)
                 or self.statistics.highest_score != max(scores)
                 or self.statistics.lowest_score != min(scores)
             ):

@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from omr_grader.domain.enums import ProcessingStatus, SourceKind, StudentIdStatus
+from omr_grader.domain.enums import AnswerStatus, ProcessingStatus, SourceKind, StudentIdStatus
 from omr_grader.domain.errors import Err, ErrorContextValue, ErrorInfo, Ok, Result
 from omr_grader.domain.models import (
     AutomaticPage,
@@ -31,8 +31,12 @@ from omr_grader.ingestion.images import (
     preflight_tiff,
 )
 from omr_grader.recognition.geometry import PageContour, detect_page_contour
-from omr_grader.recognition.grid_reader import _has_frozen_profile_invariants, read_grid
-from omr_grader.recognition.normalization import normalize_page
+from omr_grader.recognition.grid_reader import (
+    GridRecognition,
+    _has_frozen_profile_invariants,
+    read_grid,
+)
+from omr_grader.recognition.normalization import NormalizedRaster, normalize_page
 from omr_grader.recognition.orientation import rotate_right_angle, select_orientation
 from omr_grader.recognition.overlay import render_overlay
 from omr_grader.recognition.registration import register_profile_grid
@@ -41,6 +45,12 @@ from omr_grader.recognition.thresholds import RecognitionThresholds
 _RASTER = NDArray[np.uint8]
 _HEADER_DIMENSIONS = tuple[int, int]
 _MAX_COLOR_CHANNELS: Final = 3
+_CONFIDENT_READ_RATIO: Final = 0.90
+"""Share of clear answers that makes a grid read trustworthy enough to set orientation.
+
+A nearly point-symmetric answer table still yields many clear answers when read upside
+down (up to 60% on real scans), so only a confident read may overturn the landmarks.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,25 +142,24 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
     )
     if isinstance(orientation, Err):
         return _failure(task.page_ref, orientation.errors[0])
-    rotated = rotate_right_angle(image, orientation.value.rotation_degrees)
-    contour = _page_contour(rotated, task.page_ref, task.profile)
-    if isinstance(contour, Err):
-        return _failure(task.page_ref, contour.errors[0])
-    normalized = normalize_page(
-        rotated,
-        contour.value,
-        (task.profile.page.source_width, task.profile.page.source_height)
-        if task.profile.page is not None
-        else (0, 0),
-    )
-    if isinstance(normalized, Err):
-        return _failure(task.page_ref, normalized.errors[0])
-    raster = normalized.value
-    registered_profile = register_profile_grid(raster.pixels, task.profile)
-    recognition = read_grid(raster.pixels, registered_profile, task.thresholds)
-    if isinstance(recognition, Err):
-        return _failure(task.page_ref, recognition.errors[0])
-    grid = recognition.value
+    rotation = orientation.value.rotation_degrees
+    confidence = orientation.value.confidence
+    read = _read_oriented(image, rotation, task)
+    if not _confident_read(read):
+        # Profile landmarks cannot always tell a page from its 180-degree turn, so a
+        # weak read is retried upside down and replaced only by a confident read there.
+        opposite_rotation = (rotation + 180) % 360
+        opposite = _read_oriented(image, opposite_rotation, task)
+        if _confident_read(opposite):
+            rotation, read = opposite_rotation, opposite
+            confidence = next(
+                item.score
+                for item in orientation.value.scores
+                if item.rotation_degrees == opposite_rotation
+            )
+    if isinstance(read, ErrorInfo):
+        return _failure(task.page_ref, read)
+    raster, grid = read
     status = (
         ProcessingStatus.NEEDS_MANUAL_REVIEW
         if grid.needs_manual_review
@@ -160,8 +169,8 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
         1,
         task.page_ref,
         status,
-        orientation.value.rotation_degrees,
-        _decimal(orientation.value.confidence),
+        rotation,
+        _decimal(confidence),
         _decimal(raster.confidence),
         (int(raster.pixels.shape[1]), int(raster.pixels.shape[0])),
         _matrix_text(raster.homography_forward),
@@ -175,6 +184,38 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
         return _failure(task.page_ref, overlay.errors[0])
     artifacts = RecognitionArtifacts(raster.png_bytes, _coordinates(page), _png(overlay.value))
     return PipelineSuccess(page, artifacts)
+
+
+def _read_oriented(
+    image: _RASTER, rotation: int, task: PipelineInput
+) -> tuple[NormalizedRaster, GridRecognition] | ErrorInfo:
+    rotated = rotate_right_angle(image, rotation)
+    contour = _page_contour(rotated, task.page_ref, task.profile)
+    if isinstance(contour, Err):
+        return contour.errors[0]
+    normalized = normalize_page(
+        rotated,
+        contour.value,
+        (task.profile.page.source_width, task.profile.page.source_height)
+        if task.profile.page is not None
+        else (0, 0),
+    )
+    if isinstance(normalized, Err):
+        return normalized.errors[0]
+    raster = normalized.value
+    registered_profile = register_profile_grid(raster.pixels, task.profile)
+    recognition = read_grid(raster.pixels, registered_profile, task.thresholds)
+    if isinstance(recognition, Err):
+        return recognition.errors[0]
+    return raster, recognition.value
+
+
+def _confident_read(read: tuple[NormalizedRaster, GridRecognition] | ErrorInfo) -> bool:
+    if isinstance(read, ErrorInfo) or not read[1].answers:
+        return False
+    answers = read[1].answers
+    clear = sum(answer.value.status is AnswerStatus.NORMAL for answer in answers)
+    return clear >= _CONFIDENT_READ_RATIO * len(answers)
 
 
 def _page_contour(image: _RASTER, page_ref: PageRef, profile: Profile) -> Result[PageContour]:

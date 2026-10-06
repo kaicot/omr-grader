@@ -12,6 +12,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, QPersisten
 
 from omr_grader.domain.enums import ExamTerm
 from omr_grader.domain.models import DashboardIndexEntry
+from omr_grader.domain.score_average import display_average
 
 _INVALID_INDEX = QModelIndex()
 
@@ -130,7 +131,7 @@ class DashboardTableModel(QAbstractTableModel):
                 entry.exam_name,
                 _timestamp(entry.graded_at),
                 f"{entry.participant_count}명",
-                "-" if entry.average_score is None else f"{entry.average_score}점",
+                "-" if entry.average_score is None else f"{display_average(entry.average_score)}점",
                 "-"
                 if entry.highest_score is None or entry.lowest_score is None
                 else f"{entry.highest_score} / {entry.lowest_score}점",
@@ -143,7 +144,7 @@ class DashboardTableModel(QAbstractTableModel):
                 entry.exam_name,
                 _timestamp(entry.graded_at),
                 f"{entry.participant_count}명",
-                "-" if entry.average_score is None else f"{entry.average_score}점",
+                "-" if entry.average_score is None else f"{display_average(entry.average_score)}점",
                 "-"
                 if entry.highest_score is None or entry.lowest_score is None
                 else f"{entry.highest_score} / {entry.lowest_score}점",

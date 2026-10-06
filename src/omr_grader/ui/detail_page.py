@@ -30,6 +30,7 @@ from omr_grader.application.detail_presenter import (
 )
 from omr_grader.domain.enums import AnswerStatus
 from omr_grader.domain.models import AnswerValue
+from omr_grader.domain.score_average import display_average
 from omr_grader.ui.detail_model import DetailTableModel
 from omr_grader.ui.omr_graphics_view import OmrGraphicsView
 
@@ -204,7 +205,7 @@ class DetailPage(QWidget):
             self.title_label.setText(f"{display.exam_name} 상세 결과")
             x = display.summary
             self.summary_label.setText(
-                f"요약: 총원 {x.student_count}명 | 평균 {x.average_score}점 | "
+                f"요약: 총원 {x.student_count}명 | 평균 {display_average(x.average_score)}점 | "
                 f"최고점 {x.high_score}점 | 최저점 {x.low_score}점"
             )
             self._restore_selection(display.students, selected_id)
