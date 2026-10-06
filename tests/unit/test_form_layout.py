@@ -280,6 +280,21 @@ def test_a_first_question_nobody_answered_is_dropped_and_reported() -> None:
     assert layouts[0].question_count == 99
 
 
+@pytest.mark.parametrize("gap", (2.0, 3.0))
+def test_blocks_stacked_one_or_two_empty_rows_apart_stay_separate(gap: float) -> None:
+    # Bridging those empty rows would turn them into questions and shift every number.
+    image, geometry = render_sheet_with_geometry(
+        {}, "", layout=((8, 8), (8, 8)), stack_gap_rows=gap
+    )
+
+    layout = detect_layout(to_gray(image))
+
+    assert layout is not None
+    assert [block.rows for block in layout.answer_blocks] == [8] * 4
+    assert _starts(layout) == (1, 9, 17, 25)
+    _assert_nodes_on_truth(layout, geometry, 1.0)
+
+
 def test_bands_are_numbered_left_to_right_and_blocks_of_a_band_top_to_bottom() -> None:
     image, geometry = render_sheet_with_geometry({}, "", layout=((8, 8), (8, 8)))
 

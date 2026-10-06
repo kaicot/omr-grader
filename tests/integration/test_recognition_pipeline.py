@@ -330,6 +330,41 @@ def test_a_mark_in_a_printed_row_the_profile_left_out_withholds_the_page() -> No
     assert page.student_id.status is StudentIdStatus.INVALID
 
 
+@pytest.mark.parametrize("gap", (2.0, 3.0))
+def test_stacked_blocks_with_empty_rows_between_them_read_under_their_numbers(
+    gap: float,
+) -> None:
+    answers = {question: (question * 3) % 5 + 1 for question in range(1, 33)}
+    image, _ = render_sheet_with_geometry(
+        answers, "20261234", layout=((8, 8), (8, 8)), stack_gap_rows=gap
+    )
+    profile, _, layout = profile_from_page(image, "stacked")
+    assert layout.question_count == 32
+
+    result = _success(recognize_page(_task(encode_png(image), profile)))
+
+    assert result.page.processing_status is ProcessingStatus.PROCESSED
+    seen = {a.question: a.value.choices for a in result.page.answers if a.value.status is NORMAL}
+    assert seen == {question: (choice,) for question, choice in answers.items()}
+
+
+def test_label_rings_printed_dark_are_not_taken_for_a_student_mark() -> None:
+    # Filled column labels make the whole row dark; a student marks one bubble of a row.
+    answers = sample_answers()
+    image, geometry = render_sheet_with_geometry(answers, "20261234", header_rings=True)
+    profile, _, _ = profile_from_page(image, "labelled")
+    dark = image.copy()
+    for nodes in geometry.block_nodes:
+        for column in range(5):
+            above = nodes[0, column] - (nodes[1, column] - nodes[0, column])
+            paint_mark(dark, (float(above[0]), float(above[1])))
+
+    result = _success(recognize_page(_task(encode_png(dark), profile)))
+
+    assert result.page.processing_status is ProcessingStatus.PROCESSED
+    assert result.page.student_id.value == "20261234"
+
+
 def test_a_profile_that_is_upside_down_withholds_every_value() -> None:
     sheet = reference_sheet()
     upside_down = cv2.rotate(sheet.gray, cv2.ROTATE_180)

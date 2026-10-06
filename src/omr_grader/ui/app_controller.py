@@ -189,6 +189,16 @@ def _dashboard_worker_value(result: object) -> object:
     )
 
 
+def _unmarked_rows_note(detection: FormDetection) -> str | None:
+    """On reuse, say that some blocks' first rows were never marked in these scans."""
+    if detection.unmarked_first_rows <= 0:
+        return None
+    return (
+        f"이번 답안지들은 문항 블록 {detection.unmarked_first_rows}곳의 맨 윗줄을 아무도 칠하지 "
+        "않았습니다. 저장된 양식이 머리글 줄을 문항으로 세고 있지 않은지 문항 범위를 확인하세요."
+    )
+
+
 def _header_rows_note(detection: FormDetection) -> str | None:
     """Say that unmarked first rows were left out, so a wrong cut can be noticed."""
     if detection.dropped_header_rows <= 0:
@@ -1331,10 +1341,14 @@ class AppController(QObject):
             return
         self._refresh_profile_catalog()
         if self.scan_page.select_profile(profile_filename):
-            mixed = _mixed_form_warning(result)
+            notes = [
+                note
+                for note in (_unmarked_rows_note(result), _mixed_form_warning(result))
+                if note is not None
+            ]
             self.scan_page.set_form_detected(
                 f"자동 인식: {result.summary} · 저장된 양식 '{profile_filename}' 사용"
-                + ("" if mixed is None else f" · {mixed}")
+                + "".join(f" · {note}" for note in notes)
             )
         else:
             self._fail_form_detection(

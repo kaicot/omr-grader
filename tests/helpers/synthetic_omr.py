@@ -111,6 +111,7 @@ class SheetOptions(TypedDict, total=False):
     header_rings: bool
     header_label: str | None
     header_in_table: bool
+    stack_gap_rows: float
     seed: int
     width: int
     height: int
@@ -221,6 +222,7 @@ def render_sheet_with_geometry(
     header_rings: bool = False,
     header_label: str | None = None,
     header_in_table: bool = False,
+    stack_gap_rows: float = STACK_GAP_ROWS,
     seed: int = 0,
     width: int = PAGE_WIDTH,
     height: int = PAGE_HEIGHT,
@@ -240,6 +242,7 @@ def render_sheet_with_geometry(
     ``header_rings`` prints an unnumbered row of choice rings one row above every answer
     block, as some forms label their columns; ``header_label`` prints a word in that row's
     number cell and ``header_in_table`` draws the block's table around the header too.
+    ``stack_gap_rows`` is the distance, in row pitches, between blocks stacked in a band.
     """
     if mark_radius is not None:
         radius = float(mark_radius)
@@ -251,7 +254,7 @@ def render_sheet_with_geometry(
         raise ValueError(f"a sheet holds at most {BAND_LIMIT} answer bands")
     if id_columns < 0 or len(student_id) > id_columns:
         raise ValueError("student_id does not fit the ID grid")
-    blocks = _blocks(layout)
+    blocks = _blocks(layout, stack_gap_rows)
     rng = np.random.default_rng(seed)
 
     page: Image = np.full((height, width), PAPER_VALUE, dtype=np.uint8)
@@ -441,7 +444,7 @@ def write_png(path: Path, image: Image) -> Path:
     return path
 
 
-def _blocks(layout: Layout) -> list[_Block]:
+def _blocks(layout: Layout, stack_gap_rows: float = STACK_GAP_ROWS) -> list[_Block]:
     blocks: list[_Block] = []
     start = 1
     for band, entry in enumerate(layout):
@@ -452,7 +455,7 @@ def _blocks(layout: Layout) -> list[_Block]:
                 raise ValueError("every answer block needs at least one row")
             blocks.append(_Block((ANSWER_ORIGIN_X + band * BAND_PITCH, y), rows, start))
             start += rows
-            y += (rows - 1 + STACK_GAP_ROWS) * ANSWER_PITCH[1]
+            y += (rows - 1 + stack_gap_rows) * ANSWER_PITCH[1]
     return blocks
 
 

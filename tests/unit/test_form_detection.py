@@ -327,6 +327,8 @@ def test_a_saved_profile_wins_over_a_first_question_nobody_answered(
     assert result.value.profile_filename == saved.stored_name
     assert result.value.question_count == 100
     assert result.value.dropped_header_rows == 0
+    # The reuse is reported with a note that one block's first row was never marked.
+    assert result.value.unmarked_first_rows == 1
 
 
 def test_a_form_of_another_structure_gets_its_own_profile(

@@ -304,17 +304,27 @@ def _marked_outside(
     levels: NDArray[np.float64],
     thresholds: RecognitionThresholds,
 ) -> bool:
-    """Whether a printed bubble next to an answer region carries a mark of its own."""
+    """Whether a printed bubble next to an answer region carries a mark of its own.
+
+    A student marks one or two bubbles of a row. A row dark in most of its bubbles is
+    printed that way (filled column labels), so it does not count as a mark.
+    """
     if adjacent is None or not len(adjacent[0]):
         return False
     nodes, columns = adjacent
-    for index in range(len(nodes)):
-        center = (float(nodes[index, 0]), float(nodes[index, 1]))
-        try:
-            fill = _fill(density, center, disk)
-        except ValueError:
+    starts = [index for index in range(len(columns)) if int(columns[index]) == 0]
+    for begin, end in zip(starts, [*starts[1:], len(columns)], strict=True):
+        marks: list[float] = []
+        for index in range(begin, end):
+            center = (float(nodes[index, 0]), float(nodes[index, 1]))
+            try:
+                fill = _fill(density, center, disk)
+            except ValueError:
+                continue
+            marks.append(fill - float(levels[int(columns[index])]))
+        if not marks:
             continue
-        if fill - float(levels[int(columns[index])]) >= thresholds.mark_threshold:
+        if max(marks) >= thresholds.mark_threshold > float(np.median(marks)):
             return True
     return False
 

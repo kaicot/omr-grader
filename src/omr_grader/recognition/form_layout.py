@@ -264,11 +264,17 @@ def layout_from_bubbles(
         if row_pitch is None:
             continue
         for row_run in _lattice_runs(sorted(rows), row_pitch, max_bridged=_MAX_BRIDGED_ROWS):
-            block = _fit_block(
-                np.asarray(column_run), np.asarray(row_run), members, upright, points, radius
+            blocks.extend(
+                _fit_block(
+                    np.asarray(column_run),
+                    np.asarray(row_run),
+                    members,
+                    upright,
+                    points,
+                    radius,
+                    gray,
+                )
             )
-            if block is not None:
-                blocks.append(block)
     if not blocks:
         return None
     classified = [_classify(block, gray, radius) for block in blocks]
@@ -284,7 +290,15 @@ def _fit_block(
     upright: NDArray[np.float64],
     points: NDArray[np.float64],
     radius: float,
-) -> LatticeBlock | None:
+    gray: NDArray[np.uint8] | None = None,
+) -> list[LatticeBlock]:
+    """Fit the lattice of one run of rows; an unnumbered inner row with no circle splits it.
+
+    Bridged rows stand in for rows whose circles were missed, such as a row covered by
+    correction tape, which still prints its question number. A row with no printed circle
+    and no number is the space between two stacked blocks, so the blocks are fitted apart
+    and that space never becomes questions.
+    """
     tolerance = _CLUSTER_TOLERANCE * radius
     assigned: list[tuple[int, int, int]] = []
     for index in members:
@@ -296,14 +310,61 @@ def _fit_block(
         ):
             assigned.append((col, row, int(index)))
     if len(assigned) < 6:
-        return None
-    # Rows at either end holding few printed circles are handwriting or headers.
+        return []
     counts = np.bincount([row for _, row, _ in assigned], minlength=len(row_centers))
-    first, last = 0, len(row_centers)
-    while last - first > 2 and counts[first] < 0.5 * len(column_centers):
-        first += 1
-    while last - first > 2 and counts[last - 1] < 0.5 * len(column_centers):
-        last -= 1
+    numbered = _numbered_rows(assigned, counts, len(column_centers), points, gray)
+    segments: list[tuple[int, int]] = []
+    start = 0
+    for row in range(len(row_centers)):
+        if counts[row] == 0 and not numbered[row]:
+            if row > start:
+                segments.append((start, row))
+            start = row + 1
+    if len(row_centers) > start:
+        segments.append((start, len(row_centers)))
+    blocks: list[LatticeBlock] = []
+    for first, last in segments:
+        # Rows at either end holding few printed circles are handwriting or headers.
+        while last - first > 2 and counts[first] < 0.5 * len(column_centers):
+            first += 1
+        while last - first > 2 and counts[last - 1] < 0.5 * len(column_centers):
+            last -= 1
+        block = _fit_rows(assigned, first, last, len(column_centers), points)
+        if block is not None:
+            blocks.append(block)
+    return blocks
+
+
+def _numbered_rows(
+    assigned: list[tuple[int, int, int]],
+    counts: NDArray[np.int64],
+    cols: int,
+    points: NDArray[np.float64],
+    gray: NDArray[np.uint8] | None,
+) -> NDArray[np.bool_]:
+    """Which rows print a question number like the block's rows with circles do."""
+    found = np.zeros(len(counts), dtype=bool)
+    if gray is None or not (counts == 0).any():
+        return found
+    whole = _fit_rows(assigned, 0, len(counts), cols, points)
+    if whole is None or whole.rows < 3:
+        return found
+    shares = _number_ink(whole, gray)
+    printed = shares[(counts > 0) & ~np.isnan(shares)]
+    if not len(printed) or float(np.mean(printed >= _NUMBER_INK)) < 0.9:
+        return found
+    level = max(_NUMBER_INK, 0.5 * float(np.median(printed)))
+    return np.asarray(np.nan_to_num(shares, nan=0.0) >= level, dtype=bool)
+
+
+def _fit_rows(
+    assigned: list[tuple[int, int, int]],
+    first: int,
+    last: int,
+    cols: int,
+    points: NDArray[np.float64],
+) -> LatticeBlock | None:
+    """Affine lattice of rows ``first`` up to ``last`` from the circles assigned to them."""
     kept = [(col, row - first, index) for col, row, index in assigned if first <= row < last]
     rows = last - first
     if rows < 2 or len(kept) < 6:
@@ -311,7 +372,6 @@ def _fit_block(
     grid = np.asarray([(col, row) for col, row, _ in kept], dtype=np.float64)
     image = points[[index for _, _, index in kept]]
     transform, residual = _fit_affine(grid, image)
-    cols = len(column_centers)
     lattice = np.stack(np.meshgrid(np.arange(cols), np.arange(rows)), axis=-1).astype(np.float64)
     nodes = np.c_[lattice.reshape(-1, 2), np.ones(rows * cols)] @ transform
     return LatticeBlock("grid", cols, rows, nodes.reshape(rows, cols, 2), len(kept), residual)
@@ -610,5 +670,6 @@ __all__ = [
     "FormLayout",
     "LatticeBlock",
     "detect_layout",
+    "drop_unmarked_header_rows",
     "layout_from_bubbles",
 ]

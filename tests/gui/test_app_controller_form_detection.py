@@ -42,6 +42,7 @@ def _detection(
     generated_profile: bytes | None = b'{"profile_name": "generated"}',
     pages_matching: int = 3,
     dropped_header_rows: int = 0,
+    unmarked_first_rows: int = 0,
 ) -> FormDetection:
     return FormDetection(
         profile_filename,
@@ -54,6 +55,7 @@ def _detection(
         pages_matching,
         _png(),
         dropped_header_rows,
+        unmarked_first_rows,
     )
 
 
@@ -191,6 +193,22 @@ def test_a_reused_form_says_when_some_checked_pages_look_different(qtbot, monkey
     assert setup.scan.form_status_label.text() == (
         f"자동 인식: {SUMMARY} · 저장된 양식 'saved.omrtemplate' 사용 · "
         "확인한 3쪽 가운데 1쪽은 양식이 달라 보입니다. 다른 양식의 답안지가 섞여 있는지 확인하세요."
+    )
+    setup.controller.close()
+
+
+def test_a_reused_form_notes_first_rows_nobody_marked(qtbot, monkeypatch) -> None:
+    detection = _detection(
+        profile_filename="saved.omrtemplate", generated_profile=None, unmarked_first_rows=1
+    )
+    setup = _setup(qtbot, monkeypatch, "saved.omrtemplate", form_detect=lambda paths: Ok(detection))
+
+    setup.choose_source()
+    setup.finish(qtbot)
+
+    assert setup.scan.form_status_label.text() == (
+        f"자동 인식: {SUMMARY} · 저장된 양식 'saved.omrtemplate' 사용 · "
+        "이번 답안지들은 문항 블록 1곳의 맨 윗줄을 아무도 칠하지 않았습니다. 저장된 양식이 머리글 줄을 문항으로 세고 있지 않은지 문항 범위를 확인하세요."
     )
     setup.controller.close()
 

@@ -64,6 +64,9 @@ class FormDetection:
     preview_png: bytes
     dropped_header_rows: int = 0
     """Answer blocks whose first row no sample page marked, so it was left out as a header."""
+    unmarked_first_rows: int = 0
+    """With a saved form reused: blocks whose first row no sample page marked, so the saved
+    form may count a label row as a question (or the exam left that question out)."""
 
     @property
     def is_new(self) -> bool:
@@ -85,7 +88,9 @@ class _Candidate:
     matching: int
     preview: bytes
 
-    def detection(self, pages_checked: int, dropped_header_rows: int) -> FormDetection:
+    def detection(
+        self, pages_checked: int, dropped_header_rows: int, unmarked_first_rows: int = 0
+    ) -> FormDetection:
         answers = tuple(
             (int(region.question_start or 0), region.grid.rows)
             for region in self.profile.answer_regions
@@ -103,6 +108,7 @@ class _Candidate:
             self.matching,
             self.preview,
             dropped_header_rows,
+            unmarked_first_rows,
         )
 
 
@@ -126,10 +132,10 @@ class FormDetector:
         # A saved profile of the structure as printed comes first: a batch whose sampled
         # students all left one block's first question blank must not replace it.
         printed = self._candidate(found)
-        if not isinstance(printed, Err) and printed.value.existing is not None:
-            return Ok(printed.value.detection(len(pages), 0))
         # Label rings above a block that no student marks are not question 1 of the block.
         layouts, dropped = drop_unmarked_header_rows([(layout, gray) for gray, layout in found])
+        if not isinstance(printed, Err) and printed.value.existing is not None:
+            return Ok(printed.value.detection(len(pages), 0, dropped))
         if dropped:
             trimmed = self._candidate(
                 [(gray, layout) for (gray, _), layout in zip(found, layouts, strict=True)]
