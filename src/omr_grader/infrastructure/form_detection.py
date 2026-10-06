@@ -76,6 +76,37 @@ class FormDetection:
 
 
 @dataclass(frozen=True, slots=True)
+class _Candidate:
+    """A profile built from the sample pages, with the saved profile that can replace it."""
+
+    profile: Profile
+    payload: bytes
+    existing: str | None
+    matching: int
+    preview: bytes
+
+    def detection(self, pages_checked: int, dropped_header_rows: int) -> FormDetection:
+        answers = tuple(
+            (int(region.question_start or 0), region.grid.rows)
+            for region in self.profile.answer_regions
+        )
+        question_count = sum(rows for _, rows in answers)
+        digest = hashlib.sha256(self.payload).hexdigest()[:6]
+        return FormDetection(
+            self.existing,
+            None if self.existing else self.payload,
+            f"자동양식_객관식{question_count}문항_{digest}.omrtemplate",
+            self.profile.id_region.grid.cols,
+            question_count,
+            answers,
+            pages_checked,
+            self.matching,
+            self.preview,
+            dropped_header_rows,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FormDetector:
     """Read-only detection; saving a generated profile is a separate, confirmed step."""
 
@@ -92,9 +123,27 @@ class FormDetector:
                 found.append((gray, layout))
         if not found:
             return _error("FORM_NOT_FOUND", "답안지에서 OMR 양식을 찾지 못했습니다.")
+        # A saved profile of the structure as printed comes first: a batch whose sampled
+        # students all left one block's first question blank must not replace it.
+        printed = self._candidate(found)
+        if not isinstance(printed, Err) and printed.value.existing is not None:
+            return Ok(printed.value.detection(len(pages), 0))
         # Label rings above a block that no student marks are not question 1 of the block.
         layouts, dropped = drop_unmarked_header_rows([(layout, gray) for gray, layout in found])
-        found = [(gray, layout) for (gray, _), layout in zip(found, layouts, strict=True)]
+        if dropped:
+            trimmed = self._candidate(
+                [(gray, layout) for (gray, _), layout in zip(found, layouts, strict=True)]
+            )
+            if isinstance(trimmed, Err):
+                return trimmed
+            chosen = trimmed.value
+            return Ok(chosen.detection(len(pages), 0 if chosen.existing else dropped))
+        if isinstance(printed, Err):
+            return printed
+        return Ok(printed.value.detection(len(pages), 0))
+
+    def _candidate(self, found: list[tuple[NDArray[np.uint8], FormLayout]]) -> Result[_Candidate]:
+        """The profile these layouts make, checked on its own pages and matched to saved ones."""
         built = build_profile(
             [(layout, (gray.shape[1], gray.shape[0])) for gray, layout in found], "자동 인식 양식"
         )
@@ -105,12 +154,6 @@ class FormDetector:
         # Pages of the detected form speak for it; a cover sheet or a stray page of another
         # form neither becomes the preview nor blocks reuse (it goes to review when read).
         members = [item for item in found if _layout_signature(item[1]) == majority] or found
-        answers = tuple(
-            (int(region.question_start or 0), region.grid.rows) for region in profile.answer_regions
-        )
-        question_count = sum(rows for _, rows in answers)
-        first_gray, first_layout = members[0]
-        preview = _preview(rotate_right_angle(first_gray, first_layout.rotation), first_layout)
         checked = [gray for gray, _ in members[:_MATCH_PAGES]]
         fresh = [align_page(gray, profile) for gray in checked]
         # A profile that its own pages do not trust (an end row taken one step off, a page
@@ -120,20 +163,14 @@ class FormDetector:
                 "FORM_GEOMETRY_INVALID",
                 "자동 인식한 양식이 답안지에 정확히 맞지 않습니다. OMR 프로필을 직접 선택하세요.",
             )
-        existing = self._matching_profile(profile, checked, fresh)
-        suggested = f"자동양식_객관식{question_count}문항_{hashlib.sha256(payload).hexdigest()[:6]}"
+        first_gray, first_layout = members[0]
         return Ok(
-            FormDetection(
-                existing,
-                None if existing else payload,
-                f"{suggested}.omrtemplate",
-                profile.id_region.grid.cols,
-                question_count,
-                answers,
-                len(pages),
+            _Candidate(
+                profile,
+                payload,
+                self._matching_profile(profile, checked, fresh),
                 sum(1 for _, layout in found if _layout_signature(layout) == majority),
-                preview,
-                dropped,
+                _preview(rotate_right_angle(first_gray, first_layout.rotation), first_layout),
             )
         )
 

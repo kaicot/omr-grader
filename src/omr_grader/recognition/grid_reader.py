@@ -52,6 +52,7 @@ def read_grid(
     *,
     bubble_radius: float,
     trusted: bool = True,
+    adjacent: tuple[NDArray[np.float64], NDArray[np.int64]] | None = None,
 ) -> Result[GridRecognition]:
     """Read the 8x10 ID grid and every answer row of a page warped into the profile frame.
 
@@ -59,6 +60,9 @@ def read_grid(
     last row printed on the form are returned as unasked with geometry-free evidence.
     When ``trusted`` is false (a weak page alignment) or the page reads upside down, every
     answer becomes uncertain and the ID invalid: grading only scores reviewed values.
+    ``adjacent`` holds printed bubbles right next to the answer regions (frame centers and
+    choice columns); a mark on any of them withholds the page the same way, because the
+    profile then leaves out a question row someone answered.
     """
     validated = validate_thresholds(thresholds)
     if isinstance(validated, Err):
@@ -110,6 +114,7 @@ def read_grid(
     # The printed (1) carries the least ink of the five digits. A first column clearly
     # heavier than the last means the form is read upside down, so nothing is trusted.
     upside_down = float(answer_levels[0] - answer_levels[-1]) > _UPSIDE_DOWN_MARGIN
+    stray = _marked_outside(density, disk, adjacent, answer_levels, thresholds)
 
     evidence_index = 0
     id_cells: list[IdCell] = []
@@ -179,7 +184,7 @@ def read_grid(
         return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
 
     answers.sort(key=lambda item: item.question)
-    if upside_down or not trusted:
+    if upside_down or stray or not trusted:
         answers = [_withheld_answer(answer) for answer in answers]
         id_cells = [_withheld_id_cell(cell) for cell in id_cells]
     id_result = _student_id(id_cells, thresholds)
@@ -188,6 +193,7 @@ def read_grid(
     )
     manual = (
         upside_down
+        or stray
         or (not thresholds.has_valid_calibration_provenance)
         or id_result.status is not StudentIdStatus.NORMAL
         or any(answer.value.status is AnswerStatus.UNCERTAIN for answer in answers)
@@ -289,6 +295,28 @@ def _ring_radius(gray: NDArray[np.uint8], centers: NDArray[np.float64], guess: f
         means.append(sampled.astype(np.float64).mean(axis=2))
     profile = np.median(np.concatenate(means), axis=0)
     return float(radii[int(np.argmin(profile))])
+
+
+def _marked_outside(
+    density: NDArray[np.float32],
+    disk: tuple[NDArray[np.float64], NDArray[np.float64]],
+    adjacent: tuple[NDArray[np.float64], NDArray[np.int64]] | None,
+    levels: NDArray[np.float64],
+    thresholds: RecognitionThresholds,
+) -> bool:
+    """Whether a printed bubble next to an answer region carries a mark of its own."""
+    if adjacent is None or not len(adjacent[0]):
+        return False
+    nodes, columns = adjacent
+    for index in range(len(nodes)):
+        center = (float(nodes[index, 0]), float(nodes[index, 1]))
+        try:
+            fill = _fill(density, center, disk)
+        except ValueError:
+            continue
+        if fill - float(levels[int(columns[index])]) >= thresholds.mark_threshold:
+            return True
+    return False
 
 
 def _density_map(gray: NDArray[np.uint8], radius: float, ink_floor: float) -> NDArray[np.float32]:

@@ -7,7 +7,7 @@ not fit well enough is reported instead of being read on a guess.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import cv2
@@ -62,6 +62,10 @@ class PageAlignment:
     """Printed circles inside the frame that no form bubble explains (a larger form)."""
     shifted_regions: int = 0
     """Regions that one row or column step would put on clearly more printed circles."""
+    adjacent_nodes: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 2)))
+    """Frame centers of printed bubble rows right above or below an answer region."""
+    adjacent_columns: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    """Choice column (0-based) of each adjacent bubble, to compare it with its own column."""
 
     @property
     def inlier_ratio(self) -> float:
@@ -147,6 +151,7 @@ def align_page(gray: NDArray[np.uint8], profile: Profile) -> PageAlignment | Non
     ]
     limit = _EXPLAINED_RADIUS * bubble_radius
     explained = _CircleIndex(frame_nodes, limit).covers(inside)
+    circles = _CircleIndex(mapped, limit)
     return PageAlignment(
         rotation,
         forward,
@@ -157,8 +162,34 @@ def align_page(gray: NDArray[np.uint8], profile: Profile) -> PageAlignment | Non
         bubble_radius,
         runner_up,
         int(np.count_nonzero(~explained)),
-        _shifted_regions(_CircleIndex(mapped, limit), frame_nodes, regions),
+        _shifted_regions(circles, frame_nodes, regions),
+        *_adjacent_rows(circles, frame_nodes, regions),
     )
+
+
+def _adjacent_rows(
+    circles: _CircleIndex, frame_nodes: NDArray[np.float64], regions: tuple[ProfileRegion, ...]
+) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
+    """Printed bubble rows one step above or below an answer region, which it does not read.
+
+    Column-label rings may sit there and are never marked. A mark there means the profile
+    left out a real question row, so the reader withholds the page.
+    """
+    nodes: list[NDArray[np.float64]] = []
+    columns: list[NDArray[np.int64]] = []
+    for region, (start, stop) in zip(regions, _region_slices(regions), strict=True):
+        rows, cols = region.grid.rows, region.grid.cols
+        if region.kind != "answer" or rows < 2:
+            continue
+        grid = frame_nodes[start:stop].reshape(rows, cols, 2)
+        down = np.diff(grid, axis=0).reshape(-1, 2).mean(axis=0)
+        for row in (grid[0] - down, grid[-1] + down):
+            if int(np.count_nonzero(circles.covers(row))) >= cols - 1:
+                nodes.append(row)
+                columns.append(np.arange(cols, dtype=np.int64))
+    if not nodes:
+        return np.zeros((0, 2)), np.zeros(0, dtype=np.int64)
+    return np.concatenate(nodes), np.concatenate(columns)
 
 
 def _shifted_regions(

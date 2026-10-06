@@ -310,6 +310,25 @@ def test_label_rows_above_the_blocks_are_left_out_and_reported(
     assert fit is not None and fit.trusted
 
 
+def test_a_saved_profile_wins_over_a_first_question_nobody_answered(
+    saved: SavedForm, tmp_path: Path
+) -> None:
+    # Every sampled student left question 1 blank (a voided question, say). Dropping that
+    # row is only ever considered for a new form; the saved one of the printed structure stays.
+    paths = []
+    for page in range(3):
+        answers = {q: (q + page) % 5 + 1 for q in range(2, 101)}
+        image, _ = render_sheet_with_geometry(answers, "20261234", seed=page)
+        paths.append(str(write_png(tmp_path / f"voided{page}.png", to_gray(image))))
+
+    result = saved.detector.detect(tuple(paths))
+
+    assert isinstance(result, Ok)
+    assert result.value.profile_filename == saved.stored_name
+    assert result.value.question_count == 100
+    assert result.value.dropped_header_rows == 0
+
+
 def test_a_form_of_another_structure_gets_its_own_profile(
     saved: SavedForm, scans: Scans, tmp_path: Path
 ) -> None:

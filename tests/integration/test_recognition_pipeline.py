@@ -14,7 +14,11 @@ from omr_grader.domain.enums import AnswerStatus, ProcessingStatus, StudentIdSta
 from omr_grader.domain.errors import ErrorInfo, Ok
 from omr_grader.domain.profile import Profile, parse_profile_bytes
 from omr_grader.recognition.bubbles import find_bubbles
-from omr_grader.recognition.form_layout import layout_from_bubbles
+from omr_grader.recognition.form_layout import (
+    detect_layout,
+    drop_unmarked_header_rows,
+    layout_from_bubbles,
+)
 from omr_grader.recognition.form_profile import build_profile
 from omr_grader.recognition.pipeline import (
     PipelineFailure,
@@ -298,6 +302,32 @@ def test_a_form_with_column_label_rings_reads_every_question_under_its_own_numbe
     seen = {a.question: a.value.choices for a in result.page.answers if a.value.status is NORMAL}
     expected = {q: choices_of(c) for q, c in answers.items() if len(choices_of(c)) == 1}
     assert seen == expected
+
+
+def test_a_mark_in_a_printed_row_the_profile_left_out_withholds_the_page() -> None:
+    # Three sampled sheets all left question 1 blank, so the new profile took its row for a
+    # header. A sheet that does mark question 1 shows the profile is missing a question.
+    samples = []
+    for page in range(3):
+        answers = {q: (q + page) % 5 + 1 for q in range(2, 101)}
+        image, _ = render_sheet_with_geometry(answers, "20261234", seed=page)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        layout = detect_layout(gray)
+        assert layout is not None
+        samples.append((layout, gray))
+    layouts, dropped = drop_unmarked_header_rows(samples)
+    assert dropped == 1
+    size = (samples[0][1].shape[1], samples[0][1].shape[0])
+    built = build_profile([(layout, size) for layout in layouts], "first row dropped")
+    assert isinstance(built, Ok)
+    marked, _ = render_sheet_with_geometry(sample_answers(), "20261234", seed=9)
+
+    result = _success(recognize_page(_task(encode_png(marked), built.value[0])))
+
+    page = result.page
+    assert page.processing_status is ProcessingStatus.NEEDS_MANUAL_REVIEW
+    assert {a.value.status for a in page.answers if a.value.status is not UNASKED} == {UNCERTAIN}
+    assert page.student_id.status is StudentIdStatus.INVALID
 
 
 def test_a_profile_that_is_upside_down_withholds_every_value() -> None:

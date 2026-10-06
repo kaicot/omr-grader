@@ -142,6 +142,7 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
         task.thresholds,
         bubble_radius=alignment.bubble_radius,
         trusted=alignment.trusted,
+        adjacent=(alignment.adjacent_nodes, alignment.adjacent_columns),
     )
     if isinstance(recognition, Err):
         return _failure(task.page_ref, recognition.errors[0])
