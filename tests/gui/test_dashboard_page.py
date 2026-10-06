@@ -290,10 +290,10 @@ def test_dashboard_search_updates_visible_rows_immediately(qtbot) -> None:
 
 @pytest.mark.parametrize(
     ("average", "shown"),
-    (("75.333333333333", "75.33점"), ("78.5", "78.5점"), ("80", "80점")),
+    (("55.333333333333", "55.33점"), ("78.5", "78.5점"), ("80", "80점")),
 )
 def test_average_column_rounds_to_two_fraction_digits(average: str, shown: str) -> None:
-    entry = replace(_entry("session-a", "졸업고사"), average_score=average)
+    entry = replace(_entry("session-a", "중간고사"), average_score=average)
     model = DashboardTableModel()
     model.set_entries((entry,))
 

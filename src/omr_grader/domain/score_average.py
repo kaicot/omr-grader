@@ -16,8 +16,8 @@ _DISPLAY_QUANTUM: Final = Decimal("0.01")
 def score_average(scores: Sequence[Decimal]) -> Decimal:
     """Return the mean of nonnegative ``scores`` rounded half-up to twelve digits.
 
-    The rounding is taken from the exact rational mean, so 226/3 commits as
-    ``75.333333333333`` while terminating means such as 151/2 stay ``75.5``.
+    The rounding is taken from the exact rational mean, so 166/3 commits as
+    ``55.333333333333`` while terminating means such as 151/2 stay ``75.5``.
     """
     if not scores:
         raise ValueError("an average needs at least one score")
