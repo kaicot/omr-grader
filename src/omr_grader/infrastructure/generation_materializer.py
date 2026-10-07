@@ -61,6 +61,7 @@ MAX_REVIEW_LONG_EDGE = 1600
 MAX_REVIEW_BYTES = 500_000
 REVIEW_JPEG_QUALITY = 75
 MIN_REVIEW_LONG_EDGE = 320
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def _encode_review_image(
@@ -447,10 +448,22 @@ class GenerationMaterializer:
                     )
                 image = artifacts.get(response.work_item_id)
                 if image is not None:
-                    image_path = f"images/{response.work_item_id}.png"
+                    suffix = ".png" if image.startswith(_PNG_SIGNATURE) else ".jpg"
+                    image_path = f"images/{response.work_item_id}{suffix}"
                     request.token.write_bytes(image_path, image)
-                elif request.token.path(f"images/{response.work_item_id}.png").is_file():
-                    image_path = f"images/{response.work_item_id}.png"
+                else:
+                    # 4.0.2 stores pages as JPEG; earlier sessions keep their PNG pages.
+                    image_path = next(
+                        (
+                            candidate
+                            for candidate in (
+                                f"images/{response.work_item_id}.jpg",
+                                f"images/{response.work_item_id}.png",
+                            )
+                            if request.token.path(candidate).is_file()
+                        ),
+                        None,
+                    )
                 if answer_key is not None and image_path is not None:
                     raster = cv2.imdecode(
                         np.frombuffer(

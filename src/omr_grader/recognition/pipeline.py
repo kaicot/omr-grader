@@ -31,7 +31,7 @@ from omr_grader.ingestion.images import (
 )
 from omr_grader.recognition.form_alignment import align_page
 from omr_grader.recognition.grid_reader import _has_frozen_profile_invariants, read_grid
-from omr_grader.recognition.normalization import warp_page
+from omr_grader.recognition.normalization import PAGE_JPEG_QUALITY, warp_page
 from omr_grader.recognition.orientation import rotate_right_angle
 from omr_grader.recognition.overlay import render_overlay
 from omr_grader.recognition.thresholds import RecognitionThresholds
@@ -69,14 +69,14 @@ class PipelineInput:
 class RecognitionArtifacts:
     """Unpublished output bytes. The coordinator chooses durable artifact paths."""
 
-    normalized_png: bytes
+    normalized_jpeg: bytes
     coordinates_json: bytes
-    overlay_png: bytes
+    overlay_jpeg: bytes
 
     def __post_init__(self) -> None:
         if any(
             type(item) is not bytes or not item
-            for item in (self.normalized_png, self.coordinates_json, self.overlay_png)
+            for item in (self.normalized_jpeg, self.coordinates_json, self.overlay_jpeg)
         ):
             raise ValueError("recognition artifacts must be nonempty bytes")
 
@@ -170,7 +170,7 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
     if isinstance(overlay, Err):
         return _failure(task.page_ref, overlay.errors[0])
     artifacts = RecognitionArtifacts(
-        normalized.png_bytes, _coordinates(page_result), _png(overlay.value)
+        normalized.jpeg_bytes, _coordinates(page_result), _jpeg(overlay.value)
     )
     return PipelineSuccess(page_result, artifacts)
 
@@ -361,10 +361,10 @@ def _matrix_text(matrix: NDArray[np.float32]) -> tuple[str, ...]:
     return tuple(_decimal(float(value)) for value in matrix.reshape(-1))
 
 
-def _png(image: _RASTER) -> bytes:
-    ok, encoded = cv2.imencode(".png", image, (cv2.IMWRITE_PNG_COMPRESSION, 0))
+def _jpeg(image: _RASTER) -> bytes:
+    ok, encoded = cv2.imencode(".jpg", image, (cv2.IMWRITE_JPEG_QUALITY, PAGE_JPEG_QUALITY))
     if not ok or not _is_uint8_raster(encoded) or encoded.ndim != 1 or encoded.size == 0:
-        raise ValueError("PNG encoding failed")
+        raise ValueError("JPEG encoding failed")
     return encoded.tobytes()
 
 

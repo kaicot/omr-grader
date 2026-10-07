@@ -145,6 +145,8 @@ def _mime(path: str) -> str:
         return "application/json"
     if path.endswith(".png"):
         return "image/png"
+    if path.endswith(".jpg"):
+        return "image/jpeg"
     if path.endswith(".xlsx"):
         return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return "application/octet-stream"
@@ -366,7 +368,7 @@ class ScanRuntime:
             for response in canonical_responses:
                 page = pages_by_id[response.work_item_id]
                 detail_path = f"details/{response.work_item_id}.json"
-                image_path = f"images/{response.work_item_id}.png"
+                image_path = f"images/{response.work_item_id}.jpg"
                 artifacts[f"evidence/{response.work_item_id}.json"] = _json_bytes(page.to_dict())
                 artifacts[detail_path] = _json_bytes(
                     {
@@ -525,12 +527,12 @@ class ScanRuntime:
                         break
                 continue
             key = page.page_ref.work_item_id
-            output[f"recognition/{key}/normalized.png"] = result.artifacts.normalized_png
+            # Each image is stored once: the page under 01원본스캔, the reading overlay
+            # under its result folder.
             output[f"recognition/{key}/coordinates.json"] = result.artifacts.coordinates_json
-            output[f"recognition/{key}/overlay.png"] = result.artifacts.overlay_png
-            output[f"images/{key}.png"] = result.artifacts.normalized_png
+            output[f"images/{key}.jpg"] = result.artifacts.normalized_jpeg
             display_stem = f"{ordinal + 1:03}_{key}"
-            output[f"{OCR_IMAGE_DIR}/{display_stem}.png"] = result.artifacts.overlay_png
+            output[f"{OCR_IMAGE_DIR}/{display_stem}.jpg"] = result.artifacts.overlay_jpeg
             output[f"{COORDINATE_DIR}/{display_stem}.json"] = (
                 result.artifacts.coordinates_json
             )

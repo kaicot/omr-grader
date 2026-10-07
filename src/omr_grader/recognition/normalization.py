@@ -16,12 +16,20 @@ Matrix = NDArray[np.float32]
 PointArray = NDArray[np.float32]
 
 
+PAGE_JPEG_QUALITY = 90
+"""Stored page images: about a quarter of a gray PNG, sharp enough to check marks."""
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizedRaster:
-    """Lossless normalized pixels and reversible source/normalized transforms."""
+    """Lossless normalized pixels, their stored JPEG and reversible transforms.
+
+    Reading always uses ``pixels``; the JPEG only shows the page (scored images, detail
+    view), so it is a gray JPEG instead of an uncompressed color PNG.
+    """
 
     pixels: Image
-    png_bytes: bytes
+    jpeg_bytes: bytes
     homography_forward: Matrix
     homography_inverse: Matrix
     confidence: float
@@ -37,7 +45,7 @@ class NormalizedRaster:
         if self.pixels.shape[0] * self.pixels.shape[1] > 100_000_000:
             raise ValueError("normalized raster exceeds the pixel bound")
         if (
-            not self.png_bytes
+            not self.jpeg_bytes
             or self.homography_forward.shape != (3, 3)
             or self.homography_inverse.shape != (3, 3)
             or self.homography_forward.dtype != np.float32
@@ -119,13 +127,14 @@ def warp_page(
             borderValue=(255, 255, 255),
         )
     )
-    encoded, png = cv2.imencode(".png", normalized, (cv2.IMWRITE_PNG_COMPRESSION, 1))
+    gray = normalized if normalized.ndim == 2 else cv2.cvtColor(normalized, cv2.COLOR_BGR2GRAY)
+    encoded, jpeg = cv2.imencode(".jpg", gray, (cv2.IMWRITE_JPEG_QUALITY, PAGE_JPEG_QUALITY))
     if not bool(encoded):
-        return Err((_error("PAGE_NOT_FOUND", "normalized raster could not be PNG encoded"),))
+        return Err((_error("PAGE_NOT_FOUND", "normalized raster could not be JPEG encoded"),))
     return Ok(
         NormalizedRaster(
             normalized.copy(),
-            bytes(png),
+            bytes(jpeg),
             _float32_matrix(matrix.astype(np.float32)),
             _float32_matrix(inverse.astype(np.float32)),
             float(min(1.0, max(0.0, confidence))),

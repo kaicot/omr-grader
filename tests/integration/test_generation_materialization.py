@@ -160,8 +160,20 @@ def test_compact_result_view_exposes_retained_source_scans_without_copying(
     assert visible.read_bytes() == b"normalized scan"
     assert visible.stat().st_ino == source.stat().st_ino
     assert (session / "01원본스캔" / pdf.name).read_bytes() == b"original pdf"
-    for name in workbook_names:
-        assert (session / name).stat().st_ino == (generation / name).stat().st_ino
+    # A graded generation shows only its score book; the response book and the answer
+    # key copy are sheets of that book and stay inside the generation.
+    score_book = workbook_names[1]
+    assert (session / score_book).stat().st_ino == (generation / score_book).stat().st_ino
+    assert not (session / workbook_names[0]).exists()
+    assert not (session / workbook_names[2]).exists()
+
+    # Before grading the response book is the one shown.
+    (generation / score_book).unlink()
+    _refresh_result_view(session, generation)
+    assert (session / workbook_names[0]).stat().st_ino == (
+        generation / workbook_names[0]
+    ).stat().st_ino
+    assert not (session / score_book).exists()
 
 
 def test_grading_review_images_are_jpeg_quality_75_and_bounded_to_1600px_and_500kb(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from itertools import groupby
 from pathlib import Path
@@ -147,6 +147,40 @@ def write_response_projection(
             temporary_path.unlink()
 
 
+def write_effective_response_sheet(
+    sheet: Worksheet,
+    rows: Sequence[EffectiveResponse],
+    names_by_student_id: Mapping[str, str],
+    *,
+    review_notes: bool,
+) -> None:
+    """Fill ``sheet`` in the importable 응답결과 layout from effective responses.
+
+    With ``review_notes`` the 비고 also names unconfirmed answers, so a book a teacher
+    re-imports is held back until those yellow cells have been checked.
+    """
+    for column, header in enumerate(RESPONSE_HEADERS, 1):
+        _text(_cell(sheet, 1, column), header)
+    for serial, row in enumerate(rows, 1):
+        output_row = serial + 1
+        _cell(sheet, output_row, 1).value = serial
+        _text(_cell(sheet, output_row, 2), row.source_label)
+        _text(_cell(sheet, output_row, 3), row.student_id or "")
+        _text(
+            _cell(sheet, output_row, 4),
+            names_by_student_id.get(row.student_id, "") if row.student_id is not None else "",
+        )
+        _write_answers(sheet, output_row, row.answers)
+        _text(
+            _cell(sheet, output_row, 105),
+            join_notes(
+                review_note(_uncertain_questions(row.answers)) if review_notes else "",
+                "수동 수정 반영" if row.corrected_targets else "",
+            ),
+        )
+    style_header_row(sheet)
+
+
 def write_effective_response_projection(
     destination: Path,
     rows: tuple[EffectiveResponse, ...],
@@ -162,23 +196,7 @@ def write_effective_response_projection(
     if not isinstance(sheet, Worksheet):
         raise RuntimeError("new workbook must have an active worksheet")
     sheet.title = RESPONSE_SHEET_NAME
-    for column, header in enumerate(RESPONSE_HEADERS, 1):
-        _text(_cell(sheet, 1, column), header)
-    for serial, row in enumerate(rows, 1):
-        output_row = serial + 1
-        _cell(sheet, output_row, 1).value = serial
-        _text(_cell(sheet, output_row, 2), row.source_label)
-        _text(_cell(sheet, output_row, 3), row.student_id or "")
-        _text(
-            _cell(sheet, output_row, 4),
-            names_by_student_id.get(row.student_id, "") if row.student_id is not None else "",
-        )
-        _write_answers(sheet, output_row, row.answers)
-        _text(
-            _cell(sheet, output_row, 105),
-            "수동 수정 반영" if row.corrected_targets else "",
-        )
-    style_header_row(sheet)
+    write_effective_response_sheet(sheet, rows, names_by_student_id, review_notes=False)
     workbook.properties.creator = "OMR Grader"
     custom_doc_props = cast(Any, workbook).custom_doc_props
     custom_doc_props.append(StringProperty(name="schema", value="1"))
@@ -196,6 +214,7 @@ __all__ = [
     "response_projection_filename",
     "review_note",
     "style_header_row",
+    "write_effective_response_sheet",
     "write_effective_response_projection",
     "write_response_projection",
 ]

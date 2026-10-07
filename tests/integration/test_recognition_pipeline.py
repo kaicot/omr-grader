@@ -167,7 +167,7 @@ def test_a_page_turned_by_a_right_angle_reads_the_same_with_the_turn_that_uprigh
     assert _seen(result) == _expected(sheet) == _seen(_upright())
     assert result.page.student_id.value == sheet.student_id
     normalized = cv2.imdecode(
-        np.frombuffer(result.artifacts.normalized_png, dtype=np.uint8), cv2.IMREAD_COLOR
+        np.frombuffer(result.artifacts.normalized_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
     )
     assert normalized.shape[1] > normalized.shape[0]  # landscape again
 
@@ -419,11 +419,14 @@ def test_artifacts_are_unpublished_bytes_that_describe_the_page() -> None:
     profile = reference_sheet().profile
     assert profile.page is not None
 
-    normalized = cv2.imdecode(np.frombuffer(artifacts.normalized_png, np.uint8), cv2.IMREAD_COLOR)
-    overlay = cv2.imdecode(np.frombuffer(artifacts.overlay_png, np.uint8), cv2.IMREAD_COLOR)
+    normalized = cv2.imdecode(np.frombuffer(artifacts.normalized_jpeg, np.uint8), cv2.IMREAD_COLOR)
+    overlay = cv2.imdecode(np.frombuffer(artifacts.overlay_jpeg, np.uint8), cv2.IMREAD_COLOR)
 
     assert normalized.shape[:2] == (profile.page.source_height, profile.page.source_width)
     assert overlay.shape == normalized.shape
+    # Stored as JPEG, so the 01원본스캔 page is a fraction of an uncompressed PNG.
+    assert artifacts.normalized_jpeg.startswith(b"\xff\xd8\xff")
+    assert artifacts.overlay_jpeg.startswith(b"\xff\xd8\xff")
     assert not np.array_equal(normalized, overlay)  # the overlay draws the evidence boxes
     assert json.loads(artifacts.coordinates_json) == result.page.to_dict()
     assert artifacts.coordinates_json.endswith(b"\n")

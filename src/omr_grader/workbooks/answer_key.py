@@ -247,6 +247,22 @@ def answer_key_sample_bytes(sheet_name: str = "정답표") -> bytes:
     return stream.getvalue()
 
 
+def answer_key_rows(snapshot: AnswerKeySnapshot) -> tuple[tuple[int, str, Decimal], ...]:
+    """문항번호, 정답, 배점 rows as the answer-key workbook writes them."""
+    return tuple(
+        (
+            entry.question,
+            ""
+            if entry.status is KeyQuestionStatus.UNASKED
+            else "0"
+            if entry.status is KeyQuestionStatus.ALL
+            else "".join(str(choice) for choice in entry.answer.choices),
+            Decimal(entry.points),
+        )
+        for entry in snapshot.entries
+    )
+
+
 def answer_key_snapshot_bytes(snapshot: AnswerKeySnapshot) -> bytes:
     """Serialize a validated answer-key snapshot as a portable canonical workbook."""
     if (
@@ -260,15 +276,8 @@ def answer_key_snapshot_bytes(snapshot: AnswerKeySnapshot) -> bytes:
         raise RuntimeError("new workbook must have an active worksheet")
     sheet.title = snapshot.sheet_name or "정답표"
     sheet.append(ANSWER_KEY_HEADERS)
-    for entry in snapshot.entries:
-        answer = (
-            ""
-            if entry.status is KeyQuestionStatus.UNASKED
-            else "0"
-            if entry.status is KeyQuestionStatus.ALL
-            else "".join(str(choice) for choice in entry.answer.choices)
-        )
-        sheet.append((entry.question, answer, Decimal(entry.points)))
+    for row in answer_key_rows(snapshot):
+        sheet.append(row)
     stream = BytesIO()
     workbook.save(stream)
     return stream.getvalue()

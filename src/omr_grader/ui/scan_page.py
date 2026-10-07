@@ -122,6 +122,14 @@ class _ProfileCard(QFrame):
             self.style().polish(self)
 
 
+def _compact_drop_zone(widget: ImportDropWidget) -> None:
+    """Thinner padding for this page's drop zones, so all five sections fit unscrolled."""
+    layout = widget.layout()
+    if layout is not None:
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(2)
+
+
 class ScanPage(QWidget):
     """Input screen with no filesystem, OCR, or workbook work on the UI thread."""
 
@@ -243,15 +251,17 @@ class ScanPage(QWidget):
         self.sample_roster_button = QPushButton("샘플 명단 내려받기", roster_card)
         self.sample_roster_button.setObjectName("sampleRosterButton")
         self.sample_roster_button.setAccessibleName("샘플 응시 학생 명단 내려받기")
+        self.roster_status = QLabel("명단이 없으면 이름은 ‘미등록’으로 표시됩니다.", roster_card)
+        self.roster_status.setObjectName("rosterStatus")
         roster_header.addWidget(roster_title)
+        roster_header.addSpacing(12)
+        roster_header.addWidget(self.roster_status)
         roster_header.addStretch()
         roster_header.addWidget(self.sample_roster_button)
         roster_layout.addLayout(roster_header)
-        self.roster_status = QLabel("명단이 없으면 이름은 ‘미등록’으로 표시됩니다.", roster_card)
-        self.roster_status.setObjectName("rosterStatus")
-        roster_layout.addWidget(self.roster_status)
         self.roster_widget = ImportDropWidget(ImportKind.ROSTER, roster_card)
         self.roster_widget.setObjectName("rosterImportWidget")
+        _compact_drop_zone(self.roster_widget)
         roster_layout.addWidget(self.roster_widget)
         sections_layout.addWidget(roster_card)
 
@@ -272,6 +282,7 @@ class ScanPage(QWidget):
         source_layout.addLayout(source_header)
         self.source_widget = ImportDropWidget(ImportKind.SOURCE, source_card)
         self.source_widget.setObjectName("scanSourceImportWidget")
+        _compact_drop_zone(self.source_widget)
         source_layout.addWidget(self.source_widget)
         sections_layout.addWidget(source_card)
 
@@ -471,7 +482,8 @@ class ScanPage(QWidget):
         else:
             if self.roster_widget.set_selection((roster_path,)):
                 suffix = f" ({count}명)" if isinstance(count, int) and count >= 0 else ""
-                self.roster_status.setText(f"명단 연결됨: {roster_path}{suffix}")
+                self.roster_status.setText(f"명단 연결됨{suffix}")
+                self.roster_status.setToolTip(roster_path)
             else:
                 self._roster_path = None
                 self.roster_status.setText("명단 파일 형식을 확인하세요.")
@@ -788,7 +800,8 @@ class ScanPage(QWidget):
         if self._busy or selection.kind is not ImportKind.ROSTER:
             return
         self._roster_path = selection.paths[0]
-        self.roster_status.setText(f"명단 선택됨: {self._roster_path}")
+        self.roster_status.setText("명단 선택됨")
+        self.roster_status.setToolTip(self._roster_path)
 
     def _profile_browse_requested(self, _: ImportKind) -> None:
         if not self._busy:

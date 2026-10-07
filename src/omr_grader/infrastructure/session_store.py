@@ -642,6 +642,8 @@ _RESULT_VIEW_DIRS = (
 )
 _RESULT_VIEW_NAMES = frozenset(target for _, target in _RESULT_VIEW_DIRS)
 _RESULT_VIEW_PREFIXES = ("01_ocr_", "02_score_", "03_final_", "정답표_")
+_GRADED_BOOK_PREFIXES = ("02_score_", "03_final_")
+_FOLDED_BOOK_PREFIXES = ("01_ocr_", "정답표_")
 
 
 def _is_control_file(path: str) -> bool:
@@ -672,8 +674,16 @@ def _refresh_result_view(session: Path, generation: Path) -> None:
                 elif child.is_file():
                     retry_mkdir(destination.parent, parents=True, exist_ok=True)
                     retry_io(partial(os.link, child, destination))
-    for child in generation.iterdir():
-        if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
+    books = tuple(
+        child
+        for child in generation.iterdir()
+        if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES)
+    )
+    # A graded book carries the responses and the answer key as sheets of its own, so
+    # their separate books stay in the generation and the folder shows one workbook.
+    graded = any(child.name.startswith(_GRADED_BOOK_PREFIXES) for child in books)
+    for child in books:
+        if not (graded and child.name.startswith(_FOLDED_BOOK_PREFIXES)):
             retry_io(partial(os.link, child, session / child.name))
     _hide_internal_directories(session)
 

@@ -24,13 +24,21 @@ from omr_grader.domain.grading import INCORRECT, REVIEW, question_outcomes
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
 from omr_grader.infrastructure.result_layout import result_base_name
 
-from .response_book import join_notes, mark_review, review_note, style_header_row
+from .answer_key import ANSWER_KEY_HEADERS, answer_key_rows
+from .response_book import (
+    join_notes,
+    mark_review,
+    review_note,
+    style_header_row,
+    write_effective_response_sheet,
+)
+from .schemas import RESPONSE_SHEET_NAME
 
 _SCORE_HEADERS = (
-    "석차",
     "학번",
     "이름",
     "총점",
+    "석차",
     *(f"Q{number}" for number in range(1, 101)),
     "비고",
 )
@@ -154,31 +162,24 @@ def _write(
         if response.student_id is not None
         and sum(item.student_id == response.student_id for item in responses) > 1
     }
-    ordered = sorted(
-        enumerate(responses),
-        key=lambda item: (
-            scores_by_work_item[item[1].work_item_id].rank is None,
-            scores_by_work_item[item[1].work_item_id].rank or 0,
-            item[0],
-            item[1].work_item_id,
-        ),
-    )
+    # Teachers read the book by name: 가나다 order, then students without a roster name
+    # by student ID. Hangul syllables sort in 가나다 order by code point.
+    ordered = [
+        response
+        for _, response in sorted(
+            enumerate(responses),
+            key=lambda item: _name_order(item[0], item[1], names_by_student_id),
+        )
+    ]
     workbook = Workbook()
     worksheet = workbook.active
     if worksheet is None:
         raise RuntimeError("new workbook must have an active worksheet")
     worksheet.title = sheet_name
     worksheet.append(list(headers))
-    response_sheet = workbook.create_sheet("응답내역")
-    response_sheet.append(list(headers))
-    for position, (_, response) in enumerate(ordered, 2):
+    for position, response in enumerate(ordered, 2):
         score = scores_by_work_item[response.work_item_id]
-        student_id = response.student_id
-        if (
-            response.student_id_status not in (StudentIdStatus.NORMAL, StudentIdStatus.DUPLICATE)
-            or student_id is None
-        ):
-            student_id = ""
+        student_id = _shown_student_id(response)
         name = names_by_student_id.get(student_id, "") if student_id else ""
         outcomes = question_outcomes(response, key)
         note = join_notes(
@@ -186,10 +187,10 @@ def _write(
             review_note(number for number, outcome in enumerate(outcomes, 1) if outcome == REVIEW),
         )
         row: list[object] = [
-            score.rank,
             _display_text(student_id),
             _display_text(name),
             score.score,
+            score.rank,
         ]
         row.extend(_display_text(value) for value in outcomes)
         row.append(_display_text(note))
@@ -199,25 +200,16 @@ def _write(
             row.extend((corrected, _display_text(targets), _display_text(finalized_at)))
         worksheet.append(row)
         _mark_outcomes(worksheet, position, outcomes)
-        response_row: list[object] = [
-            score.rank,
-            _display_text(student_id),
-            _display_text(name),
-            score.score,
-        ]
-        response_row.extend(
-            _display_text(",".join(str(choice) for choice in answer.choices))
-            for answer in response.answers
-        )
-        response_row.append(_display_text(note))
-        if finalized_at is not None:
-            corrected = bool(response.corrected_targets)
-            targets = ",".join(_correction_label(target) for target in response.corrected_targets)
-            response_row.extend((corrected, _display_text(targets), _display_text(finalized_at)))
-        response_sheet.append(response_row)
-        _mark_outcomes(response_sheet, position, outcomes)
-    for sheet in (worksheet, response_sheet):
-        style_header_row(sheet)
+    style_header_row(worksheet)
+    # The raw responses in the importable layout, so this one book can also start a
+    # new exam through '응답 엑셀로 시작'.
+    write_effective_response_sheet(
+        workbook.create_sheet(RESPONSE_SHEET_NAME),
+        ordered,
+        names_by_student_id,
+        review_notes=True,
+    )
+    _write_answer_key(workbook, key)
     _write_legend(workbook)
     _set_provenance(workbook, session_id, revision, manifest_sha256)
     target = Path(destination) / filename
@@ -233,6 +225,38 @@ def _write(
     finally:
         temporary.unlink(missing_ok=True)
     return target
+
+
+_TOTAL_COLUMN = _SCORE_HEADERS.index("총점") + 1
+
+
+def _shown_student_id(response: EffectiveResponse) -> str:
+    """The student ID as the book shows it: blank unless it was read cleanly."""
+    if response.student_id is None or response.student_id_status not in (
+        StudentIdStatus.NORMAL,
+        StudentIdStatus.DUPLICATE,
+    ):
+        return ""
+    return response.student_id
+
+
+def _name_order(
+    position: int, response: EffectiveResponse, names_by_student_id: Mapping[str, str]
+) -> tuple[bool, str, bool, str, int]:
+    student_id = _shown_student_id(response)
+    name = names_by_student_id.get(student_id, "") if student_id else ""
+    return (not name, name, not student_id, student_id, position)
+
+
+def _write_answer_key(workbook: Workbook, key: AnswerKeySnapshot) -> None:
+    """The answer key this book was graded with, as its own sheet."""
+    sheet = workbook.create_sheet("정답표")
+    sheet.append(list(ANSWER_KEY_HEADERS))
+    for row in answer_key_rows(key):
+        sheet.append(row)
+    for cell in sheet[1]:
+        cell.font = Font(name="Calibri", size=11, bold=True)
+    sheet.freeze_panes = "A2"
 
 
 def _mark_wrong(cell: StyleableObject) -> None:
@@ -252,7 +276,7 @@ def _mark_outcomes(sheet: Worksheet, row: int, outcomes: Sequence[str]) -> None:
         elif outcome == REVIEW:
             mark_review(sheet.cell(row, column))
     if REVIEW in outcomes:
-        mark_review(sheet.cell(row, 4))
+        mark_review(sheet.cell(row, _TOTAL_COLUMN))
 
 
 def _write_legend(workbook: Workbook) -> None:
