@@ -188,15 +188,23 @@ class ScanCommand:
             raise TypeError("multiprocessing must be bool")
 
 
+SCAN_PHASES = ("prepare", "recognize", "save")
+
+
 @dataclass(frozen=True, slots=True)
 class ScanProgress:
+    """Scan progress; ``phase`` is preparing pages, reading them, or saving results."""
+
     completed: int
     total: int
     failed: int
     elapsed_ms: int
     eta_ms: int | None
+    phase: str = "recognize"
 
     def __post_init__(self) -> None:
+        if self.phase not in SCAN_PHASES:
+            raise ValueError("phase must be prepare, recognize or save")
         for value, name in (
             (self.completed, "completed"),
             (self.total, "total"),

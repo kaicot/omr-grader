@@ -4,7 +4,17 @@ from pathlib import Path
 from threading import Event
 from types import MappingProxyType
 
-from PySide6.QtCore import QCoreApplication, QEvent, QThread
+from PySide6.QtCore import (
+    QBuffer,
+    QByteArray,
+    QCoreApplication,
+    QEvent,
+    QIODevice,
+    QPointF,
+    Qt,
+    QThread,
+)
+from PySide6.QtGui import QColor, QImage
 
 from omr_grader.application.detail_presenter import (
     DetailAnswerDisplay,
@@ -12,8 +22,6 @@ from omr_grader.application.detail_presenter import (
     DetailLoadResult,
     DetailPageDisplay,
     DetailPageRequest,
-    DetailPreviewResult,
-    DetailSaveResult,
     DetailStudentDisplay,
     DetailSummaryDisplay,
     NormalizedCell,
@@ -184,63 +192,142 @@ def test_dashboard_detail_request_uses_controller_port_and_persisted_detail(qtbo
     controller.close()
 
 
-def test_detail_save_accepts_advanced_revision_with_replaced_handle(qtbot) -> None:
-    window, scan, grading = _window(qtbot)
-    student = DetailStudentDisplay(
+_DETAIL_IMAGE_SIZE = (200, 100)
+
+
+def _detail_png() -> bytes:
+    image = QImage(*_DETAIL_IMAGE_SIZE, QImage.Format.Format_RGB32)
+    image.fill(QColor("white"))
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    buffer.close()
+    return bytes(data.data())
+
+
+def _detail_student(*, raster: bool) -> DetailStudentDisplay:
+    return DetailStudentDisplay(
         "work-item",
         "00000001",
         "홍길동",
         1,
         "0",
         (DetailAnswerDisplay(1, AnswerValue((1,), AnswerStatus.NORMAL), False),),
-        cells=(NormalizedCell("answer", 1, 2, 0.1, 0.1, 0.1, 0.1),),
-        id_digits=(0, 0, 0, 0, 0, 0, 0, 1),
+        _detail_png() if raster else None,
+        (NormalizedCell("answer", 1, 2, 0.1, 0.1, 0.1, 0.1),) if raster else (),
+        (0, 0, 0, 0, 0, 0, 0, 1),
     )
-    current = DetailPageDisplay(
-        "session", 1, "시험", DetailSummaryDisplay(1, "0", "0", "0"), (student,), "old-handle"
+
+
+def _detail_display() -> DetailPageDisplay:
+    return DetailPageDisplay(
+        "session",
+        1,
+        "시험",
+        DetailSummaryDisplay(1, "0", "0", "0"),
+        (_detail_student(raster=False),),
+        "handle",
     )
-    committed = DetailPageDisplay(
-        "session", 2, "시험", DetailSummaryDisplay(1, "0", "0", "0"), (student,), "new-handle"
+
+
+def _detail_ports(**overrides) -> ServicePorts:
+    """Services of a persisted session: a listing row gains its raster when selected."""
+    ports = {
+        "detail_load": lambda value: Ok(
+            DetailLoadResult(value.correlation_id, _detail_student(raster=True))
+        ),
+        "detail_close": lambda _: Ok(None),
+    }
+    return ServicePorts(**{**ports, **overrides})
+
+
+def _open_detail_and_click_a_bubble(qtbot, window: MainWindow) -> None:
+    """Show the detail page with its scored image and click a bubble, as a user would."""
+    window.show()
+    qtbot.waitExposed(window)
+    window.navigate_to(MainWindow.EXAM_PAGE)
+    window.detail_page.set_display(_detail_display())
+    window.show_detail()
+    view = window.detail_page.graphics_view
+    assert view.active_image_count == 1
+    cell = _detail_student(raster=True).cells[0]
+    centre = QPointF(
+        (cell.left + cell.width / 2) * _DETAIL_IMAGE_SIZE[0],
+        (cell.top + cell.height / 2) * _DETAIL_IMAGE_SIZE[1],
     )
-    saved = []
+    assert view.cell_at(centre) == cell
+    qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.mapFromScene(centre))
+    assert not window.detail_page.is_dirty
+
+
+def test_sidebar_navigation_after_clicking_the_image_leaves_without_a_prompt(
+    qtbot, monkeypatch
+) -> None:
+    window, scan, grading = _window(qtbot)
+    closed: list[DetailPageRequest] = []
+    prompts: list[str] = []
     controller = AppController(
         window,
         scan,
         grading,
-        ServicePorts(
-            detail_load=lambda value: Ok(DetailLoadResult(value.correlation_id, student)),
-            detail_preview=lambda value: Ok(DetailPreviewResult(value.correlation_id, current)),
-            detail_save=lambda value: saved.append(value)
-            or Ok(DetailSaveResult(value.correlation_id, committed)),
-        ),
+        _detail_ports(detail_close=lambda value: closed.append(value) or Ok(None)),
         write_enabled=True,
     )
-    window.detail_page.set_display(current)
-    window.detail_page.graphics_view.cell_activated.emit(student.cells[0])
-    window.detail_page.request_save()
+    _open_detail_and_click_a_bubble(qtbot, window)
+    monkeypatch.setattr(window, "confirm_detail_exit", lambda: prompts.append("asked") or "cancel")
 
-    assert saved and saved[-1].detail_handle == "old-handle"
-    assert window.detail_page._display == committed
+    window.nav_buttons[MainWindow.SETTINGS_PAGE].click()
+
+    assert prompts == []
+    assert [request.detail_handle for request in closed] == ["handle"]
+    assert window.pages.currentIndex() == MainWindow.SETTINGS_PAGE
+    assert window.exam_page.currentWidget() is window.dashboard_page
+    assert controller._pending_navigation_page is None
     controller.close()
+
+
+def test_back_after_clicking_the_image_returns_to_the_dashboard_without_a_prompt(
+    qtbot, monkeypatch
+) -> None:
+    window, scan, grading = _window(qtbot)
+    prompts: list[str] = []
+    controller = AppController(window, scan, grading, _detail_ports(), write_enabled=True)
+    _open_detail_and_click_a_bubble(qtbot, window)
+    monkeypatch.setattr(window, "confirm_detail_exit", lambda: prompts.append("asked") or "cancel")
+
+    window.detail_page.back_button.click()
+
+    assert prompts == []
+    assert window.exam_page.currentWidget() is window.dashboard_page
+    controller.close()
+
+
+def test_closing_the_window_after_clicking_the_image_does_not_prompt(qtbot, monkeypatch) -> None:
+    window, scan, grading = _window(qtbot)
+    prompts: list[str] = []
+    controller = AppController(window, scan, grading, _detail_ports(), write_enabled=True)
+    _open_detail_and_click_a_bubble(qtbot, window)
+    monkeypatch.setattr(window, "confirm_detail_exit", lambda: prompts.append("asked") or "cancel")
+
+    window.close()
+
+    assert prompts == []
+    assert not window.isVisible()
+    assert controller._closing
 
 
 def test_detail_cancel_clears_pending_sidebar_navigation(qtbot, monkeypatch) -> None:
     window, scan, grading = _window(qtbot)
-    display = DetailPageDisplay(
-        "session", 1, "시험", DetailSummaryDisplay(0, "0", "0", "0"), (), "handle"
-    )
-    controller = AppController(window, scan, grading, ServicePorts(), write_enabled=True)
-    window.detail_page.set_display(display)
+    controller = AppController(window, scan, grading, _detail_ports(), write_enabled=True)
+    window.detail_page.set_display(_detail_display())
     window.show_detail()
-    window.detail_page._edits[("answer", "work-item", 1)] = DetailAnswerEdit(
-        "work-item",
-        1,
-        AnswerValue((1,), AnswerStatus.NORMAL),
-        AnswerValue((2,), AnswerStatus.NORMAL),
-    )
     monkeypatch.setattr(window, "confirm_detail_exit", lambda: "cancel")
+    controller._pending_navigation_page = 2
 
-    controller._detail_navigation_requested(2)
+    window.detail_page.unsaved_changes_requested.emit(
+        DetailPageRequest("session", 1, "back", (), "handle", "correlation")
+    )
 
     assert controller._pending_detail_exit is None
     assert controller._pending_navigation_page is None
@@ -248,7 +335,7 @@ def test_detail_cancel_clears_pending_sidebar_navigation(qtbot, monkeypatch) -> 
     controller.close()
 
 
-def test_malformed_detail_save_result_preserves_edits_and_allows_retry(qtbot) -> None:
+def test_malformed_detail_save_result_clears_pending_navigation(qtbot) -> None:
     window, scan, grading = _window(qtbot)
     request = DetailPageRequest(
         "session",
@@ -266,20 +353,19 @@ def test_malformed_detail_save_result_preserves_edits_and_allows_retry(qtbot) ->
         "correlation",
     )
     controller = AppController(
-        window, scan, grading, ServicePorts(detail_save=lambda _: Ok(object())), write_enabled=True
+        window,
+        scan,
+        grading,
+        _detail_ports(detail_save=lambda _: Ok(object())),
+        write_enabled=True,
     )
-    window.detail_page.set_display(
-        DetailPageDisplay(
-            "session", 1, "시험", DetailSummaryDisplay(0, "0", "0", "0"), (), "handle"
-        )
-    )
-    window.detail_page._edits[("answer", "work-item", 1)] = request.edits[0]
+    window.detail_page.set_display(_detail_display())
     controller._pending_detail_exit = request
     controller._pending_navigation_page = 2
 
-    window.detail_page.request_save()
+    window.detail_page.save_requested.emit(request)
 
-    assert window.detail_page.is_dirty and window.detail_page.save_button.isEnabled()
+    assert not window.detail_page.is_dirty
     assert controller._pending_detail_exit is None
     assert controller._pending_navigation_page is None
     controller.close()
@@ -733,6 +819,39 @@ def test_context_operations_propagate_progress_and_cooperative_cancel(qtbot):
 
     assert grading_cancel_commands == [CancelOperationCommand(request.operation_id)]
     assert grading._operation_id is not None
+
+
+def test_scan_phases_reach_the_scan_page_and_the_side_panel(qtbot):
+    window, scan, grading = _window(qtbot)
+    reading, saving = Event(), Event()
+
+    def scan_context(command, cancelled, progress):
+        progress(ScanProgress(1, 3, 0, 100, None, "prepare"))
+        reading.wait(5)
+        progress(ScanProgress(1, 3, 1, 900, 1800))
+        saving.wait(5)
+        progress(ScanProgress(2, 3, 1, 2000, None, "save"))
+        cancelled.wait(5)
+        return Ok(command.operation_id)
+
+    controller = AppController(
+        window, scan, grading, _ready_ports(scan_context=scan_context), write_enabled=True
+    )
+
+    controller.start_scan(_request())
+    qtbot.waitUntil(lambda: "스캔 파일을 준비하는 중 (1 / 3쪽)" in scan.progress_label.text())
+    assert window.session_progress_label.text() == "스캔 준비 1 / 3쪽"
+    reading.set()
+    qtbot.waitUntil(lambda: "답안지를 판독하는 중 (2 / 3쪽)" in scan.progress_label.text())
+    assert window.session_progress_label.text() == "OMR 인식 2 / 3 (67%)"
+    saving.set()
+    qtbot.waitUntil(lambda: "인식 결과를 저장하는 중" in scan.progress_label.text())
+    assert window.session_progress_label.text() == "인식 결과 저장 중"
+    assert scan.progress_bar.maximum() == 0  # saving cannot be counted, so the bar moves
+
+    controller.cancel_active(controller._active_operation_id)
+    qtbot.waitUntil(lambda: controller._active_bridge is None)
+    controller.close()
 
 
 def test_worker_exceptions_are_presented_as_typed_errors(qtbot):

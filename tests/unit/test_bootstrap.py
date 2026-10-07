@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from omr_grader import bootstrap as bootstrap_module
+from omr_grader.application.grading_presenter import GradingProgressDisplay
 from omr_grader.domain.errors import Err, ErrorInfo, Ok
 from omr_grader.infrastructure import capabilities
 from omr_grader.infrastructure.capabilities import CapabilityToken, RootCapability
@@ -147,11 +148,11 @@ def test_bootstrap_denied_root_returns_read_only_state_without_writes(
 
 
 def test_scan_controller_adapter_keeps_commit_authority_explicit() -> None:
-    calls: list[tuple[object, object]] = []
+    calls: list[tuple[object, object, object]] = []
 
     class ScanOrchestration:
-        def run_scan(self, command: object, coordinator: object):
-            calls.append((command, coordinator))
+        def run_scan(self, command: object, coordinator: object, *, progress=None):
+            calls.append((command, coordinator, progress))
             return Ok(None)
 
         def cancel_scan(self, command: object):
@@ -162,7 +163,26 @@ def test_scan_controller_adapter_keeps_commit_authority_explicit() -> None:
     adapter = ScanControllerAdapter(ScanOrchestration(), coordinator)  # type: ignore[arg-type]
 
     assert adapter.run_scan(command) == Ok(None)  # type: ignore[arg-type]
-    assert calls == [(command, coordinator)]
+    assert adapter.run_scan(command, print) == Ok(None)  # type: ignore[arg-type]
+    assert calls == [(command, coordinator, None), (command, coordinator, print)]
+
+
+def test_grading_reports_reading_then_counted_scoring_then_saving() -> None:
+    shown: list[object] = []
+    times = iter((100.0, 101.0, 102.0, 104.0, 110.0))
+    phases = bootstrap_module._GradingPhases(shown.append, lambda: next(times))
+
+    phases.show("시험 기록을 읽는 중")
+    phases.scored(0, 4)
+    phases.scored(2, 4)
+    phases.scored(4, 4)
+
+    assert shown == [
+        GradingProgressDisplay(0, 0, 1, None, "시험 기록을 읽는 중"),
+        GradingProgressDisplay(0, 4, 2, None, "점수를 계산하는 중 (0 / 4명)"),
+        GradingProgressDisplay(2, 4, 4, 4, "점수를 계산하는 중 (2 / 4명)"),
+        GradingProgressDisplay(0, 0, 10, None, "채점 이미지와 결과 엑셀을 저장하는 중"),
+    ]
 
 
 def test_startup_splash_identifies_product_and_developer(qapp) -> None:

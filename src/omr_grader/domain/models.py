@@ -6,6 +6,7 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
+from functools import cache
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
@@ -189,6 +190,16 @@ def _enum(value: object, enum_type: type[E]) -> None:
 E = TypeVar("E", bound=Enum)
 
 
+@cache
+def _field_hints(cls: type) -> dict[str, Any]:
+    """Resolved field annotations of a wire record, computed once per class.
+
+    Resolving postponed annotations evaluates every annotation string, which made
+    decoding a committed exam record dominate grading time.
+    """
+    return get_type_hints(cls)
+
+
 class _Wire:
     __dataclass_fields__: ClassVar[dict[str, object]]
 
@@ -203,7 +214,7 @@ class _Wire:
             raise ValueError(f"{cls.__name__} has invalid wire fields")
         if "schema_version" in value:
             _schema(value["schema_version"])
-        hints = get_type_hints(cls)
+        hints = _field_hints(cast(type, cls))
         return cls(
             **{
                 item.name: _decode(value[item.name], hints[item.name])

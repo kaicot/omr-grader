@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import BinaryIO, Protocol
 
 from omr_grader.domain.errors import Result
@@ -34,6 +35,7 @@ from .dto import (
     ResponseBookValidation,
     RestoreCommand,
     ScanCommand,
+    ScanProgress,
     ScoreInput,
     ScoreSet,
     SessionCreateResult,
@@ -53,7 +55,11 @@ class ProfileUseCase(Protocol):
 
 
 class ScanUseCase(Protocol):
-    def run_scan(self, command: ScanCommand) -> Result[SessionCreateResult]: ...
+    def run_scan(
+        self,
+        command: ScanCommand,
+        progress: Callable[[ScanProgress], None] | None = None,
+    ) -> Result[SessionCreateResult]: ...
 
     def cancel_scan(self, command: CancelOperationCommand) -> Result[None]: ...
 

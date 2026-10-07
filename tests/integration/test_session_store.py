@@ -3,6 +3,8 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -257,6 +259,32 @@ def test_semantic_mismatch_is_rejected_before_staging(tmp_path: Path) -> None:
 
     assert _code(store.commit_generation(mutation)) == "SESSION_SEMANTIC_MISMATCH"
     assert not (tmp_path / "exam-session-1" / ".staging").exists()
+
+
+def _hidden(path: Path) -> bool:
+    attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    return bool(attributes & stat.FILE_ATTRIBUTE_HIDDEN)
+
+
+def test_saved_sessions_hide_internal_folders_and_leave_no_staging(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    _create(store)
+    session = tmp_path / "exam-session-1"
+    windows = os.name == "nt"
+
+    assert _hidden(session / "generations") is windows
+
+    assert isinstance(store.commit_generation(_mutation()), Ok)
+    assert isinstance(store.commit_generation(_mutation(expected_revision=2)), Ok)
+
+    assert not (session / ".staging").exists()
+    assert _hidden(session / "generations") is windows
+    assert not any(_hidden(path) for path in session.rglob("*") if path.name != "generations")
+    opened = store.open_committed_snapshot(
+        SnapshotRequest("session-1", 3, SnapshotPurpose.DETAIL)
+    )
+    assert isinstance(opened, Ok)
+    opened.value.close()
 
 
 def test_generation_prune_failure_preserves_committed_current_and_retries_safely(

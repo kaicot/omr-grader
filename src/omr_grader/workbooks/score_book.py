@@ -14,12 +14,17 @@ from typing import Any, cast
 
 from openpyxl import Workbook
 from openpyxl.packaging.custom import StringProperty
+from openpyxl.styles import Font, PatternFill
+from openpyxl.styles.styleable import StyleableObject
+from openpyxl.worksheet.worksheet import Worksheet
 
 from omr_grader.application.dto import ScoreSet
 from omr_grader.domain.enums import StudentIdStatus
-from omr_grader.domain.grading import question_outcomes
+from omr_grader.domain.grading import INCORRECT, REVIEW, question_outcomes
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
 from omr_grader.infrastructure.result_layout import result_base_name
+
+from .response_book import join_notes, mark_review, review_note, style_header_row
 
 _SCORE_HEADERS = (
     "석차",
@@ -31,6 +36,12 @@ _SCORE_HEADERS = (
 )
 _FINAL_HEADERS = (*_SCORE_HEADERS, "수정여부", "수정문항", "확정일시")
 _DANGEROUS_PREFIXES = ("=", "+", "-", "@")
+# Excel's "Bad" colors mark answers scored as wrong.  Fonts repeat openpyxl's default face and
+# size so styled cells match the unstyled ones around them.
+_WRONG_FILL = PatternFill(fill_type="solid", start_color="FFFFC7CE", end_color="FFFFC7CE")
+_WRONG_FONT = Font(name="Calibri", size=11, color="FF9C0006")
+
+
 def score_filename(exam_name: str, committed_at: str) -> str:
     return f"02_score_{result_base_name(exam_name, committed_at)}_채점결과.xlsx"
 
@@ -160,7 +171,7 @@ def _write(
     worksheet.append(list(headers))
     response_sheet = workbook.create_sheet("응답내역")
     response_sheet.append(list(headers))
-    for _, response in ordered:
+    for position, (_, response) in enumerate(ordered, 2):
         score = scores_by_work_item[response.work_item_id]
         student_id = response.student_id
         if (
@@ -169,20 +180,25 @@ def _write(
         ):
             student_id = ""
         name = names_by_student_id.get(student_id, "") if student_id else ""
-        note = "중복확인필요" if response.student_id in duplicate_ids else ""
+        outcomes = question_outcomes(response, key)
+        note = join_notes(
+            "중복확인필요" if response.student_id in duplicate_ids else "",
+            review_note(number for number, outcome in enumerate(outcomes, 1) if outcome == REVIEW),
+        )
         row: list[object] = [
             score.rank,
             _display_text(student_id),
             _display_text(name),
             score.score,
         ]
-        row.extend(_display_text(value) for value in question_outcomes(response, key))
+        row.extend(_display_text(value) for value in outcomes)
         row.append(_display_text(note))
         if finalized_at is not None:
             corrected = bool(response.corrected_targets)
             targets = ",".join(_correction_label(target) for target in response.corrected_targets)
             row.extend((corrected, _display_text(targets), _display_text(finalized_at)))
         worksheet.append(row)
+        _mark_outcomes(worksheet, position, outcomes)
         response_row: list[object] = [
             score.rank,
             _display_text(student_id),
@@ -199,6 +215,10 @@ def _write(
             targets = ",".join(_correction_label(target) for target in response.corrected_targets)
             response_row.extend((corrected, _display_text(targets), _display_text(finalized_at)))
         response_sheet.append(response_row)
+        _mark_outcomes(response_sheet, position, outcomes)
+    for sheet in (worksheet, response_sheet):
+        style_header_row(sheet)
+    _write_legend(workbook)
     _set_provenance(workbook, session_id, revision, manifest_sha256)
     target = Path(destination) / filename
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -213,6 +233,43 @@ def _write(
     finally:
         temporary.unlink(missing_ok=True)
     return target
+
+
+def _mark_wrong(cell: StyleableObject) -> None:
+    cell.fill = _WRONG_FILL
+    cell.font = _WRONG_FONT
+
+
+def _mark_outcomes(sheet: Worksheet, row: int, outcomes: Sequence[str]) -> None:
+    """Pink for answers scored as wrong, yellow for answers waiting for a check.
+
+    Correct and unasked questions stay plain.  A student with an unconfirmed answer has no
+    total yet, so the total is yellow as well.
+    """
+    for column, outcome in enumerate(outcomes, 5):
+        if outcome == INCORRECT:
+            _mark_wrong(sheet.cell(row, column))
+        elif outcome == REVIEW:
+            mark_review(sheet.cell(row, column))
+    if REVIEW in outcomes:
+        mark_review(sheet.cell(row, 4))
+
+
+def _write_legend(workbook: Workbook) -> None:
+    """Explain the colors on a small extra sheet."""
+    sheet = workbook.create_sheet("색 설명")
+    sheet.append(["분홍", "오답, 무응답, 중복 표기 (틀린 것으로 채점)"])
+    sheet.append(
+        [
+            "노랑",
+            "확인 필요: 인식이 애매해 검토 전까지 채점하지 않음 (총점도 노랑, 비고에 문항 번호)",
+        ]
+    )
+    sheet.append(["색 없음", "정답, 또는 정답표에 없는 문항"])
+    _mark_wrong(sheet.cell(1, 1))
+    mark_review(sheet.cell(2, 1))
+    sheet.column_dimensions["A"].width = 10
+    sheet.column_dimensions["B"].width = 90
 
 
 def _set_provenance(

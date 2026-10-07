@@ -40,6 +40,7 @@ class ThemeTokens:
     accent_hover: str
     success: str
     error: str
+    warning: str
     checkbox_bg: str
     checkbox_border: str
     checkbox_checked_bg: str
@@ -68,6 +69,7 @@ class ThemeTokens:
             "link": self.link_color,
             "success": self.success,
             "error": self.error,
+            "warning": self.warning,
         }
 
 
@@ -92,6 +94,7 @@ _THEME_TOKENS: dict[Theme, ThemeTokens] = {
         accent_hover="#1D4ED8",
         success="#15803D",
         error="#B42318",
+        warning="#B45309",
         checkbox_bg="#FFFFFF",
         checkbox_border="#334155",
         checkbox_checked_bg="#BFDBFE",
@@ -118,6 +121,7 @@ _THEME_TOKENS: dict[Theme, ThemeTokens] = {
         accent_hover="#93C5FD",
         success="#6EE7A0",
         error="#FF9B8F",
+        warning="#FBBF24",
         checkbox_bg="#334155",
         checkbox_border="#CBD5E1",
         checkbox_checked_bg="#2563EB",
@@ -327,8 +331,8 @@ def stylesheet_for(theme: Theme | str) -> str:
             border: 2px solid {values["primary"]}; outline: none;
         }}
         QFrame#placeholderPage, QFrame#scanExamCard, QFrame#scanRosterCard,
-        QFrame#scanSourceCard, QFrame#scanSensitivityCard, QFrame#answerKeyUploadCard,
-        QFrame#answerKeyValidationCard, QFrame#gradingProgressPanel,
+        QFrame#scanSourceCard, QFrame#scanProfileCard, QFrame#scanSensitivityCard,
+        QFrame#answerKeyUploadCard, QFrame#answerKeyValidationCard, QFrame#gradingProgressPanel,
         QFrame#dashboardTableCard, QFrame#settingsPortablePathCard,
         QFrame#settingsProfileCard, QFrame#settingsRecognitionCard {{
             background: {values["surface"]}; border: 1px solid {values["border"]};
@@ -349,14 +353,16 @@ def stylesheet_for(theme: Theme | str) -> str:
             border-color: {values["primary"]};
             background: {values["surface"]};
         }}
+        QFrame#scanProfileCard[dragActive="true"] {{
+            border-color: {values["primary"]}; background: {values["window"]};
+        }}
         QPushButton#freshResponseButton, QPushButton#scanResetButton, QPushButton#scanCancelButton,
         QPushButton#scanRunButton, QPushButton#primaryActionButton,
         QPushButton#profileImportButton,
         QPushButton#sampleRosterButton, QPushButton#sourceFolderButton,
         QPushButton#sourcePdfButton, QPushButton#sampleAnswerKeyButton,
         QPushButton#answerKeyUploadButton, QPushButton#cancelGradingButton,
-        QPushButton#gradingResetButton, QPushButton#detailBackButton,
-        QPushButton#detailSaveButton {{
+        QPushButton#gradingResetButton, QPushButton#detailBackButton {{
             background: {values["surface"]}; border: 1px solid {values["border"]};
             border-radius: 7px; min-height: 34px; padding: 5px 13px;
             font-weight: 600;
@@ -367,7 +373,7 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#sourceFolderButton:hover, QPushButton#sourcePdfButton:hover,
         QPushButton#sampleAnswerKeyButton:hover, QPushButton#answerKeyUploadButton:hover,
         QPushButton#cancelGradingButton:hover, QPushButton#gradingResetButton:hover,
-        QPushButton#detailBackButton:hover, QPushButton#detailSaveButton:hover {{
+        QPushButton#detailBackButton:hover {{
             border-color: {values["primary"]}; background: {values["window"]};
         }}
         QPushButton#freshResponseButton, QPushButton#scanRunButton,
@@ -389,8 +395,7 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#sampleRosterButton:pressed, QPushButton#sourceFolderButton:pressed,
         QPushButton#sourcePdfButton:pressed, QPushButton#sampleAnswerKeyButton:pressed,
         QPushButton#answerKeyUploadButton:pressed, QPushButton#cancelGradingButton:pressed,
-        QPushButton#gradingResetButton:pressed, QPushButton#detailBackButton:pressed,
-        QPushButton#detailSaveButton:pressed {{
+        QPushButton#gradingResetButton:pressed, QPushButton#detailBackButton:pressed {{
             padding-top: 7px; padding-bottom: 3px;
             border: 2px solid {values["text"]};
         }}
@@ -401,10 +406,26 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#sampleRosterButton:disabled, QPushButton#sourceFolderButton:disabled,
         QPushButton#sourcePdfButton:disabled, QPushButton#sampleAnswerKeyButton:disabled,
         QPushButton#answerKeyUploadButton:disabled, QPushButton#cancelGradingButton:disabled,
-        QPushButton#gradingResetButton:disabled, QPushButton#detailBackButton:disabled,
-        QPushButton#detailSaveButton:disabled {{
+        QPushButton#gradingResetButton:disabled, QPushButton#detailBackButton:disabled {{
             background: {values["window"]}; color: {values["disabled"]};
             border-color: {values["border"]};
+        }}
+        QPushButton#profileImportButton[attention="true"] {{
+            border: 2px solid {values["error"]}; padding: 4px 12px;
+        }}
+        QComboBox#profileCombo {{
+            background: {values["surface"]}; border: 1px solid {values["border"]};
+            border-radius: 6px; padding: 5px 8px;
+        }}
+        QComboBox#profileCombo[attention="true"] {{
+            border: 2px solid {values["error"]}; padding: 4px 7px;
+        }}
+        QProgressBar#formProgressBar {{
+            background: {values["window"]}; border: 1px solid {values["border"]};
+            border-radius: 4px; min-height: 6px; max-height: 6px;
+        }}
+        QProgressBar#formProgressBar::chunk {{
+            background: {values["primary"]}; border-radius: 3px;
         }}
         QLabel#placeholderHeading, QLabel#scanPageTitle, QLabel#gradingTitle,
         QLabel#dashboardTitle, QLabel#trashDialogTitle {{
@@ -417,6 +438,9 @@ def stylesheet_for(theme: Theme | str) -> str:
         QLabel#scanFormLabel, QLabel#scanSectionLabel {{
             color: {values["text"]}; font-weight: 600; background: transparent;
         }}
+        QLabel#profileSummary, QLabel#scanSessionFooter {{
+            color: {values["muted"]}; font-size: 12px;
+        }}
         QLabel#statusLabel, QLabel#sessionStatusLabel {{
             background: transparent; color: {values["muted"]};
         }}
@@ -426,6 +450,8 @@ def stylesheet_for(theme: Theme | str) -> str:
         }}
         QLabel[role="success"] {{ color: {values["success"]}; font-weight: 600; }}
         QLabel[role="error"] {{ color: {values["error"]}; font-weight: 600; }}
+        QLabel[role="hint"] {{ color: {values["muted"]}; }}
+        QLabel#formStatusLabel[role="warning"] {{ color: {values["warning"]}; font-weight: 600; }}
         QWidget:disabled {{ color: {values["disabled"]}; }}
         QWidget#dashboardPage, QWidget#dashboardContent, QScrollArea#dashboardScrollArea,
         QDialog#trashDialog {{

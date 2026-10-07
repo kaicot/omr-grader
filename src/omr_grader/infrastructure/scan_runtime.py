@@ -6,6 +6,7 @@ import hashlib
 import json
 import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -21,6 +22,7 @@ from omr_grader.application.dto import (
     CancelOperationCommand,
     EffectiveResponseProjection,
     ScanCommand,
+    ScanProgress,
     SessionCreateResult,
 )
 from omr_grader.application.ports import ScanUseCase as ScanUseCasePort
@@ -34,6 +36,7 @@ from omr_grader.domain.enums import (
     OperationKind,
     RosterSnapshotKind,
     SessionState,
+    StudentIdStatus,
 )
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import (
@@ -79,7 +82,7 @@ from omr_grader.recognition.thresholds import (
     thresholds_for_sensitivity,
 )
 from omr_grader.ui.workers import WorkerTask
-from omr_grader.workbooks.response_book import write_response_projection
+from omr_grader.workbooks.response_book import recognition_note, write_response_projection
 
 
 def _error(code: str, field: str) -> Err:
@@ -160,7 +163,10 @@ class ScanRuntime:
         ] = {}
         self._app_version = app_version
 
-    def build_tasks(self, command: ScanCommand) -> Result[tuple[WorkerTask, ...]]:
+    def build_tasks(
+        self, command: ScanCommand, progress: Callable[[int, int], None] | None = None
+    ) -> Result[tuple[WorkerTask, ...]]:
+        """Render or read every page into a worker task; ``progress`` follows each page."""
         profile = self._profiles.load(command.profile_path)
         if isinstance(profile, Err):
             return profile
@@ -263,6 +269,8 @@ class ScanRuntime:
                 )
             except (TypeError, ValueError):
                 return _error("SCAN_SOURCE_INVALID", "source")
+            if progress is not None:
+                progress(len(tasks), len(inputs))
         self._prepared[command.operation_id] = (
             profile.value,
             roster.value,
@@ -527,6 +535,10 @@ class ScanRuntime:
                 result.artifacts.coordinates_json
             )
             student_id = page.student_id.value or ""
+            answers = tuple(answer.value for answer in page.answers)
+            note = recognition_note(
+                answers, student_id_valid=page.student_id.status is StudentIdStatus.NORMAL
+            )
             rows.append(
                 ImportedResponseRef(
                     1,
@@ -539,8 +551,8 @@ class ScanRuntime:
                     page.page_ref.source_display_name,
                     student_id,
                     "미등록",
-                    tuple(answer.value for answer in page.answers),
-                    "",
+                    answers,
+                    note,
                 )
             )
         try:
@@ -578,8 +590,10 @@ class ScanControllerAdapter:
         self._scan = scan
         self._coordinator = coordinator
 
-    def run_scan(self, command: ScanCommand) -> Result[SessionCreateResult]:
-        return self._scan.run_scan(command, self._coordinator)
+    def run_scan(
+        self, command: ScanCommand, progress: Callable[[ScanProgress], None] | None = None
+    ) -> Result[SessionCreateResult]:
+        return self._scan.run_scan(command, self._coordinator, progress=progress)
 
     def cancel_scan(self, command: CancelOperationCommand) -> Result[None]:
         return self._scan.cancel_scan(command)

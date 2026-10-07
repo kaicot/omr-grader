@@ -195,6 +195,21 @@ def test_only_the_first_pages_of_a_large_selection_are_sampled(
     assert result.value.pages_checked == 1
 
 
+def test_progress_follows_each_sample_page_and_a_failing_listener_is_ignored(
+    saved: SavedForm, scans: Scans
+) -> None:
+    reports: list[tuple[int, int]] = []
+
+    def listen(done: int, total: int) -> None:
+        reports.append((done, total))
+        raise RuntimeError("a broken progress display")
+
+    result = saved.detector.detect((str(scans.first), str(scans.second)), listen)
+
+    assert isinstance(result, Ok)
+    assert reports == [(1, 2), (2, 2)]
+
+
 def test_a_page_of_another_form_among_the_samples_is_counted_but_does_not_block_reuse(
     saved: SavedForm, scans: Scans
 ) -> None:

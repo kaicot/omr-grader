@@ -1,8 +1,8 @@
-"""Screen 3-1: passive, controller-driven OMR inspection and correction."""
+"""Screen 3-1: passive, controller-driven, view-only OMR result inspection."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from uuid import uuid4
 
 from PySide6.QtCore import QModelIndex, Qt, Signal
@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
 )
 
 from omr_grader.application.detail_presenter import (
-    DetailAnswerEdit,
     DetailEdit,
     DetailLoadRequest,
     DetailLoadResult,
@@ -26,24 +25,19 @@ from omr_grader.application.detail_presenter import (
     DetailPreviewResult,
     DetailSaveResult,
     DetailStudentDisplay,
-    NormalizedCell,
 )
-from omr_grader.domain.enums import AnswerStatus
-from omr_grader.domain.models import AnswerValue
 from omr_grader.domain.score_average import display_average
 from omr_grader.ui.detail_model import DetailTableModel
 from omr_grader.ui.omr_graphics_view import OmrGraphicsView
 
 
-@dataclass(frozen=True, slots=True)
-class _SaveSnapshot:
-    request: DetailPageRequest
-    edit_generation: int
-
-
-
 class DetailPage(QWidget):
-    """A passive UI: controller owns loading, previews, writes, and navigation."""
+    """A passive, view-only UI: the controller owns loading and navigation.
+
+    Corrections are not offered yet, so the page is never dirty and never requests a
+    preview or a save. The save, discard, preview, and unsaved-changes signals stay
+    declared for the controller's bindings but are never emitted.
+    """
 
     back_requested = Signal(object)
     save_requested = Signal(object)
@@ -57,24 +51,17 @@ class DetailPage(QWidget):
         super().__init__(parent)
         self._display: DetailPageDisplay | None = None
         self._selected: DetailStudentDisplay | None = None
-        self._answer_original: dict[tuple[str, int], AnswerValue] = {}
-        self._edits: dict[tuple[str, str, int], DetailEdit] = {}
-        self._lazy_authorized_work_items: set[str] = set()
+        self._loaded_work_items: set[str] = set()
         self._load_correlations: dict[str, str] = {}
-        self._preview_correlation_id: str | None = None
-        self._save_snapshot: _SaveSnapshot | None = None
-        self._save_in_progress = False
-        self._edit_generation = 0
-        self._write_enabled = True
         self._build_ui()
 
     @property
     def is_dirty(self) -> bool:
-        return bool(self._edits)
+        return False
 
     @property
     def pending_edits(self) -> tuple[DetailEdit, ...]:
-        return tuple(self._edits[key] for key in sorted(self._edits))
+        return ()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -86,14 +73,9 @@ class DetailPage(QWidget):
         self.back_button.clicked.connect(self.request_back)
         self.title_label = QLabel("상세 결과")
         self.title_label.setProperty("role", "page-title")
-        self.save_button = QPushButton("수정사항 저장")
-        self.save_button.setObjectName("detailSaveButton")
-        self.save_button.setAccessibleName("수정사항 저장")
-        self.save_button.clicked.connect(self.request_save)
         title_row.addWidget(self.back_button)
         title_row.addWidget(self.title_label)
         title_row.addStretch()
-        title_row.addWidget(self.save_button)
         root.addLayout(title_row)
         self.summary_label = QLabel("요약: 표시할 결과가 없습니다.")
         self.summary_label.setAccessibleName("시험 요약")
@@ -134,7 +116,6 @@ class DetailPage(QWidget):
         right_layout.addLayout(controls)
         self.graphics_view = OmrGraphicsView()
         self.graphics_view.setMinimumSize(320, 240)
-        self.graphics_view.cell_activated.connect(self._activate_cell)
         right_layout.addWidget(self.graphics_view)
         self.no_image_label = QLabel("엑셀로 채점된 결과로 OMR 이미지가 없습니다")
         self.no_image_label.setObjectName("detailNoImageLabel")
@@ -151,14 +132,11 @@ class DetailPage(QWidget):
         self.splitter.setSizes([400, 600])
         root.addWidget(self.splitter, 1)
         self.setMinimumSize(720, 480)
-        self._refresh_actions()
 
     def set_write_enabled(self, enabled: bool) -> None:
+        """Validate the controller-owned authority; a view-only page has nothing to gate."""
         if type(enabled) is not bool:
             raise TypeError("enabled must be bool")
-        self._write_enabled = enabled
-        self.graphics_view.set_editable(enabled and not self._save_in_progress)
-        self._refresh_actions()
 
     def set_display(self, display: DetailPageDisplay | None) -> None:
         if display is not None and not isinstance(display, DetailPageDisplay):
@@ -190,13 +168,8 @@ class DetailPage(QWidget):
                 ),
             )
         self._display = display
-        self._edits.clear()
-        self._set_originals()
-        self._lazy_authorized_work_items.clear()
+        self._loaded_work_items.clear()
         self._load_correlations.clear()
-        self._preview_correlation_id = None
-        self._save_snapshot = None
-        self._save_in_progress = False
         if display is None:
             self.title_label.setText("상세 결과")
             self.summary_label.setText("요약: 표시할 결과가 없습니다.")
@@ -209,7 +182,6 @@ class DetailPage(QWidget):
                 f"최고점 {x.high_score}점 | 최저점 {x.low_score}점"
             )
             self._restore_selection(display.students, selected_id)
-        self._refresh_actions()
 
     def apply_loaded_work_item(self, result: DetailLoadResult) -> None:
         """Merge a correlated lazy result and retain only the selected raster."""
@@ -224,8 +196,8 @@ class DetailPage(QWidget):
         ):
             return
         self._load_correlations.pop(student.work_item_id, None)
-        self._record_lazy_baselines(student)
-        student = self._with_drafts(student)
+        # Only this student's image is kept, so every other student loads again.
+        self._loaded_work_items = {student.work_item_id}
         students = tuple(
             student
             if item.work_item_id == student.work_item_id
@@ -236,54 +208,7 @@ class DetailPage(QWidget):
         self._restore_selection(students, student.work_item_id)
 
     def apply_preview(self, result: DetailPreviewResult) -> None:
-        if (
-            not isinstance(result, DetailPreviewResult)
-            or self._display is None
-            or result.correlation_id != self._preview_correlation_id
-            or not self._matches_display(result.display)
-        ):
-            return
-        selected_id = None if self._selected is None else self._selected.work_item_id
-        previous = {student.work_item_id: student for student in self._display.students}
-        students = tuple(
-            self._with_drafts(
-                replace(
-                    student,
-                    image_bytes=previous[student.work_item_id].image_bytes,
-                    cells=previous[student.work_item_id].cells,
-                )
-            )
-            if student.work_item_id in previous
-            else student
-            for student in result.display.students
-        )
-        self._display = replace(result.display, students=students)
-        self._restore_selection(students, selected_id)
-
-    def _set_originals(self) -> None:
-        """Listing and preview projections cannot authorize correction before-values."""
-        self._answer_original.clear()
-
-    def _record_lazy_baselines(self, student: DetailStudentDisplay) -> None:
-        self._lazy_authorized_work_items.add(student.work_item_id)
-        for answer in student.answers:
-            key = (student.work_item_id, answer.question)
-            if ("answer", student.work_item_id, answer.question) not in self._edits:
-                self._answer_original[key] = answer.answer
-
-    def _with_drafts(self, student: DetailStudentDisplay) -> DetailStudentDisplay:
-        answers = tuple(
-            replace(answer, answer=edit.after)
-            if isinstance(
-                edit := self._edits.get(
-                    ("answer", student.work_item_id, answer.question)
-                ),
-                DetailAnswerEdit,
-            )
-            else answer
-            for answer in student.answers
-        )
-        return replace(student, answers=answers)
+        """Ignore a preview: this page never requests one, so none can be current."""
 
     def _matches_display(
         self, display: DetailPageDisplay, work_item_id: str | None = None
@@ -299,6 +224,7 @@ class DetailPage(QWidget):
                 or any(student.work_item_id == work_item_id for student in display.students)
             )
         )
+
     def _restore_selection(
         self, students: tuple[DetailStudentDisplay, ...], selected_id: str | None
     ) -> None:
@@ -324,7 +250,7 @@ class DetailPage(QWidget):
         self._show_student(student)
         if (
             student is not None
-            and student.work_item_id not in self._lazy_authorized_work_items
+            and student.work_item_id not in self._loaded_work_items
             and self._display is not None
             and student.work_item_id not in self._load_correlations
         ):
@@ -351,64 +277,6 @@ class DetailPage(QWidget):
         self.conflict_label.setText(
             "" if student is None or student.id_conflict is None else student.id_conflict
         )
-        self._refresh_actions()
-
-    def _activate_cell(self, cell: NormalizedCell) -> None:
-        if not self._write_enabled or self._save_in_progress or self._selected is None:
-            return
-        if cell.kind == "answer":
-            if cell.question is None or cell.option is None:
-                return
-            work_item_id, question = self._selected.work_item_id, cell.question
-            baseline_key = (work_item_id, question)
-            if baseline_key not in self._answer_original:
-                return
-            before = self._answer_original[baseline_key]
-            existing = self._edits.get(("answer", work_item_id, question))
-            current = before if existing is None else existing.after
-            choices = tuple(choice for choice in current.choices if choice != cell.option)
-            if cell.option not in current.choices:
-                choices = tuple(sorted((*current.choices, cell.option)))
-            after = AnswerValue(
-                choices,
-                AnswerStatus.BLANK
-                if not choices
-                else AnswerStatus.NORMAL
-                if len(choices) == 1
-                else AnswerStatus.MULTIPLE,
-            )
-            key = ("answer", work_item_id, question)
-            if after == before:
-                self._edits.pop(key, None)
-            else:
-                self._edits[key] = DetailAnswerEdit(work_item_id, question, before, after)
-        else:
-            return
-        self._edit_generation += 1
-        self._request_preview()
-        self._refresh_actions()
-
-    def _request_preview(self) -> None:
-        if self._save_in_progress:
-            return
-        request = self._request("preview")
-        if request is not None:
-            self.preview_requested.emit(request)
-
-    def request_save(self) -> None:
-        if (
-            not self._write_enabled
-            or self._save_in_progress
-            or self._display is None
-            or not self._edits
-        ):
-            return
-        request = self._request("save")
-        if request is not None:
-            self._save_snapshot = _SaveSnapshot(request, self._edit_generation)
-            self._save_in_progress = True
-            self._refresh_actions()
-            self.save_requested.emit(request)
 
     def request_back(self) -> None:
         self._request_navigation("back")
@@ -416,69 +284,30 @@ class DetailPage(QWidget):
     def request_close(self) -> None:
         self._request_navigation("close")
 
-    def request_discard(self) -> None:
-        request = self._request("discard")
-        if request is not None:
-            self.discard_requested.emit(request)
-
     def _request_navigation(self, intent: str) -> None:
+        """Leave straight away: a view-only page never holds unsaved changes."""
         request = self._request(intent)
         if request is None:
             return
-        if self.is_dirty:
-            self.unsaved_changes_requested.emit(request)
-        elif intent == "back":
+        if intent == "back":
             self.back_requested.emit(request)
         else:
             self.close_requested.emit(request)
 
     def save_completed(self, result: DetailSaveResult) -> None:
-        """Accept only the immutable identity and edit-generation snapshot in flight."""
-        snapshot = self._save_snapshot
-        if (
-            not isinstance(result, DetailSaveResult)
-            or snapshot is None
-            or self._display is None
-            or result.correlation_id != snapshot.request.correlation_id
-            or self._edit_generation != snapshot.edit_generation
-            or self._display.session_id != snapshot.request.session_id
-            or self._display.revision != snapshot.request.revision
-            or self._display.detail_handle != snapshot.request.detail_handle
-            or result.display.session_id != snapshot.request.session_id
-            or result.display.revision <= snapshot.request.revision
-        ):
-            return
-        self.set_display(result.display)
+        """Ignore a save result: this page never requests a save, so none can be current."""
 
     def save_failed(self, correlation_id: str) -> None:
-        """Release only the matching save attempt while retaining local edits."""
-        snapshot = self._save_snapshot
-        if snapshot is None or correlation_id != snapshot.request.correlation_id:
-            return
-        self._save_snapshot = None
-        self._save_in_progress = False
-        self._refresh_actions()
+        """Ignore a save failure: this page never requests a save, so none can be current."""
 
     def _request(self, intent: str) -> DetailPageRequest | None:
         if self._display is None:
             return None
-        correlation_id = uuid4().hex
-        if intent == "preview":
-            self._preview_correlation_id = correlation_id
         return DetailPageRequest(
             self._display.session_id,
             self._display.revision,
             intent,
             self.pending_edits,
             self._display.detail_handle,
-            correlation_id,
+            uuid4().hex,
         )
-
-    def _refresh_actions(self) -> None:
-        self.save_button.setEnabled(
-            self._write_enabled
-            and not self._save_in_progress
-            and self._display is not None
-            and self.is_dirty
-        )
-        self.graphics_view.set_editable(self._write_enabled and not self._save_in_progress)

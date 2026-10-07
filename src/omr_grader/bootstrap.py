@@ -223,6 +223,38 @@ def _diagnostic_from_errors(errors: tuple[ErrorInfo, ...]) -> str:
     return get_message("bootstrap.unavailable_body")
 
 
+class _GradingPhases:
+    """Report grading the way the grading page shows it: read, score, then save.
+
+    Reading the exam record and saving the results cannot be counted, so they report a
+    zero total, which the page shows as a moving bar; only scoring is counted.
+    """
+
+    def __init__(
+        self, emit: Callable[[object], None], clock: Callable[[], float] = monotonic
+    ) -> None:
+        self._emit = emit
+        self._clock = clock
+        self._started = clock()
+
+    def show(self, status: str, completed: int = 0, total: int = 0) -> None:
+        from omr_grader.application.grading_presenter import GradingProgressDisplay
+
+        elapsed = max(0, int(self._clock() - self._started))
+        eta = (
+            None
+            if completed <= 0
+            else max(0, int(elapsed * (total - completed) / completed))
+        )
+        self._emit(GradingProgressDisplay(completed, total, elapsed, eta, status))
+
+    def scored(self, completed: int, total: int) -> None:
+        if completed >= total:
+            self.show("채점 이미지와 결과 엑셀을 저장하는 중")
+        else:
+            self.show(f"점수를 계산하는 중 ({completed} / {total}명)", completed, total)
+
+
 def _create_startup_splash() -> QSplashScreen:
     """Create the native startup surface before bootstrap and heavy imports."""
     from omr_grader.startup import create_splash
@@ -301,6 +333,7 @@ def run(
         RegradeCommand,
         ResponseBookRequest,
         RestoreCommand,
+        ScanCommand,
         SessionCreateResult,
         SessionMutationRequest,
         Settings,
@@ -312,7 +345,6 @@ def run(
     )
     from omr_grader.application.grading_presenter import (
         ConnectedSessionDisplay,
-        GradingProgressDisplay,
     )
     from omr_grader.application.grading_use_case import GradingUseCase
     from omr_grader.application.profile_use_case import ProfileApplicationService
@@ -429,6 +461,7 @@ def run(
     detail_repository = None
     correction_service: CorrectionApplicationService | None = None
     scan_service = None
+    scan_context = None
     response_import_service = None
     grading_service = None
     grading_context = None
@@ -642,35 +675,21 @@ def run(
                 coordinator,
             )
 
+            def scan_context(
+                command: ScanCommand,
+                _cancelled: Event,
+                emit_progress: Callable[[object], None],
+            ) -> Result[SessionCreateResult]:
+                return scan_service.run_scan(command, emit_progress)
+
             def grading_context(
                 command: RegradeCommand,
                 _cancelled: Event,
                 emit_progress: Callable[[object], None],
             ) -> Result[CommitGenerationResult]:
-                started = monotonic()
-
-                def report(completed: int, total: int) -> None:
-                    elapsed = max(0, int(monotonic() - started))
-                    eta = (
-                        None
-                        if completed <= 0
-                        else max(0, int(elapsed * (total - completed) / completed))
-                    )
-                    emit_progress(
-                        GradingProgressDisplay(
-                            completed,
-                            total,
-                            elapsed,
-                            eta,
-                            (
-                                "결과 파일 저장 중"
-                                if total > 0 and completed == total
-                                else f"현재 처리 중: {completed} / 총 {total}명"
-                            ),
-                        )
-                    )
-
-                return grading_service.regrade(command, report)
+                phases = _GradingPhases(emit_progress)
+                phases.show("시험 기록을 읽는 중")
+                return grading_service.regrade(command, phases.scored)
 
             def display_committed_session(
                 result: SessionCreateResult | CommitGenerationResult,
@@ -1153,6 +1172,7 @@ def run(
 
     services = ServicePorts(
         scan=scan_service,
+        scan_context=scan_context,
         response_import=response_import_service,
         grading=grading_service,
         grading_context=grading_context,

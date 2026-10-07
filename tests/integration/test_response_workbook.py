@@ -3,14 +3,24 @@ from __future__ import annotations
 from datetime import date
 from hashlib import sha256
 from io import BytesIO
+from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from tests.unit.test_response_book import _MARKED, _answers, _effective, _imported, _uncertain
 
-from omr_grader.domain.enums import AnswerStatus
+from omr_grader.application.dto import ResponseBookRequest
+from omr_grader.application.response_import_use_case import ResponseImportUseCase
+from omr_grader.domain.enums import AnswerStatus, ExamTerm
 from omr_grader.domain.errors import Err, Ok
+from omr_grader.domain.models import AnswerValue
 from omr_grader.workbooks import response_import
+from omr_grader.workbooks.response_book import (
+    recognition_note,
+    write_effective_response_projection,
+    write_response_projection,
+)
 from omr_grader.workbooks.response_import import parse_response_book
 from omr_grader.workbooks.schemas import RESPONSE_HEADERS, RESPONSE_SHEET_NAME
 
@@ -254,3 +264,135 @@ def test_response_package_relationship_quota_boundaries_are_compact_and_fail_clo
     else:
         assert isinstance(scanned, Err)
         assert scanned.errors[0].code == expected_code
+
+
+def _parse_file(path: Path) -> Ok | Err:
+    with path.open("rb") as source:
+        return parse_response_book(
+            source,
+            sheet_name=RESPONSE_SHEET_NAME,
+            session_id="import-session",
+            source_sha256=sha256(path.read_bytes()).hexdigest(),
+        )
+
+
+def _marks(answer: AnswerValue) -> AnswerStatus:
+    """The importer sees marks, not recognition status: none, one or several."""
+    if not answer.choices:
+        return AnswerStatus.BLANK
+    return AnswerStatus.NORMAL if len(answer.choices) == 1 else AnswerStatus.MULTIPLE
+
+
+def _assert_formatted(path: Path) -> None:
+    """The book under test really carries the formatting the importer must tolerate."""
+    sheet = load_workbook(path)[RESPONSE_SHEET_NAME]
+    assert sheet.freeze_panes == "E2"
+    assert sheet["A1"].font.b
+    assert sheet["G2"].fill.fill_type == "solid"
+
+
+def test_recognition_response_book_with_notes_and_fills_is_accepted_and_roundtrips(
+    tmp_path: Path,
+) -> None:
+    marked = _answers(_MARKED)
+    unread = _answers({})
+    withheld = tuple(_uncertain(1) for _ in range(100))
+    rows = (
+        _imported(1, marked, recognition_note(marked, student_id_valid=True)),
+        _imported(2, unread, recognition_note(unread, student_id_valid=False), student_id=""),
+        _imported(3, withheld, recognition_note(withheld, student_id_valid=False), student_id=""),
+        _imported(4, _answers({1: AnswerValue((2,), AnswerStatus.NORMAL)})),
+    )
+    path = tmp_path / "recognition.xlsx"
+    write_response_projection(
+        path, rows, session_id="session", revision=1, manifest_sha256="0" * 64
+    )
+
+    parsed = _parse_file(path)
+
+    _assert_formatted(path)
+    assert isinstance(parsed, Ok)
+    assert [row.note for row in parsed.value] == [
+        "확인 필요: 3, 5, 17번",
+        "학번 확인 필요",
+        "확인 필요: 1~100번 / 학번 확인 필요",
+        "",
+    ]
+    for written, read in zip(rows, parsed.value, strict=True):
+        assert (
+            read.serial,
+            read.source_filename,
+            read.raw_student_id,
+            read.name,
+            read.note,
+        ) == (
+            written.serial,
+            written.source_filename,
+            written.raw_student_id,
+            written.name,
+            written.note,
+        )
+        assert [answer.choices for answer in read.answers] == [
+            answer.choices for answer in written.answers
+        ]
+        assert [answer.status for answer in read.answers] == [
+            _marks(answer) for answer in written.answers
+        ]
+
+
+def test_effective_response_book_with_fills_is_accepted_and_roundtrips(tmp_path: Path) -> None:
+    rows = (
+        _effective(1, _answers(_MARKED), ("answer_cell:3",)),
+        _effective(2, _answers({1: AnswerValue((2,), AnswerStatus.NORMAL)}), student_id="20240002"),
+    )
+    path = tmp_path / "effective.xlsx"
+    write_effective_response_projection(
+        path,
+        rows,
+        session_id="session",
+        revision=2,
+        manifest_sha256="0" * 64,
+        names_by_student_id={"20240001": "가명"},
+    )
+
+    parsed = _parse_file(path)
+
+    _assert_formatted(path)
+    assert isinstance(parsed, Ok)
+    assert [
+        (row.serial, row.source_filename, row.raw_student_id, row.name, row.note)
+        for row in parsed.value
+    ] == [
+        (1, "scan-1.png", "20240001", "가명", "수동 수정 반영"),
+        (2, "scan-2.png", "20240002", "", ""),
+    ]
+    for written, read in zip(rows, parsed.value, strict=True):
+        assert [answer.choices for answer in read.answers] == [
+            answer.choices for answer in written.answers
+        ]
+
+
+def test_start_from_responses_validation_accepts_a_book_with_notes_and_fills(
+    tmp_path: Path,
+) -> None:
+    marked = _answers(_MARKED)
+    path = tmp_path / "start.xlsx"
+    write_response_projection(
+        path,
+        (_imported(1, marked, recognition_note(marked, student_id_valid=True)),),
+        session_id="session",
+        revision=1,
+        manifest_sha256="0" * 64,
+    )
+
+    validation = ResponseImportUseCase(object()).validate_response_book(  # type: ignore[arg-type]
+        ResponseBookRequest(str(path), RESPONSE_SHEET_NAME, "시험", 2026, ExamTerm.FIRST)
+    )
+
+    _assert_formatted(path)
+    assert isinstance(validation, Ok)
+    try:
+        assert validation.value.row_count == 1
+        assert validation.value.normalized_rows[0].note == "확인 필요: 3, 5, 17번"
+    finally:
+        validation.value.validation_token.close()

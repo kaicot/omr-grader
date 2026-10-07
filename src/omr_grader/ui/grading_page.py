@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from os.path import basename
+from time import monotonic
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -47,6 +48,14 @@ class GradingPage(QWidget):
         self._result_identity: tuple[str, int] | None = None
         self._write_enabled = True
         self._busy = False
+        # The running grading's own clock: started by the first progress after idle and
+        # redrawn every second so the status line keeps moving between worker events.
+        self._progress: GradingProgressDisplay | None = None
+        self._progress_started: float | None = None
+        self._progress_event_at = 0.0
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(1000)
+        self._progress_timer.timeout.connect(self._refresh_progress)
         self._build_ui()
         self._refresh_state()
 
@@ -89,6 +98,7 @@ class GradingPage(QWidget):
         self.progress_label = QLabel("채점 대기 중")
         self.progress_label.setObjectName("gradingProgressLabel")
         self.progress_label.setAccessibleName("채점 진행 상태")
+        self.progress_label.setWordWrap(True)
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("gradingProgressBar")
         self.progress_bar.setAccessibleName("채점 진행률")
@@ -318,23 +328,41 @@ class GradingPage(QWidget):
         self._refresh_state()
 
     def set_grading_progress(self, progress: GradingProgressDisplay | None) -> None:
+        """Show one grading progress event, or hide the panel; elapsed time is the page's own."""
         self._busy = progress is not None
         self.progress_frame.setVisible(progress is not None)
-        if progress is not None:
-            self.progress_bar.setRange(0, progress.total if progress.total > 0 else 0)
+        self._progress = progress
+        if progress is None:
+            self._progress_timer.stop()
+            self._progress_started = None
+        else:
+            self._progress_event_at = monotonic()
+            if self._progress_started is None:
+                self._progress_started = self._progress_event_at
+            # No total means indeterminate: the bar shows activity without a fraction.
+            self.progress_bar.setRange(0, progress.total)
             self.progress_bar.setValue(progress.completed)
-            eta = (
-                "계산 중" if progress.eta_seconds is None else self._time_text(progress.eta_seconds)
-            )
-            status = progress.status or (
-                f"채점 중: {progress.completed}/{progress.total}"
-                if progress.total
-                else "채점 준비 중"
-            )
-            self.progress_label.setText(
-                f"{status} · 경과 {self._time_text(progress.elapsed_seconds)} · 남은 시간 {eta}"
-            )
+            self._refresh_progress()
+            if not self._progress_timer.isActive():
+                self._progress_timer.start()
         self._refresh_state()
+
+    def _refresh_progress(self) -> None:
+        """Redraw the status line from the page's own clock."""
+        progress, started = self._progress, self._progress_started
+        if progress is None or started is None:
+            return
+        now = monotonic()
+        status = progress.status or (
+            f"채점 중: {progress.completed}/{progress.total}" if progress.total else "채점 준비 중"
+        )
+        text = f"{status} · 경과 {self._time_text(now - started)}"
+        if progress.eta_seconds is not None and 0 < progress.completed < progress.total:
+            # The estimate only arrives with events, so it counts down in between.
+            remaining = progress.eta_seconds - (now - self._progress_event_at)
+            if remaining >= 1:
+                text += f" · 남은 시간 약 {self._time_text(remaining)}"
+        self.progress_label.setText(text)
 
     def set_busy(self, busy: bool, completed: int = 0, total: int = 0, status: str = "") -> None:
         """Compatibility display entry point; controllers should use set_grading_progress."""
@@ -498,9 +526,14 @@ class GradingPage(QWidget):
         return self._session.session_id, self._session.revision
 
     @staticmethod
-    def _time_text(seconds: int) -> str:
-        minutes, seconds = divmod(seconds, 60)
-        return f"{minutes}분 {seconds:02d}초" if minutes else f"{seconds}초"
+    def _time_text(seconds: float | int) -> str:
+        total_seconds = max(0, int(seconds))
+        if total_seconds < 60:
+            return f"{total_seconds}초"
+        minutes, remainder = divmod(total_seconds, 60)
+        if minutes < 60:
+            return f"{minutes}분 {remainder}초"
+        return f"{minutes // 60}시간 {minutes % 60}분"
 
 
 __all__ = ["GradingPage"]

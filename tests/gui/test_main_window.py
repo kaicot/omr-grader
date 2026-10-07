@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from weakref import ref
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QMargins, QRect, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QMargins, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QScrollArea
 
 from omr_grader.ui.dashboard_page import DashboardPage
 from omr_grader.ui.detail_page import DetailPage
@@ -402,7 +403,6 @@ def test_theme_keeps_shell_surfaces_and_standard_actions_opaque(qtbot) -> None:
         "dashboardDetailButton",
         "dashboardDeleteButton",
         "detailBackButton",
-        "detailSaveButton",
     ):
         assert f"QPushButton#{object_name}" in stylesheet
 
@@ -439,3 +439,90 @@ def test_detail_sidebar_navigation_is_deferred_to_controller(qtbot) -> None:
     assert requested == [MainWindow.SETTINGS_PAGE]
     assert window.pages.currentIndex() == MainWindow.EXAM_PAGE
     assert window.exam_page.currentWidget() is window.detail_page
+
+
+def _answer_next_message_box(act: Callable[[QMessageBox], None]) -> dict[str, object]:
+    """Run `act` on the next visible message box, because its exec() blocks the test.
+
+    The box is polled for rather than assumed ready, and it is closed whatever `act`
+    does, so a mistake surfaces as a failed assertion instead of a hung test run.
+    `seen["dismissed"]` tells whether `act` itself ended the dialog.
+    """
+    seen: dict[str, object] = {}
+    attempts = 0
+
+    def poll() -> None:
+        nonlocal attempts
+        box = next(
+            (
+                widget
+                for widget in QApplication.topLevelWidgets()
+                if isinstance(widget, QMessageBox) and widget.isVisible()
+            ),
+            None,
+        )
+        if box is None:
+            attempts += 1
+            if attempts < 300:
+                QTimer.singleShot(10, poll)
+            return
+        try:
+            seen["title"] = box.windowTitle()
+            seen["text"] = box.text()
+            seen["icon"] = box.icon()
+            seen["parent"] = box.parent()
+            seen["buttons"] = {button.text() for button in box.buttons()}
+            default = box.defaultButton()
+            seen["default"] = None if default is None else default.text()
+            act(box)
+            seen["dismissed"] = not box.isVisible()
+        finally:
+            if box.isVisible():
+                box.close()
+
+    QTimer.singleShot(0, poll)
+    return seen
+
+
+def _click(text: str) -> Callable[[QMessageBox], None]:
+    return lambda box: next(button for button in box.buttons() if button.text() == text).click()
+
+
+@pytest.mark.parametrize(
+    ("button_text", "decision"),
+    [("저장", "save"), ("저장하지 않고 나가기", "discard"), ("취소", "cancel")],
+)
+def test_confirm_detail_exit_maps_each_clicked_button_to_its_decision(
+    qtbot, button_text: str, decision: str
+) -> None:
+    window, _, _ = _window(qtbot)
+    seen = _answer_next_message_box(_click(button_text))
+
+    assert window.confirm_detail_exit() == decision
+
+    assert seen["dismissed"] is True
+    assert seen["title"] == "저장되지 않은 수정사항"
+    assert seen["text"] == "수정사항을 저장하시겠습니까?"
+    assert seen["icon"] == QMessageBox.Icon.Warning
+    assert seen["parent"] is window
+    assert seen["buttons"] == {"저장", "저장하지 않고 나가기", "취소"}
+    assert seen["default"] == "저장"
+
+
+@pytest.mark.parametrize("dismiss", ["escape", "close"])
+def test_confirm_detail_exit_treats_dismissing_the_dialog_as_cancel(qtbot, dismiss: str) -> None:
+    window, _, _ = _window(qtbot)
+    answered: list[str] = []
+
+    def act(box: QMessageBox) -> None:
+        answered.append(dismiss)
+        if dismiss == "escape":
+            qtbot.keyClick(box, Qt.Key.Key_Escape)
+        else:
+            box.close()
+
+    seen = _answer_next_message_box(act)
+
+    assert window.confirm_detail_exit() == "cancel"
+    assert answered == [dismiss]
+    assert seen["dismissed"] is True

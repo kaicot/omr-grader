@@ -455,19 +455,22 @@ class MainWindow(QMainWindow):
             <h2>1. OMR 스캔</h2>
             <ol>
               <li>시험명을 입력합니다.</li>
-              <li><b>OMR 프로필 불러오기</b> 또는 끌어놓기로
-                  <code>.omrtemplate</code> 파일을 선택합니다.</li>
-              <li>프로필 정보에 <b>검증 완료</b>가 표시됐는지 확인합니다.</li>
               <li>필요하면 응시 학생 명단 엑셀을 선택합니다.</li>
-              <li>스캔 이미지 폴더 또는 PDF를 선택합니다.</li>
+              <li>스캔 이미지 폴더 또는 PDF를 선택합니다. 답안지 양식을 자동으로 확인해
+                  인식 프로필을 지정합니다. 처음 보는 양식이면 요약과 미리보기를 보고
+                  저장합니다.</li>
+              <li><b>인식 프로필</b> 칸에서 지정된 양식을 확인합니다. 다른 양식이면 목록에서
+                  바꾸거나 <b>다른 프로필 불러오기</b>를 누릅니다.</li>
               <li><b>OMR 인식 실행</b>을 눌러 응답 결과를 생성합니다.</li>
             </ol>
             <h2>2. 정답/채점</h2>
             <p>스캔이 완료되면 정답표 엑셀을 불러와 검증한 뒤 채점을 실행합니다.
-               공란·복수 마킹 등은 확인 대상으로 표시됩니다.</p>
+               채점결과 엑셀에서 틀린 답·무응답·중복 표기는 분홍, 인식이 애매해
+               확인이 필요한 답은 노랑으로 표시됩니다.</p>
             <h2>3. 시험 관리</h2>
-            <p>저장된 시험을 열어 학생별 응답을 확인·수정하고,
-               시험별 백업과 복원을 수행할 수 있습니다.</p>
+            <p>저장된 시험을 열어 학생별 응답과 채점 이미지를 보고, 시험별 백업과 복원을
+               수행할 수 있습니다. 답을 고쳐야 하면 응답결과 엑셀을 고친 뒤 OMR 스캔
+               화면의 <b>응답 엑셀로 시작</b>으로 불러와 다시 채점합니다.</p>
             <h2>4. 환경 설정</h2>
             <p>기본 OMR 프로필, 인식 감도와 다중 처리 설정을 저장할 수 있습니다.</p>
             <h2>문제 해결 및 Q&amp;A</h2>
@@ -699,18 +702,28 @@ class MainWindow(QMainWindow):
 
     def confirm_detail_exit(self) -> str:
         """Ask the user to save, discard, or cancel an unsaved detail edit."""
-        choice = QMessageBox.warning(
-            self,
+        # The static QMessageBox helpers return plain ints in PySide6 6.11, so a
+        # `choice is StandardButton.X` test never matches. Compare the clicked
+        # button object instead; anything else, such as Escape, is a cancel.
+        box = QMessageBox(
+            QMessageBox.Icon.Warning,
             "저장되지 않은 수정사항",
             "수정사항을 저장하시겠습니까?",
-            QMessageBox.StandardButton.Save
-            | QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save,
+            QMessageBox.StandardButton.NoButton,
+            self,
         )
-        if choice is QMessageBox.StandardButton.Save:
+        box.setObjectName("unsavedDetailDialog")
+        save = box.addButton("저장", QMessageBox.ButtonRole.AcceptRole)
+        discard = box.addButton("저장하지 않고 나가기", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save)
+        box.setEscapeButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        box.deleteLater()
+        if clicked is save:
             return "save"
-        if choice is QMessageBox.StandardButton.Discard:
+        if clicked is discard:
             return "discard"
         return "cancel"
 

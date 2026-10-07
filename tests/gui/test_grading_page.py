@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
@@ -8,9 +9,30 @@ from omr_grader.application.grading_presenter import (
     ConnectedSessionDisplay,
     GradingProgressDisplay,
 )
+from omr_grader.ui import grading_page as grading_page_module
 from omr_grader.ui.grading_page import GradingPage
 
 SESSION = ConnectedSessionDisplay("session-1", 3, "26-2 생리학 중간고사", "C:/응답결과.xlsx")
+
+
+class _Clock:
+    """A monotonic clock the test advances by hand instead of sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 500.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(grading_page_module, "monotonic", clock)
+    return clock
 
 
 def _valid_key() -> AnswerKeyValidationDisplay:
@@ -134,17 +156,18 @@ def test_validation_errors_are_visible_and_block_grading(qtbot) -> None:
     assert not page.grade_button.isEnabled()
 
 
-def test_progress_cancel_cleanup_and_state_preservation(qtbot) -> None:
+def test_progress_cancel_cleanup_and_state_preservation(qtbot, clock) -> None:
     page = _ready_page(qtbot)
     page.set_busy(True)
     assert page.progress_frame.isVisible()
     assert page.progress_bar.minimum() == 0
     assert page.progress_bar.maximum() == 0
+    clock.advance(65)
     page.set_grading_progress(GradingProgressDisplay(4, 10, 65, 90))
     assert page.progress_frame.isVisible()
     assert page.progress_bar.value() == 4
     assert "4/10" in page.progress_label.text()
-    assert "경과 1분 05초" in page.progress_label.text()
+    assert "경과 1분 5초" in page.progress_label.text()
     assert not page.grade_button.isEnabled()
     with qtbot.waitSignal(page.cancel_requested) as cancelled:
         QTest.mouseClick(page.cancel_button, Qt.MouseButton.LeftButton)
@@ -152,6 +175,150 @@ def test_progress_cancel_cleanup_and_state_preservation(qtbot) -> None:
     page.complete_cancel()
     assert page.key_label.text() == "선택한 정답표: 정답표_생리학.xlsx (시트: 정답표)"
     assert page.grade_button.isEnabled()
+    assert not page._progress_timer.isActive()
+
+
+def test_progress_without_a_total_is_indeterminate_and_never_estimates(qtbot, clock) -> None:
+    page = _ready_page(qtbot)
+
+    page.set_grading_progress(GradingProgressDisplay(0, 0, 0, None, "시험 기록을 읽는 중"))
+
+    assert (page.progress_bar.minimum(), page.progress_bar.maximum()) == (0, 0)
+    assert page.progress_label.text() == "시험 기록을 읽는 중 · 경과 0초"
+    clock.advance(12)
+    page.set_grading_progress(
+        GradingProgressDisplay(0, 0, 12, 30, "채점 이미지와 결과 엑셀을 저장하는 중")
+    )
+    assert (page.progress_bar.minimum(), page.progress_bar.maximum()) == (0, 0)
+    assert page.progress_label.text() == "채점 이미지와 결과 엑셀을 저장하는 중 · 경과 12초"
+    page.set_grading_progress(GradingProgressDisplay(0, 0, 12, None))
+    assert page.progress_label.text() == "채점 준비 중 · 경과 12초"
+    assert "남은 시간" not in page.progress_label.text()
+
+
+def test_counted_progress_shows_the_remaining_time_only_while_work_is_left(qtbot, clock) -> None:
+    page = _ready_page(qtbot)
+    status = "점수를 계산하는 중 ({}명)"
+
+    page.set_grading_progress(GradingProgressDisplay(0, 10, 0, 60, status.format("0 / 10")))
+    assert (page.progress_bar.minimum(), page.progress_bar.maximum()) == (0, 10)
+    assert page.progress_bar.value() == 0
+    assert page.progress_label.text() == "점수를 계산하는 중 (0 / 10명) · 경과 0초"
+
+    clock.advance(20)
+    page.set_grading_progress(GradingProgressDisplay(4, 10, 20, 90, status.format("4 / 10")))
+    assert page.progress_bar.value() == 4
+    assert page.progress_label.text() == (
+        "점수를 계산하는 중 (4 / 10명) · 경과 20초 · 남은 시간 약 1분 30초"
+    )
+
+    page.set_grading_progress(GradingProgressDisplay(4, 10, 20, None, status.format("4 / 10")))
+    assert "남은 시간" not in page.progress_label.text()
+
+    page.set_grading_progress(GradingProgressDisplay(10, 10, 20, 5, status.format("10 / 10")))
+    assert page.progress_bar.value() == 10
+    assert page.progress_label.text() == "점수를 계산하는 중 (10 / 10명) · 경과 20초"
+
+
+def test_counted_progress_without_a_status_names_the_counts(qtbot, clock) -> None:
+    page = _ready_page(qtbot)
+
+    page.set_grading_progress(GradingProgressDisplay(4, 10, 0, 90))
+
+    assert page.progress_label.text() == "채점 중: 4/10 · 경과 0초 · 남은 시간 약 1분 30초"
+
+
+def test_the_ticker_redraws_elapsed_and_counts_the_remaining_time_down(qtbot, clock) -> None:
+    page = _ready_page(qtbot)
+    assert not page._progress_timer.isActive()
+
+    page.set_grading_progress(GradingProgressDisplay(2, 10, 0, 30, "점수를 계산하는 중"))
+    assert page._progress_timer.isActive()
+    assert page._progress_timer.interval() == 1000
+
+    clock.advance(10)
+    # The timer's own timeout drives the redraw between worker events.
+    page._progress_timer.timeout.emit()
+    assert page.progress_label.text() == "점수를 계산하는 중 · 경과 10초 · 남은 시간 약 20초"
+    clock.advance(19)
+    page._refresh_progress()
+    assert page.progress_label.text() == "점수를 계산하는 중 · 경과 29초 · 남은 시간 약 1초"
+    clock.advance(1)
+    page._refresh_progress()
+    assert page.progress_label.text() == "점수를 계산하는 중 · 경과 30초"
+
+    # A new event restarts the estimate but not the elapsed time.
+    page.set_grading_progress(GradingProgressDisplay(3, 10, 30, 8, "점수를 계산하는 중"))
+    assert page.progress_label.text() == "점수를 계산하는 중 · 경과 30초 · 남은 시간 약 8초"
+
+
+def test_elapsed_time_is_the_pages_own_clock_not_the_reported_one(qtbot, clock) -> None:
+    page = _ready_page(qtbot)
+
+    page.set_grading_progress(GradingProgressDisplay(1, 10, 4000, None))
+    assert page.progress_label.text() == "채점 중: 1/10 · 경과 0초"
+    clock.advance(3725)
+    page.set_grading_progress(GradingProgressDisplay(2, 10, 1, None))
+    assert page.progress_label.text() == "채점 중: 2/10 · 경과 1시간 2분"
+
+
+def test_clearing_the_progress_hides_the_panel_and_stops_the_ticker(qtbot, clock) -> None:
+    page = _ready_page(qtbot)
+    page.set_grading_progress(GradingProgressDisplay(2, 10, 0, 30, "점수를 계산하는 중"))
+    assert page.progress_frame.isVisible()
+    assert page._progress_timer.isActive()
+
+    page.set_grading_progress(None)
+
+    assert page.progress_frame.isHidden()
+    assert not page._progress_timer.isActive()
+    clock.advance(30)
+    page._refresh_progress()
+    assert page.progress_label.text() == "점수를 계산하는 중 · 경과 0초 · 남은 시간 약 30초"
+
+    # The next run counts from zero again.
+    page.set_grading_progress(GradingProgressDisplay(0, 0, 0, None))
+    assert page.progress_label.text() == "채점 준비 중 · 경과 0초"
+    assert page.progress_frame.isVisible()
+    assert page._progress_timer.isActive()
+
+
+def test_busy_and_cancel_compat_entry_points_drive_the_same_clock(qtbot, clock) -> None:
+    page = _ready_page(qtbot)
+
+    page.set_busy(True)
+    assert (page.progress_bar.minimum(), page.progress_bar.maximum()) == (0, 0)
+    assert page.progress_label.text() == "채점 준비 중 · 경과 0초"
+    assert page._progress_timer.isActive()
+    clock.advance(5)
+    page._progress_timer.timeout.emit()
+    assert page.progress_label.text() == "채점 준비 중 · 경과 5초"
+    page.set_busy(False)
+    assert page.progress_frame.isHidden()
+    assert not page._progress_timer.isActive()
+
+    page.set_busy(True, 1, 4, "채점 중입니다")
+    assert page.progress_label.text() == "채점 중입니다 · 경과 0초"
+    page.complete_cancel()
+    assert page.progress_frame.isHidden()
+    assert not page._progress_timer.isActive()
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    (
+        (0, "0초"),
+        (-3, "0초"),
+        (59.9, "59초"),
+        (60, "1분 0초"),
+        (125, "2분 5초"),
+        (3599, "59분 59초"),
+        (3600, "1시간 0분"),
+        (7384, "2시간 3분"),
+    ),
+)
+def test_durations_read_as_seconds_minutes_or_hours(seconds, text) -> None:
+    assert GradingPage._time_text(seconds) == text
 
 
 def test_grading_actions_are_visually_explicit_and_dropzone_matches_scan(qtbot) -> None:

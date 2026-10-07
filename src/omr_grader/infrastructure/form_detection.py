@@ -8,8 +8,9 @@ otherwise a new exact profile is generated for one confirmation by the user.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Final
 
@@ -21,7 +22,7 @@ from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.profile import Profile
 from omr_grader.infrastructure.profile_store import ProfileStore
 from omr_grader.ingestion.images import enumerate_image_folder, enumerate_image_paths
-from omr_grader.ingestion.pdf import enumerate_pdf, render_pdf_page
+from omr_grader.ingestion.pdf import PdfInput, enumerate_pdf, render_pdf_page
 from omr_grader.recognition.form_alignment import PageAlignment, align_page
 from omr_grader.recognition.form_layout import (
     FormLayout,
@@ -31,7 +32,9 @@ from omr_grader.recognition.form_layout import (
 from omr_grader.recognition.form_profile import build_profile
 from omr_grader.recognition.orientation import rotate_right_angle
 
-MAX_SAMPLE_PAGES: Final = 12
+MAX_SAMPLE_PAGES: Final = 6
+"""Pages read to recognise the form. Six agree as well as twelve on real exams and
+halve the wait; three or more are needed to tell column-label rows apart."""
 _MATCH_PAGES: Final = 3
 _MATCH_INLIER_RATIO: Final = 0.75
 _MATCH_PRECISION: Final = 1.3
@@ -118,15 +121,36 @@ class FormDetector:
 
     profiles: ProfileStore
 
-    def detect(self, paths: tuple[str, ...]) -> Result[FormDetection]:
-        pages = list(_sample_pages(paths, MAX_SAMPLE_PAGES))
+    def detect(
+        self,
+        paths: tuple[str, ...],
+        progress: Callable[[int, int], None] | None = None,
+    ) -> Result[FormDetection]:
+        """Recognise the form of ``paths``.
+
+        ``progress(done, total)`` follows each sample page read; after the last one the
+        pages are compared and the profile is built, which takes a moment more.
+        """
+        loaders = _page_loaders(paths, MAX_SAMPLE_PAGES)
+        pages: list[NDArray[np.uint8]] = []
+        found: list[tuple[NDArray[np.uint8], FormLayout]] = []
+        for done, load in enumerate(loaders, 1):
+            gray = load()
+            if gray is not None:
+                pages.append(gray)
+                layout = detect_layout(gray)
+                if layout is not None:
+                    found.append((gray, layout))
+            _report(progress, done, len(loaders))
+        return self._decide(pages, found)
+
+    def _decide(
+        self,
+        pages: list[NDArray[np.uint8]],
+        found: list[tuple[NDArray[np.uint8], FormLayout]],
+    ) -> Result[FormDetection]:
         if not pages:
             return _error("SCAN_SOURCE_EMPTY", "선택한 답안지에서 읽을 수 있는 쪽이 없습니다.")
-        found: list[tuple[NDArray[np.uint8], FormLayout]] = []
-        for gray in pages:
-            layout = detect_layout(gray)
-            if layout is not None:
-                found.append((gray, layout))
         if not found:
             return _error("FORM_NOT_FOUND", "답안지에서 OMR 양식을 찾지 못했습니다.")
         # A saved profile of the structure as printed comes first: a batch whose sampled
@@ -230,25 +254,21 @@ def _layout_signature(layout: FormLayout) -> tuple[object, ...]:
     return layout.signature
 
 
-def _sample_pages(paths: tuple[str, ...], limit: int) -> Iterator[NDArray[np.uint8]]:
-    """Grayscale pages in selection order, at most ``limit`` of them."""
-    produced = 0
+def _page_loaders(
+    paths: tuple[str, ...], limit: int
+) -> list[Callable[[], NDArray[np.uint8] | None]]:
+    """Loaders of the first ``limit`` pages in selection order; pages render on demand."""
+    loaders: list[Callable[[], NDArray[np.uint8] | None]] = []
     for raw_path in paths:
+        if len(loaders) >= limit:
+            break
         path = Path(raw_path)
-        if produced >= limit:
-            return
         if path.suffix.casefold() == ".pdf":
             batch = enumerate_pdf(path, _DETECTION_SESSION, input_ordinal=0, duplicate_ordinal=0)
             if isinstance(batch, Err):
                 continue
-            for item in batch.value.inputs:
-                if produced >= limit:
-                    return
-                rendered = render_pdf_page(item)
-                if isinstance(rendered, Err):
-                    continue
-                produced += 1
-                yield _gray(rendered.value.pixels)
+            for item in batch.value.inputs[: limit - len(loaders)]:
+                loaders.append(partial(_rendered_page, item))
             continue
         images = (
             enumerate_image_folder(path, _DETECTION_SESSION)
@@ -257,18 +277,35 @@ def _sample_pages(paths: tuple[str, ...], limit: int) -> Iterator[NDArray[np.uin
         )
         if isinstance(images, Err):
             continue
-        for image_input in images.value.inputs:
-            if produced >= limit:
-                return
-            try:
-                payload = image_input.source_path.read_bytes()
-            except OSError:
-                continue
-            decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-            if decoded is None or decoded.size == 0:
-                continue
-            produced += 1
-            yield np.asarray(decoded, dtype=np.uint8)
+        for image_input in images.value.inputs[: limit - len(loaders)]:
+            loaders.append(partial(_image_page, image_input.source_path))
+    return loaders
+
+
+def _rendered_page(item: PdfInput) -> NDArray[np.uint8] | None:
+    rendered = render_pdf_page(item)
+    return None if isinstance(rendered, Err) else _gray(rendered.value.pixels)
+
+
+def _image_page(source: Path) -> NDArray[np.uint8] | None:
+    try:
+        payload = source.read_bytes()
+    except OSError:
+        return None
+    decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    if decoded is None or decoded.size == 0:
+        return None
+    return np.asarray(decoded, dtype=np.uint8)
+
+
+def _report(progress: Callable[[int, int], None] | None, done: int, total: int) -> None:
+    """Progress is advisory: a failing listener never stops detection."""
+    if progress is None:
+        return
+    try:
+        progress(done, total)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _gray(pixels: NDArray[np.uint8]) -> NDArray[np.uint8]:

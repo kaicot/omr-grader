@@ -103,6 +103,18 @@ class WriteCommand(Protocol):
 
 ScanContextOperation = Callable[[ScanCommand, Event, Callable[[object], None]], object]
 GradingContextOperation = Callable[[RegradeCommand, Event, Callable[[object], None]], object]
+FormDetect = Callable[
+    [tuple[str, ...], Callable[[int, int], None] | None], Result[FormDetection]
+]
+ReportingOperation = Callable[[Callable[[object], None]], object]
+
+
+@dataclass(frozen=True, slots=True)
+class _FormDetectionProgress:
+    """Sample pages read so far while the form of the chosen scans is recognised."""
+
+    pages_done: int
+    pages_total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +152,7 @@ class ServicePorts:
     result_navigation: IntentHandler | None = None
     profile_catalog: Callable[[], Result[tuple[ProfileCatalogItem, ...]]] | None = None
     profile_import: Callable[[ProfileImportRequest], Result[ProfileImportResult]] | None = None
-    form_detect: Callable[[tuple[str, ...]], Result[FormDetection]] | None = None
+    form_detect: FormDetect | None = None
     form_save: Callable[[bytes, str], Result[ProfileImportResult]] | None = None
     session_display: (
         Callable[[SessionCreateResult | CommitGenerationResult], Result[ConnectedSessionDisplay]]
@@ -218,6 +230,22 @@ def _mixed_form_warning(detection: FormDetection) -> str | None:
         f"{detection.pages_checked - detection.pages_matching}쪽은 양식이 달라 보입니다. "
         "다른 양식의 답안지가 섞여 있는지 확인하세요."
     )
+
+
+def _scan_session_progress(progress: ScanProgress) -> str:
+    """The side-panel line for the current scan phase."""
+    if progress.phase == "prepare":
+        return f"스캔 준비 {progress.completed} / {progress.total}쪽"
+    if progress.phase == "save":
+        return "인식 결과 저장 중"
+    processed = progress.completed + progress.failed
+    percent = round(processed * 100 / progress.total) if progress.total else 0
+    return f"OMR 인식 {processed} / {progress.total} ({percent}%)"
+
+
+def _detection_reporter(report: Callable[[object], None]) -> Callable[[int, int], None]:
+    """Forward the detector's page counts to the UI thread as value objects."""
+    return lambda done, total: report(_FormDetectionProgress(done, total))
 
 
 def _error_text(error: object) -> str:
@@ -462,6 +490,26 @@ class AppController(QObject):
         operation_id: str | None = None,
         kind: str = "desktop-service",
     ) -> None:
+        self._start_reporting_action(
+            page,
+            None if operation is None else lambda _report: operation(),
+            completed,
+            busy,
+            operation_id=operation_id,
+            kind=kind,
+        )
+
+    def _start_reporting_action(
+        self,
+        page: DashboardPage | SettingsPage,
+        operation: ReportingOperation | None,
+        completed: Callable[[object], None],
+        busy: Callable[[bool], None],
+        *,
+        operation_id: str | None = None,
+        kind: str = "desktop-service",
+    ) -> None:
+        """Run a desktop action whose operation may report progress values."""
         if self._closing or self._active_bridge is not None and self._active_bridge.active:
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
@@ -473,7 +521,7 @@ class AppController(QObject):
         self._start(
             page,
             operation_id or uuid4().hex,
-            lambda _cancelled, _progress: _dashboard_worker_value(operation()),
+            lambda _cancelled, report: _dashboard_worker_value(operation(report)),
             kind=kind,
         )
 
@@ -951,19 +999,23 @@ class AppController(QObject):
     def _progress(self, progress: object) -> None:
         if self._closing or self._active_page is None:
             return
+        if self._active_kind == "form-detection":
+            # Detection runs beside the scan inputs, which stay editable meanwhile.
+            if isinstance(progress, _FormDetectionProgress):
+                self.scan_page.set_form_detection_progress(
+                    progress.pages_done, progress.pages_total
+                )
+            return
         if isinstance(self._active_page, ScanPage) and isinstance(progress, ScanProgress):
-            processed = progress.completed + progress.failed
-            percent = round(processed * 100 / progress.total) if progress.total else 0
             self._active_page.set_progress(
                 progress.completed,
                 progress.total,
                 progress.failed,
                 elapsed_seconds=progress.elapsed_ms / 1000,
                 eta_seconds=None if progress.eta_ms is None else progress.eta_ms / 1000,
+                phase=progress.phase,
             )
-            self.main_window.set_session_progress(
-                f"OMR 인식 {processed} / {progress.total} ({percent}%)"
-            )
+            self.main_window.set_session_progress(_scan_session_progress(progress))
         elif isinstance(self._active_page, GradingPage) and isinstance(
             progress, GradingProgressDisplay
         ):
@@ -1304,13 +1356,14 @@ class AppController(QObject):
             self._form_detection_stale = True
             self.scan_page.set_form_detecting()
             return
-        self._form_detection_paths = tuple(selection.paths)
+        paths = tuple(selection.paths)
+        self._form_detection_paths = paths
         self._form_detection_stale = False
         self._form_detection_choices = self.scan_page.manual_profile_choices
         self.scan_page.set_form_detecting()
-        self._start_desktop_action(
+        self._start_reporting_action(
             self.dashboard_page,
-            partial(detect, selection.paths),
+            lambda report: detect(paths, _detection_reporter(report)),
             self._finish_form_detection,
             self.dashboard_page.set_busy,
             kind="form-detection",
@@ -1332,7 +1385,7 @@ class AppController(QObject):
         if self.scan_page.manual_profile_choices != self._form_detection_choices:
             # A profile picked by hand while detection ran stands; nothing is saved either.
             self.scan_page.set_form_detected(
-                f"자동 인식: {result.summary} · 직접 고른 프로필을 그대로 사용합니다"
+                f"{result.summary}\n직접 고른 프로필을 그대로 사용합니다."
             )
             return
         profile_filename = result.profile_filename
@@ -1347,8 +1400,9 @@ class AppController(QObject):
                 if note is not None
             ]
             self.scan_page.set_form_detected(
-                f"자동 인식: {result.summary} · 저장된 양식 '{profile_filename}' 사용"
-                + "".join(f" · {note}" for note in notes)
+                f"{result.summary}\n저장된 양식 '{profile_filename}'을(를) 찾아 지정했습니다. "
+                "다른 양식이면 목록에서 바꾸세요." + "".join(f"\n{note}" for note in notes),
+                warning=bool(notes),
             )
         else:
             self._fail_form_detection(
@@ -1399,7 +1453,7 @@ class AppController(QObject):
         self._refresh_profile_catalog()
         if self.scan_page.select_profile(stored_name):
             self.scan_page.set_form_detected(
-                f"새 양식으로 저장했습니다: {detection.summary} · '{stored_name}'"
+                f"{detection.summary}\n새 양식으로 저장해 지정했습니다: '{stored_name}'"
             )
         else:
             self._fail_form_detection(

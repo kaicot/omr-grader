@@ -20,7 +20,8 @@ from omr_grader.ui.scan_page import ScanPage, ValidatedProfileState
 
 PDF = ImportSelection(ImportKind.PDF, ("C:/input/scans.pdf",))
 SUMMARY = "학번 8자리 · 객관식 100문항 (1~20, 21~40, 41~60, 61~80, 81~100)"
-DETECTING = "답안지 양식을 자동으로 확인하는 중입니다…"
+DETECTING = "⏳ 답안지 양식을 확인하는 중입니다…"
+HINT = "스캔을 선택하면 인식 프로필이 자동으로 지정됩니다."
 SAVED = "자동양식_객관식100문항_a1b2c3.omrtemplate"
 STORED = "자동양식_객관식100문항_a1b2c3_2.omrtemplate"
 DECLINED = "자동 인식한 양식을 사용하지 않았습니다. OMR 프로필을 직접 선택하세요."
@@ -149,7 +150,7 @@ def test_known_form_selects_the_saved_profile_off_the_ui_thread(qtbot, monkeypat
     threads: list[QThread] = []
     paths: list[tuple[str, ...]] = []
 
-    def detect(selected: tuple[str, ...]) -> Ok[FormDetection]:
+    def detect(selected: tuple[str, ...], progress: object = None) -> Ok[FormDetection]:
         threads.append(QThread.currentThread())
         paths.append(selected)
         return Ok(_known_detection("saved.omrtemplate"))
@@ -170,7 +171,8 @@ def test_known_form_selects_the_saved_profile_off_the_ui_thread(qtbot, monkeypat
     assert threads and threads[0] is not QCoreApplication.instance().thread()
     assert setup.scan.profile_combo.currentData().path == "saved.omrtemplate"
     assert setup.scan.form_status_label.text() == (
-        f"자동 인식: {SUMMARY} · 저장된 양식 'saved.omrtemplate' 사용"
+        f"✓ {SUMMARY}\n저장된 양식 'saved.omrtemplate'을(를) 찾아 지정했습니다. "
+        "다른 양식이면 목록에서 바꾸세요."
     )
     assert setup.scan.form_status_label.property("role") == "success"
     assert setup.scan.run_button.isEnabled()
@@ -184,16 +186,23 @@ def test_a_reused_form_says_when_some_checked_pages_look_different(qtbot, monkey
     detection = _detection(
         profile_filename="saved.omrtemplate", generated_profile=None, pages_matching=2
     )
-    setup = _setup(qtbot, monkeypatch, "saved.omrtemplate", form_detect=lambda paths: Ok(detection))
+    setup = _setup(
+        qtbot,
+        monkeypatch,
+        "saved.omrtemplate",
+        form_detect=lambda paths, progress=None: Ok(detection),
+    )
 
     setup.choose_source()
     setup.finish(qtbot)
 
     assert setup.scan.profile_combo.currentData().path == "saved.omrtemplate"
     assert setup.scan.form_status_label.text() == (
-        f"자동 인식: {SUMMARY} · 저장된 양식 'saved.omrtemplate' 사용 · "
+        f"⚠ {SUMMARY}\n저장된 양식 'saved.omrtemplate'을(를) 찾아 지정했습니다. "
+        "다른 양식이면 목록에서 바꾸세요.\n"
         "확인한 3쪽 가운데 1쪽은 양식이 달라 보입니다. 다른 양식의 답안지가 섞여 있는지 확인하세요."
     )
+    assert setup.scan.form_status_label.property("role") == "warning"
     setup.controller.close()
 
 
@@ -201,15 +210,22 @@ def test_a_reused_form_notes_first_rows_nobody_marked(qtbot, monkeypatch) -> Non
     detection = _detection(
         profile_filename="saved.omrtemplate", generated_profile=None, unmarked_first_rows=1
     )
-    setup = _setup(qtbot, monkeypatch, "saved.omrtemplate", form_detect=lambda paths: Ok(detection))
+    setup = _setup(
+        qtbot,
+        monkeypatch,
+        "saved.omrtemplate",
+        form_detect=lambda paths, progress=None: Ok(detection),
+    )
 
     setup.choose_source()
     setup.finish(qtbot)
 
     assert setup.scan.form_status_label.text() == (
-        f"자동 인식: {SUMMARY} · 저장된 양식 'saved.omrtemplate' 사용 · "
+        f"⚠ {SUMMARY}\n저장된 양식 'saved.omrtemplate'을(를) 찾아 지정했습니다. "
+        "다른 양식이면 목록에서 바꾸세요.\n"
         "이번 답안지들은 문항 블록 1곳의 맨 윗줄을 아무도 칠하지 않았습니다. 저장된 양식이 머리글 줄을 문항으로 세고 있지 않은지 문항 범위를 확인하세요."
     )
+    assert setup.scan.form_status_label.property("role") == "warning"
     setup.controller.close()
 
 
@@ -227,7 +243,7 @@ def test_new_form_is_saved_selected_and_reported_after_confirmation(qtbot, monke
         qtbot,
         monkeypatch,
         "other.omrtemplate",
-        form_detect=lambda paths: Ok(detection),
+        form_detect=lambda paths, progress=None: Ok(detection),
         form_save=save,
     )
     setup.controller._form_confirm_factory = factory
@@ -239,7 +255,8 @@ def test_new_form_is_saved_selected_and_reported_after_confirmation(qtbot, monke
     assert saves == [(detection.generated_profile, detection.suggested_filename)]
     assert setup.scan.profile_combo.currentData().path == STORED
     assert (
-        setup.scan.form_status_label.text() == f"새 양식으로 저장했습니다: {SUMMARY} · '{STORED}'"
+        setup.scan.form_status_label.text()
+        == f"✓ {SUMMARY}\n새 양식으로 저장해 지정했습니다: '{STORED}'"
     )
     assert setup.scan.form_status_label.property("role") == "success"
     assert setup.window.status_label.text() == "준비됨"
@@ -286,7 +303,7 @@ def test_confirmation_uses_the_real_dialog_and_warns_about_mixed_pages(
     setup = _setup(
         qtbot,
         monkeypatch,
-        form_detect=lambda paths: Ok(
+        form_detect=lambda paths, progress=None: Ok(
             _detection(pages_matching=matching, dropped_header_rows=dropped)
         ),
     )
@@ -311,7 +328,7 @@ def test_declined_new_form_saves_nothing_and_leaves_the_manual_choice(qtbot, mon
         qtbot,
         monkeypatch,
         "manual.omrtemplate",
-        form_detect=lambda paths: Ok(_detection()),
+        form_detect=lambda paths, progress=None: Ok(_detection()),
         form_save=lambda payload, filename: saves.append((payload, filename)),
     )
     setup.controller._form_confirm_factory = _DialogFactory(QDialog.DialogCode.Rejected)
@@ -321,7 +338,7 @@ def test_declined_new_form_saves_nothing_and_leaves_the_manual_choice(qtbot, mon
     setup.finish(qtbot)
 
     assert saves == []
-    assert setup.scan.form_status_label.text() == DECLINED
+    assert setup.scan.form_status_label.text() == f"✗ {DECLINED}"
     assert setup.scan.form_status_label.property("role") == "error"
     assert setup.scan.profile_combo.currentData() is None
     assert not setup.scan.run_button.isEnabled()
@@ -355,7 +372,7 @@ def test_detection_error_is_reported_beside_the_profile_choice_not_as_a_failed_t
     setup = _setup(
         qtbot,
         monkeypatch,
-        form_detect=lambda paths: Err((error,)),
+        form_detect=lambda paths, progress=None: Err((error,)),
         form_save=lambda payload, filename: saves.append(filename),
     )
     setup.controller._form_confirm_factory = factory
@@ -365,7 +382,7 @@ def test_detection_error_is_reported_beside_the_profile_choice_not_as_a_failed_t
     setup.choose_source()
     setup.finish(qtbot)
 
-    assert setup.scan.form_status_label.text() == message
+    assert setup.scan.form_status_label.text() == f"✗ {message}"
     assert setup.scan.form_status_label.property("role") == "error"
     assert "오류 코드" not in setup.scan.progress_label.text()
     assert shown == []
@@ -379,7 +396,7 @@ def test_detection_error_is_reported_beside_the_profile_choice_not_as_a_failed_t
 
 
 def test_detection_exception_is_reported_beside_the_profile_choice(qtbot, monkeypatch) -> None:
-    def detect(paths: tuple[str, ...]) -> Ok[FormDetection]:
+    def detect(paths: tuple[str, ...], progress: object = None) -> Ok[FormDetection]:
         raise RuntimeError("broken")
 
     setup = _setup(qtbot, monkeypatch, form_detect=detect)
@@ -387,7 +404,7 @@ def test_detection_exception_is_reported_beside_the_profile_choice(qtbot, monkey
     setup.choose_source()
     setup.finish(qtbot)
 
-    assert setup.scan.form_status_label.text() == "broken"
+    assert setup.scan.form_status_label.text() == "✗ broken"
     assert setup.scan.form_status_label.property("role") == "error"
     assert "오류 코드" not in setup.scan.progress_label.text()
     setup.controller.close()
@@ -399,8 +416,7 @@ def test_without_a_detection_port_choosing_a_source_does_nothing(qtbot, monkeypa
     setup.choose_source()
 
     assert setup.controller._active_bridge is None
-    assert setup.scan.form_status_label.isHidden()
-    assert setup.scan.form_status_label.text() == ""
+    assert setup.scan.form_status_label.text() == HINT
     assert setup.scan.profile_combo.currentData() is None
     setup.controller.close()
 
@@ -411,7 +427,7 @@ def test_detection_waits_for_another_operation_and_then_runs_for_the_scans(
     detected: list[tuple[str, ...]] = []
     started, release = Event(), Event()
 
-    def detect(paths: tuple[str, ...]) -> Ok[FormDetection]:
+    def detect(paths: tuple[str, ...], progress: object = None) -> Ok[FormDetection]:
         detected.append(paths)
         return Ok(_known_detection("saved.omrtemplate"))
 
@@ -439,7 +455,8 @@ def test_detection_waits_for_another_operation_and_then_runs_for_the_scans(
 
     assert setup.scan.profile_combo.currentData().path == "saved.omrtemplate"
     assert setup.scan.form_status_label.text() == (
-        f"자동 인식: {SUMMARY} · 저장된 양식 'saved.omrtemplate' 사용"
+        f"✓ {SUMMARY}\n저장된 양식 'saved.omrtemplate'을(를) 찾아 지정했습니다. "
+        "다른 양식이면 목록에서 바꾸세요."
     )
     setup.controller.close()
 
@@ -448,7 +465,7 @@ def test_a_profile_picked_by_hand_while_detection_runs_is_kept(qtbot, monkeypatc
     release = Event()
     saves: list[object] = []
 
-    def detect(paths: tuple[str, ...]) -> Ok[FormDetection]:
+    def detect(paths: tuple[str, ...], progress: object = None) -> Ok[FormDetection]:
         release.wait(5)
         return Ok(_detection())  # a new form would normally be offered and saved
 
@@ -474,7 +491,7 @@ def test_a_profile_picked_by_hand_while_detection_runs_is_kept(qtbot, monkeypatc
     assert combo.currentData().path == "manual.omrtemplate"
     assert saves == []
     assert setup.scan.form_status_label.text() == (
-        f"자동 인식: {SUMMARY} · 직접 고른 프로필을 그대로 사용합니다"
+        f"✓ {SUMMARY}\n직접 고른 프로필을 그대로 사용합니다."
     )
     setup.controller.close()
 
@@ -484,7 +501,7 @@ def test_detection_is_skipped_while_the_controller_is_closing(qtbot, monkeypatch
     setup = _setup(
         qtbot,
         monkeypatch,
-        form_detect=lambda paths: detected.append(paths) or Ok(_detection()),
+        form_detect=lambda paths, progress=None: detected.append(paths) or Ok(_detection()),
     )
     setup.controller._closing = True
 
@@ -492,7 +509,7 @@ def test_detection_is_skipped_while_the_controller_is_closing(qtbot, monkeypatch
 
     assert detected == []
     assert setup.controller._active_bridge is None
-    assert setup.scan.form_status_label.isHidden()
+    assert setup.scan.form_status_label.text() == HINT
     setup.controller._closing = False
     setup.controller.close()
 
@@ -503,7 +520,7 @@ def test_accepted_new_form_is_not_saved_without_write_authority(qtbot, monkeypat
         qtbot,
         monkeypatch,
         write_enabled=False,
-        form_detect=lambda paths: Ok(_detection()),
+        form_detect=lambda paths, progress=None: Ok(_detection()),
         form_save=lambda payload, filename: saves.append(filename),
     )
     setup.controller._form_confirm_factory = _DialogFactory(QDialog.DialogCode.Accepted)
@@ -513,7 +530,7 @@ def test_accepted_new_form_is_not_saved_without_write_authority(qtbot, monkeypat
 
     assert saves == []
     assert "오류 코드: ROOT_WRITE_DENIED" in setup.scan.progress_label.text()
-    assert setup.scan.form_status_label.text() == "실행 폴더에 쓸 권한이 없습니다."
+    assert setup.scan.form_status_label.text() == "✗ 실행 폴더에 쓸 권한이 없습니다."
     assert setup.scan.form_status_label.property("role") == "error"
     assert setup.scan.profile_combo.currentData() is None
     setup.controller.close()
@@ -529,7 +546,7 @@ def test_failed_save_is_presented_and_selects_no_profile(qtbot, monkeypatch) -> 
     setup = _setup(
         qtbot,
         monkeypatch,
-        form_detect=lambda paths: Ok(_detection()),
+        form_detect=lambda paths, progress=None: Ok(_detection()),
         form_save=lambda payload, filename: Err((collision,)),
     )
     setup.controller._form_confirm_factory = _DialogFactory(QDialog.DialogCode.Accepted)
@@ -538,7 +555,7 @@ def test_failed_save_is_presented_and_selects_no_profile(qtbot, monkeypatch) -> 
     setup.finish(qtbot)
 
     assert "오류 코드: PROFILE_COLLISION" in setup.scan.progress_label.text()
-    assert setup.scan.form_status_label.text() == "같은 이름의 자동 양식 프로필이 너무 많습니다."
+    assert setup.scan.form_status_label.text() == "✗ 같은 이름의 자동 양식 프로필이 너무 많습니다."
     assert setup.scan.form_status_label.property("role") == "error"
     assert setup.scan.profile_combo.currentData() is None
     assert setup.window.status_label.text() == "실패"
@@ -562,7 +579,7 @@ def test_unusable_save_outcomes_fail_closed(qtbot, monkeypatch, save, generated,
     setup = _setup(
         qtbot,
         monkeypatch,
-        form_detect=lambda paths: Ok(_detection(generated_profile=generated)),
+        form_detect=lambda paths, progress=None: Ok(_detection(generated_profile=generated)),
         form_save=save,
     )
     setup.controller._form_confirm_factory = _DialogFactory(QDialog.DialogCode.Accepted)
@@ -582,7 +599,7 @@ def test_saved_profile_missing_from_the_list_is_reported(qtbot, monkeypatch) -> 
     setup.controller._finish_form_detection(_known_detection("missing.omrtemplate"))
 
     assert setup.scan.form_status_label.text() == (
-        "저장된 양식을 목록에서 찾을 수 없습니다. OMR 프로필을 직접 선택하세요."
+        "✗ 저장된 양식을 목록에서 찾을 수 없습니다. OMR 프로필을 직접 선택하세요."
     )
     assert setup.scan.form_status_label.property("role") == "error"
     setup.controller.close()
@@ -599,7 +616,7 @@ def test_saved_new_form_missing_from_the_list_is_reported(qtbot, monkeypatch) ->
     setup.controller._finish_form_detection(_detection())
 
     assert setup.scan.form_status_label.text() == (
-        "저장한 양식을 목록에서 찾을 수 없습니다. OMR 프로필을 직접 선택하세요."
+        "✗ 저장한 양식을 목록에서 찾을 수 없습니다. OMR 프로필을 직접 선택하세요."
     )
     setup.controller.close()
 
@@ -622,7 +639,7 @@ def test_detection_of_replaced_scans_is_dropped_and_rerun_for_the_new_scans(
     release = Event()
     calls: list[tuple[str, ...]] = []
 
-    def detect(paths: tuple[str, ...]):
+    def detect(paths: tuple[str, ...], progress: object = None):
         calls.append(tuple(paths))
         if len(calls) == 1:
             release.wait(5)
@@ -642,3 +659,28 @@ def test_detection_of_replaced_scans_is_dropped_and_rerun_for_the_new_scans(
     assert calls == [PDF.paths, other.paths]
     assert "second.omrtemplate" in setup.scan.form_status_label.text()
     assert "first.omrtemplate" not in setup.scan.form_status_label.text()
+
+
+def test_detection_shows_each_sample_page_beside_the_profile(qtbot, monkeypatch) -> None:
+    release = Event()
+
+    def detect(paths: tuple[str, ...], progress=None) -> Ok[FormDetection]:
+        assert progress is not None
+        progress(1, 2)
+        release.wait(5)
+        return Ok(_known_detection("saved.omrtemplate"))
+
+    setup = _setup(qtbot, monkeypatch, "saved.omrtemplate", form_detect=detect)
+    setup.scan.exam_name_edit.setText("26-2 생리학 중간고사")
+
+    setup.choose_source()
+    qtbot.waitUntil(lambda: "(1 / 2쪽)" in setup.scan.form_status_label.text())
+    # The scan inputs stay editable while the form is being recognised.
+    assert setup.scan.exam_name_edit.isEnabled()
+    assert not setup.scan.run_button.isEnabled()
+    release.set()
+    setup.finish(qtbot)
+
+    assert "saved.omrtemplate" in setup.scan.form_status_label.text()
+    assert setup.scan.run_button.isEnabled()
+    setup.controller.close()

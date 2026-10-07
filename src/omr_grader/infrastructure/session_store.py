@@ -675,6 +675,44 @@ def _refresh_result_view(session: Path, generation: Path) -> None:
     for child in generation.iterdir():
         if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
             retry_io(partial(os.link, child, session / child.name))
+    _hide_internal_directories(session)
+
+
+_INTERNAL_DIRECTORIES = ("generations", ".staging")
+
+
+def _hide_internal_directories(session: Path) -> None:
+    """Hide the internal folders so a browsed session shows only its result files.
+
+    Only directories are hidden: result files are hard links that share attributes with
+    their generation copies, and control files are replaced on every save. Hiding is
+    cosmetic, so a refused attribute change never fails the save.
+    """
+    if os.name != "nt":
+        return
+    for name in _INTERNAL_DIRECTORIES:
+        directory = session / name
+        try:
+            metadata = os.lstat(directory)
+        except OSError:
+            continue
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        if not stat.S_ISDIR(metadata.st_mode) or attributes & (
+            stat.FILE_ATTRIBUTE_HIDDEN | stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            continue
+        ctypes.WinDLL("kernel32").SetFileAttributesW(
+            str(directory), attributes | stat.FILE_ATTRIBUTE_HIDDEN
+        )
+
+
+def _remove_emptied_staging(session: Path, operation_staging: Path) -> None:
+    """Drop an operation's staging folder, and ``.staging``, once nothing is left."""
+    for directory in (operation_staging, session / ".staging"):
+        try:
+            directory.rmdir()
+        except OSError:
+            return
 
 
 def _artifact_path(session: Path, generation: Path, relative: str) -> Path:
@@ -1755,6 +1793,7 @@ class SessionStore:
                 return _error("SESSION_GENERATION_CONFLICT", "generation ID가 이미 존재합니다.")
             retry_replace(staging, target)
             final = target
+            _remove_emptied_staging(session, staging.parent)
             self._barrier("after_generation_rename")
             pointer = CurrentPointer(
                 1,
