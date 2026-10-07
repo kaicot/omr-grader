@@ -602,7 +602,7 @@ def test_imported_profile_is_selected_with_visible_confirmation(qtbot):
 
     assert page.profile_combo.currentData() == imported
     assert "검증 완료" in page.profile_summary.text()
-    assert "적용되었습니다" in page.progress_label.text()
+    assert "인식 프로필로 지정했습니다" in page.progress_label.text()
 
 
 def test_busy_locks_mutation_and_cancel_cleanup_reenables_inputs(qtbot):
@@ -749,6 +749,20 @@ def test_save_phase_is_indeterminate_and_keeps_the_clock_running(qtbot, clock):
     page._progress_timer.timeout.emit()
     assert page.progress_label.text() == "인식 결과를 저장하는 중… · 경과 4초"
     assert page._progress_timer.isActive()
+
+
+def test_saving_results_cannot_be_cancelled(qtbot, clock):
+    page = _ready_page(qtbot)
+    page.set_busy(True, "operation")
+    page.set_progress(5, 10, phase="recognize")
+    assert page.cancel_button.isEnabled()
+
+    page.set_progress(10, 10, phase="save")
+
+    assert not page.cancel_button.isEnabled()
+    page.set_cancelled()
+    page.set_busy(True, "next")
+    assert page.cancel_button.isEnabled()
 
 
 def test_elapsed_time_comes_from_the_pages_own_clock(qtbot, clock):

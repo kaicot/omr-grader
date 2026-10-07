@@ -706,13 +706,27 @@ def _hide_internal_directories(session: Path) -> None:
         )
 
 
-def _remove_emptied_staging(session: Path, operation_staging: Path) -> None:
-    """Drop an operation's staging folder, and ``.staging``, once nothing is left."""
-    for directory in (operation_staging, session / ".staging"):
+def _remove_emptied_staging(session: Path) -> None:
+    """Drop empty operation folders under ``.staging``, and ``.staging`` once empty.
+
+    Runs under the session's writer lock; folders that still hold files are left for
+    recovery, which reports them as orphans.
+    """
+    staging_root = session / ".staging"
+    try:
+        children = tuple(staging_root.iterdir())
+    except OSError:
+        return
+    for child in children:
         try:
-            directory.rmdir()
+            if child.is_dir() and not child.is_symlink():
+                child.rmdir()
         except OSError:
-            return
+            pass
+    try:
+        staging_root.rmdir()
+    except OSError:
+        pass
 
 
 def _artifact_path(session: Path, generation: Path, relative: str) -> Path:
@@ -1793,7 +1807,7 @@ class SessionStore:
                 return _error("SESSION_GENERATION_CONFLICT", "generation ID가 이미 존재합니다.")
             retry_replace(staging, target)
             final = target
-            _remove_emptied_staging(session, staging.parent)
+            _remove_emptied_staging(session)
             self._barrier("after_generation_rename")
             pointer = CurrentPointer(
                 1,

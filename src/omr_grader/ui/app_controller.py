@@ -1000,8 +1000,15 @@ class AppController(QObject):
         if self._closing or self._active_page is None:
             return
         if self._active_kind == "form-detection":
-            # Detection runs beside the scan inputs, which stay editable meanwhile.
-            if isinstance(progress, _FormDetectionProgress):
+            # Detection runs beside the scan inputs, which stay editable meanwhile, so
+            # pages of scans that were cleared or replaced are not shown.
+            current = self.scan_page.current_source()
+            if (
+                isinstance(progress, _FormDetectionProgress)
+                and not self._form_detection_stale
+                and current is not None
+                and tuple(current.paths) == self._form_detection_paths
+            ):
                 self.scan_page.set_form_detection_progress(
                     progress.pages_done, progress.pages_total
                 )
@@ -1349,6 +1356,14 @@ class AppController(QObject):
         detect = self.services.form_detect
         if detect is None or self._closing:
             return
+        if (
+            self._active_kind == "form-detection"
+            and self._active_bridge is not None
+            and self._active_bridge.active
+            and tuple(selection.paths) == self._form_detection_paths
+        ):
+            self._form_detection_stale = False
+            return  # the same scans are already being detected
         if self._active_bridge is not None and self._active_bridge.active:
             # Detection only helps; the profile can still be chosen by hand meanwhile. It
             # runs for the current scans once the other action ends, and no result for

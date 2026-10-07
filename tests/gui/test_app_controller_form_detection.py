@@ -661,6 +661,29 @@ def test_detection_of_replaced_scans_is_dropped_and_rerun_for_the_new_scans(
     assert "first.omrtemplate" not in setup.scan.form_status_label.text()
 
 
+def test_pages_of_scans_cleared_during_detection_are_not_shown(qtbot, monkeypatch) -> None:
+    first_page, cleared = Event(), Event()
+
+    def detect(paths: tuple[str, ...], progress=None) -> Ok[FormDetection]:
+        progress(1, 2)
+        first_page.set()
+        cleared.wait(5)
+        progress(2, 2)
+        return Ok(_known_detection("saved.omrtemplate"))
+
+    setup = _setup(qtbot, monkeypatch, "saved.omrtemplate", form_detect=detect)
+    setup.choose_source()
+    qtbot.waitUntil(lambda: "(1 / 2쪽)" in setup.scan.form_status_label.text())
+
+    setup.scan.reset_button.click()
+    cleared.set()
+    setup.finish(qtbot)
+
+    assert setup.scan.form_status_label.text() == HINT
+    assert setup.scan.form_progress_bar.isHidden()
+    setup.controller.close()
+
+
 def test_detection_shows_each_sample_page_beside_the_profile(qtbot, monkeypatch) -> None:
     release = Event()
 

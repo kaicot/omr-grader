@@ -165,6 +165,35 @@ def test_cancelling_while_pages_are_prepared_stops_before_recognition(tmp_path: 
     assert cancelled.errors[0].code == "OPERATION_NOT_FOUND"
 
 
+def test_a_cancel_after_recognition_stops_before_the_results_are_saved(
+    tmp_path: Path,
+) -> None:
+    command = _command(tmp_path / "unused.png")
+
+    class Source:
+        def build_tasks(self, received, progress=None):
+            return Ok((object(),))
+
+    class Worker:
+        def run(self, received, *, multiprocessing, progress):
+            # The cancel arrives as the last page finishes.
+            use_case.cancel_scan(CancelOperationCommand(command.operation_id))
+            return WorkerBatchResult((WorkerResult(0, "page"),), False)
+
+        def cancel(self) -> None:
+            pass
+
+    class Coordinator:
+        def commit_scan(self, command, results):
+            raise AssertionError("a cancelled scan must not publish")
+
+    use_case = ScanUseCase(Source(), Worker)
+    result = use_case.run_scan(command, Coordinator())
+
+    assert isinstance(result, Err)
+    assert result.errors[0].code == "OPERATION_CANCELLED"
+
+
 def test_scan_runtime_reports_each_prepared_page(tmp_path: Path) -> None:
     sheet = reference_sheet()
     folder = tmp_path / "scans"
@@ -276,20 +305,25 @@ def test_scan_response_book_notes_unconfirmed_answers_and_unusable_student_ids(
 
     assert isinstance(result, Ok)
     workbook = result.value[0]["responses.xlsx"]
-    parsed = parse_response_book(
+    sheet = load_workbook(BytesIO(workbook))[RESPONSE_SHEET_NAME]
+    assert [
+        (sheet.cell(row, 2).value, sheet.cell(row, 3).value, sheet.cell(row, 105).value)
+        for row in range(2, 6)
+    ] == [
+        ("scan-1.png", "20240001", "확인 필요: 3, 17번"),
+        ("scan-2.png", None, "학번 확인 필요"),
+        ("scan-3.png", None, "확인 필요: 3~5번 / 학번 확인 필요"),
+        ("scan-4.png", "20240001", None),
+    ]
+    # Unconfirmed answers hold the engine's guess, so the book is not imported as is.
+    refused = parse_response_book(
         BytesIO(workbook),
         sheet_name=RESPONSE_SHEET_NAME,
         session_id="import-session",
         source_sha256=sha256(workbook).hexdigest(),
     )
-    assert isinstance(parsed, Ok)
-    assert [(row.source_filename, row.raw_student_id, row.note) for row in parsed.value] == [
-        ("scan-1.png", "20240001", "확인 필요: 3, 17번"),
-        ("scan-2.png", "", "학번 확인 필요"),
-        ("scan-3.png", "", "확인 필요: 3~5번 / 학번 확인 필요"),
-        ("scan-4.png", "20240001", ""),
-    ]
-    sheet = load_workbook(BytesIO(workbook))[RESPONSE_SHEET_NAME]
+    assert isinstance(refused, Err)
+    assert refused.errors[0].code == "XLSX_REVIEW_PENDING"
     # Yellow marks exactly the unconfirmed answers: Q3 and Q17 of page 1, Q3..Q5 of page 3.
     yellow = {
         (cell.row, cell.column)

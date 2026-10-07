@@ -291,7 +291,19 @@ def _assert_formatted(path: Path) -> None:
     assert sheet["G2"].fill.fill_type == "solid"
 
 
-def test_recognition_response_book_with_notes_and_fills_is_accepted_and_roundtrips(
+def _clear_review_notes(path: Path) -> None:
+    """What a teacher does after checking the yellow cells: drop '확인 필요: …번'."""
+    book = load_workbook(path)
+    sheet = book[RESPONSE_SHEET_NAME]
+    for row in range(2, sheet.max_row + 1):
+        cell = sheet.cell(row, 105)
+        parts = str(cell.value or "").split(" / ")
+        kept = [part for part in parts if part and not part.startswith("확인 필요:")]
+        cell.value = " / ".join(kept) or None
+    book.save(path)
+
+
+def test_recognition_response_book_waits_until_unconfirmed_answers_are_checked(
     tmp_path: Path,
 ) -> None:
     marked = _answers(_MARKED)
@@ -308,29 +320,31 @@ def test_recognition_response_book_with_notes_and_fills_is_accepted_and_roundtri
         path, rows, session_id="session", revision=1, manifest_sha256="0" * 64
     )
 
+    _assert_formatted(path)
+    refused = _parse_file(path)
+
+    assert isinstance(refused, Err)
+    assert refused.errors[0].code == "XLSX_REVIEW_PENDING"
+    assert refused.errors[0].field_path == f"{RESPONSE_SHEET_NAME}!2:DA"
+    assert "2행 비고에 '확인 필요: 3, 5, 17번'" in str(refused.errors[0].context["reason"])
+
+    _clear_review_notes(path)
     parsed = _parse_file(path)
 
     _assert_formatted(path)
     assert isinstance(parsed, Ok)
-    assert [row.note for row in parsed.value] == [
-        "확인 필요: 3, 5, 17번",
-        "학번 확인 필요",
-        "확인 필요: 1~100번 / 학번 확인 필요",
-        "",
-    ]
+    assert [row.note for row in parsed.value] == ["", "학번 확인 필요", "학번 확인 필요", ""]
     for written, read in zip(rows, parsed.value, strict=True):
         assert (
             read.serial,
             read.source_filename,
             read.raw_student_id,
             read.name,
-            read.note,
         ) == (
             written.serial,
             written.source_filename,
             written.raw_student_id,
             written.name,
-            written.note,
         )
         assert [answer.choices for answer in read.answers] == [
             answer.choices for answer in written.answers
@@ -372,7 +386,7 @@ def test_effective_response_book_with_fills_is_accepted_and_roundtrips(tmp_path:
         ]
 
 
-def test_start_from_responses_validation_accepts_a_book_with_notes_and_fills(
+def test_start_from_responses_validation_accepts_a_checked_book_with_fills(
     tmp_path: Path,
 ) -> None:
     marked = _answers(_MARKED)
@@ -384,6 +398,7 @@ def test_start_from_responses_validation_accepts_a_book_with_notes_and_fills(
         revision=1,
         manifest_sha256="0" * 64,
     )
+    _clear_review_notes(path)
 
     validation = ResponseImportUseCase(object()).validate_response_book(  # type: ignore[arg-type]
         ResponseBookRequest(str(path), RESPONSE_SHEET_NAME, "시험", 2026, ExamTerm.FIRST)
@@ -393,6 +408,6 @@ def test_start_from_responses_validation_accepts_a_book_with_notes_and_fills(
     assert isinstance(validation, Ok)
     try:
         assert validation.value.row_count == 1
-        assert validation.value.normalized_rows[0].note == "확인 필요: 3, 5, 17번"
+        assert validation.value.normalized_rows[0].note == ""
     finally:
         validation.value.validation_token.close()

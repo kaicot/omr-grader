@@ -524,7 +524,7 @@ class ScanPage(QWidget):
                 self.profile_combo.setCurrentIndex(index)
                 self._set_form_attention(False)
                 self.progress_label.setText(
-                    f"OMR 프로필 '{profile.name}'을(를) 불러와 인식 프로필로 적용되었습니다."
+                    f"'{profile.name}'을(를) 인식 프로필로 지정했습니다."
                 )
                 self._update_gating()
                 return True
@@ -931,7 +931,11 @@ class ScanPage(QWidget):
             "success" if blocker is None else "hint" if self._write_enabled else "error",
         )
         self.fresh_response_button.setEnabled(self._write_enabled and not self._busy)
-        self.cancel_button.setEnabled(self._busy and self._cancellable)
+        # Once results are being saved the exam is created either way, so a cancel
+        # there would only claim a cancellation that did not happen.
+        self.cancel_button.setEnabled(
+            self._busy and self._cancellable and self._progress_phase != "save"
+        )
         editable = self._write_enabled and not self._busy
         for widget in (
             self.exam_name_edit,

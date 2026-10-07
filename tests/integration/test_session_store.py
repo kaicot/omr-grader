@@ -275,6 +275,8 @@ def test_saved_sessions_hide_internal_folders_and_leave_no_staging(tmp_path: Pat
     assert _hidden(session / "generations") is windows
 
     assert isinstance(store.commit_generation(_mutation()), Ok)
+    # An empty operation folder that an earlier version left behind.
+    (session / ".staging" / "left-by-4.0.0").mkdir(parents=True)
     assert isinstance(store.commit_generation(_mutation(expected_revision=2)), Ok)
 
     assert not (session / ".staging").exists()

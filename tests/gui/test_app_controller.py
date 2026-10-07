@@ -417,7 +417,7 @@ def test_profile_import_completion_selects_profile_on_scan_page(qtbot, monkeypat
     controller._finish_profile_import(ProfileImportResult(imported.path, "a" * 64))
 
     assert scan.profile_combo.currentData() == imported
-    assert "적용되었습니다" in scan.progress_label.text()
+    assert "인식 프로필로 지정했습니다" in scan.progress_label.text()
     controller.close()
 
 

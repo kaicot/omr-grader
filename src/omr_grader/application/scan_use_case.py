@@ -106,6 +106,8 @@ class ScanUseCase:
             ordered = tuple(item.result for item in run.result.results)
             if len(ordered) != len(tasks.value):
                 return _error("WORKER_RESULT_INCOMPLETE", "source")
+            if operation.cancelled.is_set():
+                return _error("OPERATION_CANCELLED", "operation_id")
             if progress is not None:
                 failed = sum(isinstance(item, PipelineFailure) for item in ordered)
                 progress(

@@ -56,6 +56,11 @@ _DANGEROUS_PARTS = (
 )
 
 
+# The recognition note that names unconfirmed answers (see response_book.review_note).
+# Their cells hold the engine's guess, so a book still carrying it is not ready to grade.
+_REVIEW_PENDING = "확인 필요:"
+
+
 def _error(code: str, path: str, **context: str | int | bool | None) -> Err:
     return Err((ErrorInfo(code, f"error.{code.lower()}", path, context),))
 
@@ -319,6 +324,16 @@ def parse_response_book(
                 if isinstance(parsed_field, Err):
                     return parsed_field
                 fields.append(parsed_field)
+            if _REVIEW_PENDING in fields[3]:
+                return _error(
+                    "XLSX_REVIEW_PENDING",
+                    f"{sheet_name}!{row_number}:DA",
+                    reason=(
+                        f"{row_number}행 비고에 '{fields[3]}'가 남아 있습니다. 노란 칸은 인식이 "
+                        "애매했던 답이라 그대로 가져오면 채점됩니다. 노란 칸을 답안지와 맞춰 "
+                        "고친 뒤 비고의 '확인 필요: …번'을 지우고 다시 가져오세요."
+                    ),
+                )
             answers: list[AnswerValue] = []
             for question, cell in enumerate(cells[4:104], 1):
                 parsed_answer = _answer(cell, f"{sheet_name}!{row_number}:Q{question}")
