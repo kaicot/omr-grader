@@ -381,6 +381,7 @@ class MainWindow(QMainWindow):
             (self.SETTINGS_PAGE, "환경 설정", "⚙"),
         ):
             button = QPushButton(f"{icon}   {text}", sidebar)
+            button.setProperty("baseText", f"{icon}   {text}")
             button.setObjectName("navButton")
             button.setCheckable(True)
             button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -469,10 +470,12 @@ class MainWindow(QMainWindow):
                확인이 필요한 답은 노랑으로 표시됩니다.</p>
             <h2>3. 시험 관리</h2>
             <p>저장된 시험을 열어 학생별 응답과 채점 이미지를 보고, 시험별 백업과 복원을
-               수행할 수 있습니다. 채점이 끝난 시험 폴더에는 채점결과 엑셀 하나가 있고,
-               그 안에 채점결과·응답결과·정답표·색 설명 탭이 있습니다. 답을 고쳐야 하면
-               이 엑셀(채점 전이면 응답결과 엑셀)을 시험 폴더 밖으로 복사해 '응답결과'
-               탭을 고칩니다. 노란 칸(확인 필요)을 답안지와 맞춰 고치고 비고의
+               수행할 수 있습니다. 채점하지 않은 시험은 <b>채점하기</b>로 정답/채점
+               화면에 연결하고, <b>결과 엑셀 열기</b>와 <b>폴더 열기</b>로 결과를 바로
+               엽니다. 채점이 끝난 시험 폴더에는 채점결과 엑셀 하나가 있고, 그 안에
+               채점결과·결과OX·응답원본·정답표·색 설명 탭이 있습니다. 답을 고쳐야
+               하면 이 엑셀(채점 전이면 응답결과 엑셀)을 시험 폴더 밖으로 복사해
+               '응답원본' 탭을 고칩니다. 노란 칸(확인 필요)을 답안지와 맞춰 고치고 비고의
                '확인 필요: …번'을 지운 뒤, OMR 스캔 화면의 <b>응답 엑셀로 시작</b>으로
                불러오면 새 시험으로 만들어지고 다시 채점할 수 있습니다.</p>
             <h2>4. 환경 설정</h2>
@@ -565,7 +568,19 @@ class MainWindow(QMainWindow):
             return
         if button is not None:
             button.setChecked(True)
+        if button is not None and button.property("nextStep"):
+            self.set_next_step(None)  # the user reached the suggested step
         self.pages.setCurrentIndex(page_index)
+
+    def set_next_step(self, page_index: int | None) -> None:
+        """Mark the sidebar entry the user should open next, or clear the mark."""
+        for button in self.nav_buttons:
+            marked = button.property("pageIndex") == page_index
+            base = str(button.property("baseText"))
+            button.setText(f"{base}   ◀ 다음" if marked else base)
+            button.setProperty("nextStep", marked)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def set_grading_available(self, available: bool) -> None:
         """Enable grading only after the scan workflow has produced responses."""
@@ -613,6 +628,13 @@ class MainWindow(QMainWindow):
         if not isinstance(path, str) or not path:
             raise ValueError("path must be a non-empty string")
         self.diagnostic_log_path = path
+
+    def show_error_dialog(self, title: str, message: str) -> None:
+        """Report a failed action in a dialog that cannot be missed."""
+        box = QMessageBox(QMessageBox.Icon.Warning, title, message, parent=self)
+        box.setObjectName("actionErrorDialog")
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.open()
 
     def show_diagnostic(self, message: str) -> None:
         """Keep startup diagnostics visible without preventing help or navigation."""

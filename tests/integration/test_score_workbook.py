@@ -61,6 +61,7 @@ def test_score_and_final_workbooks_have_exact_projection_shape(tmp_path):
     final = final_book.active
 
     expected_score_headers = (
+        "순번",
         "학번",
         "이름",
         "총점",
@@ -70,7 +71,7 @@ def test_score_and_final_workbooks_have_exact_projection_shape(tmp_path):
     )
     assert score.title == "채점결과"
     assert tuple(cell.value for cell in score[1]) == expected_score_headers
-    assert score.max_column == 105 and score.max_row == 3
+    assert score.max_column == 106 and score.max_row == 3
     assert final.title == "최종성적표"
     assert tuple(cell.value for cell in final[1]) == (
         *expected_score_headers,
@@ -78,16 +79,21 @@ def test_score_and_final_workbooks_have_exact_projection_shape(tmp_path):
         "수정문항",
         "확정일시",
     )
-    assert final.max_column == 108 and final.max_row == 3
-    assert score.cell(2, 4).value == 1 and score.cell(2, 4).data_type == "n"
-    assert score.cell(2, 3).value == 3.5 and score.cell(2, 3).data_type == "n"
-    assert tuple(score.cell(2, column).value for column in range(5, 8)) == ("O", "O", "제외")
-    assert score.cell(2, 2).value == "'=수식아님"
-    assert {score.cell(row, 105).value for row in (2, 3)} == {"중복확인필요"}
-    assert final.cell(2, 106).value is True and final.cell(2, 106).data_type == "b"
-    assert final.cell(2, 107).value == "학번1,Q2"
-    assert final.cell(2, 108).value == "2026-07-28T01:02:03.123456Z"
-    assert score_book.sheetnames == ["채점결과", RESPONSE_SHEET_NAME, "정답표", "색 설명"]
+    assert final.max_column == 109 and final.max_row == 3
+    assert [score.cell(row, 1).value for row in (2, 3)] == [1, 2]
+    assert score.cell(2, 5).value == 1 and score.cell(2, 5).data_type == "n"
+    assert score.cell(2, 4).value == 3.5 and score.cell(2, 4).data_type == "n"
+    assert tuple(score.cell(2, column).value for column in range(6, 9)) == ("1,2", None, None)
+    assert score.cell(2, 3).value == "'=수식아님"
+    assert {score.cell(row, 106).value for row in (2, 3)} == {"중복확인필요"}
+    assert final.cell(2, 107).value is True and final.cell(2, 107).data_type == "b"
+    assert final.cell(2, 108).value == "학번1,Q2"
+    assert final.cell(2, 109).value == "2026-07-28T01:02:03.123456Z"
+    assert score_book.sheetnames == SCORE_SHEETS
+    outcomes = score_book["결과OX"]
+    assert tuple(cell.value for cell in outcomes[1]) == expected_score_headers
+    assert [outcomes.cell(2, column).value for column in (1, 2, 4, 5)] == [1, "12345678", 3.5, 1]
+    assert tuple(outcomes.cell(2, column).value for column in range(6, 9)) == ("O", "O", "제외")
     responses = score_book[RESPONSE_SHEET_NAME]
     assert tuple(cell.value for cell in responses[1]) == RESPONSE_HEADERS
     assert tuple(responses.cell(2, column).value for column in range(1, 8)) == (
@@ -102,15 +108,15 @@ def test_score_and_final_workbooks_have_exact_projection_shape(tmp_path):
     answer_key = score_book["정답표"]
     assert tuple(cell.value for cell in answer_key[1]) == ANSWER_KEY_HEADERS
     assert answer_key.max_row == 101
-    assert final_book.sheetnames == ["최종성적표", RESPONSE_SHEET_NAME, "정답표", "색 설명"]
+    assert final_book.sheetnames == ["최종성적표", *SCORE_SHEETS[1:]]
     assert {property.name: property.value for property in score_book.custom_doc_props} == {
         "schema": "1",
         "session_id": "session-1",
         "revision": "2",
         "manifest_sha256": "b" * 64,
     }
-    assert score_path.name == "02_score_수학_1_260728_100203_채점결과.xlsx"
-    assert final_path.name == "03_final_수학_1_260728_100203_최종성적표.xlsx"
+    assert score_path.name == "260728_100203_채점결과_수학_1.xlsx"
+    assert final_path.name == "260728_100203_최종성적표_수학_1.xlsx"
 
 
 def test_score_book_rejects_collisions_and_leaves_no_partial_file(tmp_path, monkeypatch):
@@ -143,6 +149,7 @@ def test_score_book_rejects_collisions_and_leaves_no_partial_file(tmp_path, monk
     assert not tuple(failed_destination.glob(".*.tmp"))
 
 
+SCORE_SHEETS = ["채점결과", "결과OX", RESPONSE_SHEET_NAME, "정답표", "색 설명"]
 # Fill and font colors (ARGB) of an answer scored as wrong; YELLOW is shared with the response book.
 PINK = ("FFFFC7CE", "FF9C0006")
 _CORRECT = {
@@ -252,37 +259,88 @@ def _scenario(writer, tmp_path):
     return _write(writer, tmp_path, (review, perfect, wrong))
 
 
-# Q1 is column 5, so Qn sits in column n + 4 and the total in column 3.
-_WRONG_ROW = {6: PINK, 8: PINK, 9: PINK, 11: PINK}
-_REVIEW_ROW = {3: YELLOW, 7: YELLOW, 8: YELLOW, 9: YELLOW, 13: PINK, 21: YELLOW}
+# Q1 is column 6, so Qn sits in column n + 5 and the total in column 4.
+_WRONG_ROW = {7: PINK, 9: PINK, 10: PINK, 12: PINK}
+_REVIEW_ROW = {4: YELLOW, 8: YELLOW, 9: YELLOW, 10: YELLOW, 14: PINK, 22: YELLOW}
 
 
 def test_score_book_paints_wrong_answers_pink_and_unconfirmed_answers_yellow(tmp_path):
-    sheet = _scenario(write_score_book, tmp_path)["채점결과"]
+    book = _scenario(write_score_book, tmp_path)
 
-    assert [sheet.cell(row, 1).value for row in (2, 3, 4)] == ["20240000", "20240001", "20240002"]
-    assert _painted(sheet, 2) == {}
-    assert _painted(sheet, 3) == _WRONG_ROW
-    assert _painted(sheet, 4) == _REVIEW_ROW
+    for title in ("채점결과", "결과OX"):
+        sheet = book[title]
+        assert [sheet.cell(row, 2).value for row in (2, 3, 4)] == [
+            "20240000",
+            "20240001",
+            "20240002",
+        ]
+        assert _painted(sheet, 2) == {}
+        assert _painted(sheet, 3) == _WRONG_ROW
+        assert _painted(sheet, 4) == _REVIEW_ROW
+        assert [sheet.cell(row, 4).value for row in (2, 3, 4)] == [20, 16, None]
+        assert [sheet.cell(row, 5).value for row in (2, 3, 4)] == [1, 2, None]
+
+
+def test_outcome_sheet_says_how_each_answer_was_scored(tmp_path):
+    sheet = _scenario(write_score_book, tmp_path)["결과OX"]
+
     # Painting never changes what a cell says.
-    assert [sheet.cell(3, column).value for column in range(5, 12)] == list("OXOXXOX")
-    assert sheet.cell(3, 54).value == "제외"
-    assert [sheet.cell(4, column).value for column in (7, 8, 9, 13, 21)] == [
+    assert [sheet.cell(3, column).value for column in range(6, 13)] == list("OXOXXOX")
+    assert sheet.cell(3, 55).value == "제외"
+    assert [sheet.cell(4, column).value for column in (8, 9, 10, 14, 22)] == [
         "검토",
         "검토",
         "검토",
         "X",
         "검토",
     ]
-    assert [sheet.cell(row, 3).value for row in (2, 3, 4)] == [20, 16, None]
-    assert [sheet.cell(row, 4).value for row in (2, 3, 4)] == [1, 2, None]
+
+
+def test_score_sheet_shows_the_chosen_answers(tmp_path):
+    sheet = _scenario(write_score_book, tmp_path)["채점결과"]
+
+    assert [sheet.cell(2, column).value for column in range(6, 12)] == [
+        "1",
+        "2",
+        "1",
+        "3",
+        "1,2",
+        "1",
+    ]
+    # Wrong choice, blank (Q3 accepts anything), blank on an asked question, several marks.
+    assert [sheet.cell(3, column).value for column in range(6, 13)] == [
+        "1",
+        "3",
+        None,
+        None,
+        "1,2,3",
+        "1",
+        "1,2",
+    ]
+    # An unconfirmed Q50 is still shown, although the key does not ask it.
+    assert sheet.cell(3, 55).value == "1"
+    assert [sheet.cell(4, column).value for column in (8, 9, 10, 14, 22)] == [
+        "2",
+        None,
+        "1,2",
+        "2",
+        "4",
+    ]
+
+
+def test_sheets_number_the_students_so_the_last_number_is_the_head_count(tmp_path):
+    book = _scenario(write_final_book, tmp_path)
+
+    for title in ("최종성적표", "결과OX"):
+        assert book[title].max_row == 4
+        assert [book[title].cell(row, 1).value for row in range(1, 5)] == ["순번", 1, 2, 3]
 
 
 def test_score_book_names_the_unconfirmed_questions_in_the_note(tmp_path):
     sheet = _scenario(write_score_book, tmp_path)["채점결과"]
 
     # Q50 is unconfirmed too, but the key does not ask it, so the score and note are untouched.
-    assert [sheet.cell(row, 105).value for row in (2, 3, 4)] == [None, None, "확인 필요: 3~5, 17번"]
+    assert [sheet.cell(row, 106).value for row in (2, 3, 4)] == [None, None, "확인 필요: 3~5, 17번"]
 
 
 def test_score_book_appends_the_review_note_to_the_duplicate_id_note(tmp_path):
@@ -292,11 +350,11 @@ def test_score_book_appends_the_review_note_to_the_duplicate_id_note(tmp_path):
     sheet = _write(write_score_book, tmp_path, (review, clean))["채점결과"]
 
     # Same ID and no names: the rows keep the order they arrived in.
-    assert [sheet.cell(row, 105).value for row in (2, 3)] == [
+    assert [sheet.cell(row, 106).value for row in (2, 3)] == [
         "중복확인필요 / 확인 필요: 3, 17번",
         "중복확인필요",
     ]
-    assert _painted(sheet, 2) == {3: YELLOW, 7: YELLOW, 21: YELLOW}
+    assert _painted(sheet, 2) == {4: YELLOW, 8: YELLOW, 22: YELLOW}
 
 
 def test_rows_are_listed_by_name_then_students_without_a_name_by_id(tmp_path):
@@ -321,7 +379,11 @@ def test_rows_are_listed_by_name_then_students_without_a_name_by_id(tmp_path):
     )
     book = load_workbook(path)
 
-    for sheet, name_column in ((book["채점결과"], 2), (book[RESPONSE_SHEET_NAME], 4)):
+    for sheet, name_column in (
+        (book["채점결과"], 3),
+        (book["결과OX"], 3),
+        (book[RESPONSE_SHEET_NAME], 4),
+    ):
         assert [sheet.cell(row, name_column).value for row in range(2, 6)] == [
             "가윤",
             "나래",
@@ -329,7 +391,8 @@ def test_rows_are_listed_by_name_then_students_without_a_name_by_id(tmp_path):
             None,
         ]
     # The rank still says who scored best.
-    assert [book["채점결과"].cell(row, 4).value for row in range(2, 6)] == [4, 1, 1, 1]
+    assert [book["채점결과"].cell(row, 5).value for row in range(2, 6)] == [4, 1, 1, 1]
+    assert [book["채점결과"].cell(row, 1).value for row in range(2, 6)] == [1, 2, 3, 4]
 
 
 def test_response_sheet_of_the_score_book_is_importable_once_reviews_are_cleared(tmp_path):
@@ -347,7 +410,7 @@ def test_response_sheet_of_the_score_book_is_importable_once_reviews_are_cleared
         "확인 필요: 50번",
         "확인 필요: 3~5, 17번",
     ]
-    path = next(tmp_path.glob("02_score_*.xlsx"))
+    path = next(tmp_path.glob("*_채점결과_*.xlsx"))
 
     def parse():
         payload = path.read_bytes()
@@ -376,13 +439,13 @@ def test_final_book_uses_the_same_colors_without_touching_its_extra_columns(tmp_
     assert _painted(sheet, 2) == {}
     assert _painted(sheet, 3) == _WRONG_ROW
     assert _painted(sheet, 4) == _REVIEW_ROW
-    assert sheet.cell(4, 105).value == "확인 필요: 3~5, 17번"
-    assert [sheet.cell(1, column).value for column in (106, 107, 108)] == [
+    assert sheet.cell(4, 106).value == "확인 필요: 3~5, 17번"
+    assert [sheet.cell(1, column).value for column in (107, 108, 109)] == [
         "수정여부",
         "수정문항",
         "확정일시",
     ]
-    assert sheet.max_column == 108
+    assert sheet.max_column == 109
 
 
 @pytest.mark.parametrize(
@@ -391,8 +454,9 @@ def test_final_book_uses_the_same_colors_without_touching_its_extra_columns(tmp_
 def test_score_and_final_books_freeze_identity_columns_and_bold_the_header(tmp_path, writer, title):
     book = _scenario(writer, tmp_path)
 
-    for sheet in (book[title], book[RESPONSE_SHEET_NAME]):
-        assert sheet.freeze_panes == "E2"
+    for name, freeze in ((title, "F2"), ("결과OX", "F2"), (RESPONSE_SHEET_NAME, "E2")):
+        sheet = book[name]
+        assert sheet.freeze_panes == freeze
         assert all(cell.font.b for cell in sheet[1])
         assert not any(cell.font.b for row in sheet.iter_rows(min_row=2) for cell in row)
     assert book.active.title == title

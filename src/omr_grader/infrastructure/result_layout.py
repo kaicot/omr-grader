@@ -12,10 +12,18 @@ COORDINATE_DIR = "좌표데이터"
 REVIEW_DIR = "수동확인필요"
 SOURCE_IMAGE_DIR = "01원본스캔"
 ANSWER_KEY_SOURCE_DIR = "정답표원본"
+RESPONSE_KIND = "응답결과"
+SCORE_KIND = "채점결과"
+FINAL_KIND = "최종성적표"
+ANSWER_KEY_KIND = "정답표"
+RESULT_WORKBOOK_KINDS = (RESPONSE_KIND, SCORE_KIND, FINAL_KIND, ANSWER_KEY_KIND)
 
 _KST = ZoneInfo("Asia/Seoul")
 _UNSAFE = re.compile(r"""[\s<>:"/\\|?*\x00-\x1f]+""")
 _UNDERSCORES = re.compile(r"_+")
+_RESULT_WORKBOOK = re.compile(
+    rf"\d{{6}}_\d{{6}}_(?P<kind>{'|'.join(RESULT_WORKBOOK_KINDS)})_[^/\\]+\.xlsx"
+)
 
 
 def safe_exam_name(value: str) -> str:
@@ -41,12 +49,25 @@ def result_base_name(exam_name: str, created_at: str) -> str:
     return f"{safe_exam_name(exam_name)}_{result_timestamp(created_at)}"
 
 
-def ocr_filename(exam_name: str, created_at: str) -> str:
-    return f"01_ocr_{result_base_name(exam_name, created_at)}_응답결과.xlsx"
+def result_workbook_filename(kind: str, exam_name: str, created_at: str) -> str:
+    """``<yymmdd>_<HHMMSS>_<kind>_<exam name>.xlsx``, stamped with the session's creation time."""
+    if kind not in RESULT_WORKBOOK_KINDS:
+        raise ValueError("unknown result workbook kind")
+    return f"{result_timestamp(created_at)}_{kind}_{safe_exam_name(exam_name)}.xlsx"
+
+
+def result_workbook_kind(name: str) -> str | None:
+    """The kind of a result workbook file name; None for any other name or relative path."""
+    match = _RESULT_WORKBOOK.fullmatch(name)
+    return match.group("kind") if match else None
+
+
+def response_filename(exam_name: str, created_at: str) -> str:
+    return result_workbook_filename(RESPONSE_KIND, exam_name, created_at)
 
 
 def answer_key_filename(exam_name: str, created_at: str) -> str:
-    return f"정답표_{result_base_name(exam_name, created_at)}.xlsx"
+    return result_workbook_filename(ANSWER_KEY_KIND, exam_name, created_at)
 
 
 def external_artifact_relpath(path: str) -> str | None:
@@ -64,16 +85,23 @@ def external_artifact_relpath(path: str) -> str | None:
 
 
 __all__ = [
+    "ANSWER_KEY_KIND",
     "ANSWER_KEY_SOURCE_DIR",
     "COORDINATE_DIR",
+    "FINAL_KIND",
     "OCR_IMAGE_DIR",
+    "RESPONSE_KIND",
+    "RESULT_WORKBOOK_KINDS",
     "REVIEW_DIR",
     "SCORE_IMAGE_DIR",
+    "SCORE_KIND",
     "SOURCE_IMAGE_DIR",
     "answer_key_filename",
     "external_artifact_relpath",
-    "ocr_filename",
+    "response_filename",
     "result_base_name",
     "result_timestamp",
+    "result_workbook_filename",
+    "result_workbook_kind",
     "safe_exam_name",
 ]

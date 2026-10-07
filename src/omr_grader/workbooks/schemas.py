@@ -8,7 +8,7 @@ from xml.etree import ElementTree
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 
-RESPONSE_SHEET_NAME: Final = "응답결과"
+RESPONSE_SHEET_NAME: Final = "응답원본"
 RESPONSE_HEADERS: Final = (
     "일련번호",
     "원본파일명",

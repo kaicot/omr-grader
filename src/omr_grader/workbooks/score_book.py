@@ -22,7 +22,11 @@ from omr_grader.application.dto import ScoreSet
 from omr_grader.domain.enums import StudentIdStatus
 from omr_grader.domain.grading import INCORRECT, REVIEW, question_outcomes
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
-from omr_grader.infrastructure.result_layout import result_base_name
+from omr_grader.infrastructure.result_layout import (
+    FINAL_KIND,
+    SCORE_KIND,
+    result_workbook_filename,
+)
 
 from .answer_key import ANSWER_KEY_HEADERS, answer_key_rows
 from .response_book import (
@@ -35,6 +39,7 @@ from .response_book import (
 from .schemas import RESPONSE_SHEET_NAME
 
 _SCORE_HEADERS = (
+    "순번",
     "학번",
     "이름",
     "총점",
@@ -43,6 +48,8 @@ _SCORE_HEADERS = (
     "비고",
 )
 _FINAL_HEADERS = (*_SCORE_HEADERS, "수정여부", "수정문항", "확정일시")
+_OUTCOME_SHEET_NAME = "결과OX"
+_FREEZE_PANES = "F2"
 _DANGEROUS_PREFIXES = ("=", "+", "-", "@")
 # Excel's "Bad" colors mark answers scored as wrong.  Fonts repeat openpyxl's default face and
 # size so styled cells match the unstyled ones around them.
@@ -51,13 +58,11 @@ _WRONG_FONT = Font(name="Calibri", size=11, color="FF9C0006")
 
 
 def score_filename(exam_name: str, committed_at: str) -> str:
-    return f"02_score_{result_base_name(exam_name, committed_at)}_채점결과.xlsx"
+    return result_workbook_filename(SCORE_KIND, exam_name, committed_at)
 
 
 def final_filename(exam_name: str, committed_at: str) -> str:
-    return (
-        f"03_final_{result_base_name(exam_name, committed_at)}_최종성적표.xlsx"
-    )
+    return result_workbook_filename(FINAL_KIND, exam_name, committed_at)
 
 
 def write_score_book(
@@ -73,7 +78,7 @@ def write_score_book(
     scores: ScoreSet,
     names_by_student_id: Mapping[str, str] | None = None,
 ) -> Path:
-    """Write the exact A:DA score projection to a generation-owned path.
+    """Write the exact score projection to a generation-owned path.
 
     ``manifest_sha256`` identifies the immutable source generation, never the
     manifest that will later include this projection.
@@ -81,7 +86,7 @@ def write_score_book(
     return _write(
         destination,
         filename=score_filename(exam_name, committed_at),
-        sheet_name="채점결과",
+        sheet_name=SCORE_KIND,
         headers=_SCORE_HEADERS,
         session_id=session_id,
         revision=revision,
@@ -107,7 +112,7 @@ def write_final_book(
     scores: ScoreSet,
     names_by_student_id: Mapping[str, str] | None = None,
 ) -> Path:
-    """Write the exact A:DD final projection to a generation-owned path.
+    """Write the exact final projection to a generation-owned path.
 
     ``manifest_sha256`` identifies the immutable source generation, never the
     manifest that will later include this projection.
@@ -115,7 +120,7 @@ def write_final_book(
     return _write(
         destination,
         filename=final_filename(exam_name, committed_at),
-        sheet_name="최종성적표",
+        sheet_name=FINAL_KIND,
         headers=_FINAL_HEADERS,
         session_id=session_id,
         revision=revision,
@@ -172,12 +177,14 @@ def _write(
         )
     ]
     workbook = Workbook()
-    worksheet = workbook.active
-    if worksheet is None:
+    chosen_sheet = workbook.active
+    if chosen_sheet is None:
         raise RuntimeError("new workbook must have an active worksheet")
-    worksheet.title = sheet_name
-    worksheet.append(list(headers))
-    for position, response in enumerate(ordered, 2):
+    chosen_sheet.title = sheet_name
+    outcome_sheet = workbook.create_sheet(_OUTCOME_SHEET_NAME)
+    chosen_sheet.append(list(headers))
+    outcome_sheet.append(list(headers))
+    for serial, response in enumerate(ordered, 1):
         score = scores_by_work_item[response.work_item_id]
         student_id = _shown_student_id(response)
         name = names_by_student_id.get(student_id, "") if student_id else ""
@@ -186,22 +193,27 @@ def _write(
             "중복확인필요" if response.student_id in duplicate_ids else "",
             review_note(number for number, outcome in enumerate(outcomes, 1) if outcome == REVIEW),
         )
-        row: list[object] = [
+        head: list[object] = [
+            serial,
             _display_text(student_id),
             _display_text(name),
             score.score,
             score.rank,
         ]
-        row.extend(_display_text(value) for value in outcomes)
-        row.append(_display_text(note))
+        tail: list[object] = [_display_text(note)]
         if finalized_at is not None:
             corrected = bool(response.corrected_targets)
             targets = ",".join(_correction_label(target) for target in response.corrected_targets)
-            row.extend((corrected, _display_text(targets), _display_text(finalized_at)))
-        worksheet.append(row)
-        _mark_outcomes(worksheet, position, outcomes)
-    style_header_row(worksheet)
-    # The raw responses in the importable layout, so this one book can also start a
+            tail.extend((corrected, _display_text(targets), _display_text(finalized_at)))
+        # 채점결과 shows what the student marked; 결과OX shows how each answer was scored.
+        chosen = [",".join(str(choice) for choice in answer.choices) for answer in response.answers]
+        chosen_sheet.append([*head, *chosen, *tail])
+        outcome_sheet.append([*head, *(_display_text(value) for value in outcomes), *tail])
+        _mark_outcomes(chosen_sheet, serial + 1, outcomes)
+        _mark_outcomes(outcome_sheet, serial + 1, outcomes)
+    style_header_row(chosen_sheet, _FREEZE_PANES)
+    style_header_row(outcome_sheet, _FREEZE_PANES)
+    # The raw responses in the importable 응답원본 layout, so this one book can also start a
     # new exam through '응답 엑셀로 시작'.
     write_effective_response_sheet(
         workbook.create_sheet(RESPONSE_SHEET_NAME),
@@ -228,6 +240,7 @@ def _write(
 
 
 _TOTAL_COLUMN = _SCORE_HEADERS.index("총점") + 1
+_FIRST_QUESTION_COLUMN = _SCORE_HEADERS.index("Q1") + 1
 
 
 def _shown_student_id(response: EffectiveResponse) -> str:
@@ -270,7 +283,7 @@ def _mark_outcomes(sheet: Worksheet, row: int, outcomes: Sequence[str]) -> None:
     Correct and unasked questions stay plain.  A student with an unconfirmed answer has no
     total yet, so the total is yellow as well.
     """
-    for column, outcome in enumerate(outcomes, 5):
+    for column, outcome in enumerate(outcomes, _FIRST_QUESTION_COLUMN):
         if outcome == INCORRECT:
             _mark_wrong(sheet.cell(row, column))
         elif outcome == REVIEW:

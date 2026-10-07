@@ -34,6 +34,16 @@ MESSAGE_CATALOG: dict[str, str] = {
     "error.portable_root_invalid": "포터블 실행 경로가 폴더가 아닙니다.",
     "error.portable_root_unavailable": "포터블 실행 폴더를 확인할 수 없습니다.",
     "error.root_write_denied": "실행 폴더에 쓸 권한이 없습니다.",
+    "error.session_move_failed": (
+        "시험 폴더가 다른 프로그램(엑셀, 탐색기 창 등)에서 열려 있어 옮기지 못했습니다. "
+        "그 파일이나 폴더 창을 닫고 다시 시도하세요."
+    ),
+    "error.session_busy_readers": (
+        "이 시험이 상세 보기 등 다른 화면에서 열려 있습니다. 닫은 뒤 다시 시도하세요."
+    ),
+    "error.session_write_locked": (
+        "이 시험에 다른 작업이 진행 중입니다. 잠시 뒤 다시 시도하세요."
+    ),
     "error.orientation_uncertain": "OMR 시험지의 위아래 방향을 확정할 수 없습니다.",
     "error.form_not_found": "답안지에서 OMR 양식을 찾지 못했습니다.",
     "error.form_id_unsupported": "학번 칸은 8자리(0~9)만 지원합니다.",

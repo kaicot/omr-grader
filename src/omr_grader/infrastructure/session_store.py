@@ -80,11 +80,15 @@ from omr_grader.infrastructure.paths import ManagedPaths
 from omr_grader.infrastructure.result_layout import (
     ANSWER_KEY_SOURCE_DIR,
     COORDINATE_DIR,
+    FINAL_KIND,
     OCR_IMAGE_DIR,
+    RESPONSE_KIND,
     REVIEW_DIR,
     SCORE_IMAGE_DIR,
+    SCORE_KIND,
     SOURCE_IMAGE_DIR,
     external_artifact_relpath,
+    result_workbook_kind,
 )
 from omr_grader.infrastructure.session_lease import (
     CommittedSnapshotLease,
@@ -574,7 +578,7 @@ def _verify_restored_staging(
     if not required_root_names.issubset(root_names) or any(
         name not in required_root_names
         and name not in _RESULT_VIEW_NAMES
-        and not name.startswith(_RESULT_VIEW_PREFIXES)
+        and result_workbook_kind(name) is None
         for name in root_names
     ):
         raise ValueError("staged restore root layout is not exact")
@@ -641,9 +645,7 @@ _RESULT_VIEW_DIRS = (
     (REVIEW_DIR, REVIEW_DIR),
 )
 _RESULT_VIEW_NAMES = frozenset(target for _, target in _RESULT_VIEW_DIRS)
-_RESULT_VIEW_PREFIXES = ("01_ocr_", "02_score_", "03_final_", "정답표_")
-_GRADED_BOOK_PREFIXES = ("02_score_", "03_final_")
-_FOLDED_BOOK_PREFIXES = ("01_ocr_", "정답표_")
+_GRADED_BOOK_KINDS = (SCORE_KIND, FINAL_KIND)
 
 
 def _is_control_file(path: str) -> bool:
@@ -657,7 +659,7 @@ def _refresh_result_view(session: Path, generation: Path) -> None:
         if target.exists():
             retry_io(partial(shutil.rmtree, target))
     for child in tuple(session.iterdir()):
-        if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES):
+        if child.is_file() and result_workbook_kind(child.name) is not None:
             retry_unlink(child)
     for source_name, target_name in _RESULT_VIEW_DIRS:
         source = generation / source_name
@@ -677,13 +679,13 @@ def _refresh_result_view(session: Path, generation: Path) -> None:
     books = tuple(
         child
         for child in generation.iterdir()
-        if child.is_file() and child.name.startswith(_RESULT_VIEW_PREFIXES)
+        if child.is_file() and result_workbook_kind(child.name) is not None
     )
     # A graded book carries the responses and the answer key as sheets of its own, so
     # their separate books stay in the generation and the folder shows one workbook.
-    graded = any(child.name.startswith(_GRADED_BOOK_PREFIXES) for child in books)
+    graded = any(result_workbook_kind(child.name) in _GRADED_BOOK_KINDS for child in books)
     for child in books:
-        if not (graded and child.name.startswith(_FOLDED_BOOK_PREFIXES)):
+        if not graded or result_workbook_kind(child.name) in _GRADED_BOOK_KINDS:
             retry_io(partial(os.link, child, session / child.name))
     _hide_internal_directories(session)
 
@@ -714,6 +716,15 @@ def _hide_internal_directories(session: Path) -> None:
         ctypes.WinDLL("kernel32").SetFileAttributesW(
             str(directory), attributes | stat.FILE_ATTRIBUTE_HIDDEN
         )
+
+
+def _move_exam_folder(source: Path, destination: Path) -> None:
+    """Move a whole exam folder, waiting about three seconds for brief outside locks.
+
+    Virus scanners and Explorer previews let go of a folder within moments; a workbook
+    left open in Excel does not, and the caller reports that to the user.
+    """
+    retry_io(partial(os.replace, source, destination), attempts=7)
 
 
 def _remove_emptied_staging(session: Path) -> None:
@@ -782,13 +793,11 @@ def _preserved_artifact(path: str, operation: OperationKind) -> bool:
     if (
         path.startswith("images/")
         or path.startswith("sources/")
-        or path.startswith("01_ocr_")
         or path in {"correction_state.json", "correction_events.json", "review_geometry.json"}
     ):
         return True
-    return operation is OperationKind.FINALIZE and path.startswith(
-        "02_score_"
-    )
+    kind = result_workbook_kind(path)
+    return kind == RESPONSE_KIND or (operation is OperationKind.FINALIZE and kind == SCORE_KIND)
 
 
 class SessionStore:
@@ -2036,7 +2045,7 @@ class SessionStore:
             if destination.exists():
                 return _error("SESSION_ID_CONFLICT", "대상 세션 위치가 이미 존재합니다.")
             self._barrier("before_directory_rename")
-            retry_replace(source, destination)
+            _move_exam_folder(source, destination)
             result = SoftDeleteResult(
                 True,
                 "trash" if to_trash else "active",
@@ -2116,7 +2125,7 @@ class SessionStore:
             )
             if isinstance(written, Err):
                 return written
-            retry_replace(source, tomb)
+            _move_exam_folder(source, tomb)
             warnings: tuple[ErrorInfo, ...] = ()
             cleanup = CleanupState.COMPLETE
             try:

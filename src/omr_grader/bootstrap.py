@@ -1173,6 +1173,7 @@ def run(
     services = ServicePorts(
         scan=scan_service,
         scan_context=scan_context,
+        data_dir=None if runtime_paths is None else runtime_paths.data_dir,
         response_import=response_import_service,
         grading=grading_service,
         grading_context=grading_context,

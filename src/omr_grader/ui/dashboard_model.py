@@ -7,10 +7,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from unicodedata import normalize
+from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, QPersistentModelIndex, Qt
 
-from omr_grader.domain.enums import ExamTerm
+from omr_grader.domain.enums import ExamTerm, SessionState
 from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.domain.score_average import display_average
 
@@ -18,12 +19,24 @@ _INVALID_INDEX = QModelIndex()
 
 COLUMN_SELECTION = 0
 COLUMN_EXAM_NAME = 1
-COLUMN_GRADED_AT = 2
-COLUMN_PARTICIPANTS = 3
-COLUMN_AVERAGE = 4
-COLUMN_HIGH_LOW = 5
-COLUMN_MANAGEMENT = 6
-HEADERS = ("선택", "시험명", "채점일시", "응시인원", "평균점수", "최고/최저점", "관리")
+COLUMN_STATUS = 2
+COLUMN_GRADED_AT = 3
+COLUMN_PARTICIPANTS = 4
+COLUMN_AVERAGE = 5
+COLUMN_HIGH_LOW = 6
+COLUMN_MANAGEMENT = 7
+HEADERS = (
+    "선택",
+    "시험명",
+    "상태",
+    "채점일시",
+    "응시인원",
+    "평균점수",
+    "최고/최저점",
+    "관리",
+)
+# Times are stored in UTC; the dashboard shows them in Korean time.
+_LOCAL_ZONE = ZoneInfo("Asia/Seoul")
 
 
 def korean_search_key(value: str) -> str:
@@ -42,13 +55,38 @@ def _term_label(term: ExamTerm) -> str:
     }[term]
 
 
+def _local_time(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment.astimezone(_LOCAL_ZONE) if moment.tzinfo is not None else moment
+
+
 def _timestamp(value: str | None) -> str:
     if value is None:
         return "-"
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
-    except ValueError:
-        return value
+    moment = _local_time(value)
+    return value if moment is None else moment.strftime("%Y-%m-%d %H:%M")
+
+
+def status_text(entry: DashboardIndexEntry) -> str:
+    """Where the exam stands, and how many pages still need a look."""
+    state = {
+        SessionState.CREATED: "채점 전",
+        SessionState.RECOGNIZED: "채점 전",
+        SessionState.GRADED: "채점 완료",
+        SessionState.FINALIZED: "확정",
+    }[entry.state]
+    review = f" · 확인 필요 {entry.needs_review_count}장" if entry.needs_review_count else ""
+    return state + review
+
+
+def graded_year(entry: DashboardIndexEntry) -> int | None:
+    moment = _local_time(entry.graded_at)
+    return None if moment is None else moment.year
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +167,7 @@ class DashboardTableModel(QAbstractTableModel):
             values = (
                 "",
                 entry.exam_name,
+                status_text(entry),
                 _timestamp(entry.graded_at),
                 f"{entry.participant_count}명",
                 "-" if entry.average_score is None else f"{display_average(entry.average_score)}점",
@@ -142,6 +181,7 @@ class DashboardTableModel(QAbstractTableModel):
             values = (
                 "클릭하여 시험을 선택하거나 선택 해제합니다.",
                 entry.exam_name,
+                status_text(entry),
                 _timestamp(entry.graded_at),
                 f"{entry.participant_count}명",
                 "-" if entry.average_score is None else f"{display_average(entry.average_score)}점",
@@ -217,6 +257,9 @@ class DashboardTableModel(QAbstractTableModel):
         self._term = None if term is None or term == "" else ExamTerm(term)
         self._rebuild()
 
+    def entry_for(self, session_id: str) -> DashboardIndexEntry | None:
+        return next((item for item in self._entries if item.session_id == session_id), None)
+
     def entry_at(self, row: int) -> DashboardIndexEntry | None:
         return self._visible[row] if 0 <= row < len(self._visible) else None
 
@@ -245,11 +288,7 @@ class DashboardTableModel(QAbstractTableModel):
             (not self._search or self._search in korean_search_key(item.exam_name))
             and (
                 self._year is None
-                or (
-                    item.graded_at is not None
-                    and item.graded_at[:4].isdigit()
-                    and int(item.graded_at[:4]) == self._year
-                )
+                or graded_year(item) == self._year
             )
             and (self._term is None or item.exam_term == self._term)
         )
@@ -257,6 +296,8 @@ class DashboardTableModel(QAbstractTableModel):
     def _sort_key(self, item: DashboardIndexEntry) -> Any:
         if self._sort_column == COLUMN_EXAM_NAME:
             return korean_search_key(item.exam_name)
+        if self._sort_column == COLUMN_STATUS:
+            return status_text(item)
         if self._sort_column == COLUMN_GRADED_AT:
             return item.graded_at or ""
         if self._sort_column == COLUMN_PARTICIPANTS:

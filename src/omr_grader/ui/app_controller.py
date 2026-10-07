@@ -7,11 +7,13 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import partial
+from pathlib import Path
 from threading import Event
 from typing import Protocol
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QDialog, QWidget
 
 from omr_grader.application.detail_presenter import (
@@ -58,7 +60,7 @@ from omr_grader.application.ports import (
     ScanUseCase,
 )
 from omr_grader.application.settings_use_case import SettingsState
-from omr_grader.domain.enums import ExamTerm
+from omr_grader.domain.enums import ExamTerm, SessionState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
@@ -173,6 +175,7 @@ class ServicePorts:
     detail_close: Callable[[DetailPageRequest], Result[None]] | None = None
     settings_load: Callable[[], Result[SettingsState]] | None = None
     settings_save: Callable[[SettingsSaveCommand], Result[SettingsSaveResult]] | None = None
+    data_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +249,19 @@ def _scan_session_progress(progress: ScanProgress) -> str:
 def _detection_reporter(report: Callable[[object], None]) -> Callable[[int, int], None]:
     """Forward the detector's page counts to the UI thread as value objects."""
     return lambda done, total: report(_FormDetectionProgress(done, total))
+
+
+_RESULT_BOOK_KINDS = ("최종성적표", "채점결과", "응답결과")
+
+
+def _result_book(folder: Path) -> Path | None:
+    """The workbook to open for an exam: final book, else score book, else responses."""
+    books = [path for path in folder.glob("*.xlsx") if path.is_file()]
+    for kind in _RESULT_BOOK_KINDS:
+        found = sorted(path for path in books if f"_{kind}_" in path.name)
+        if found:
+            return found[-1]
+    return None
 
 
 def _error_text(error: object) -> str:
@@ -328,6 +344,9 @@ class AppController(QObject):
         self.scan_page.recognition_requested.connect(self.start_scan)
         self.scan_page.fresh_response_requested.connect(self.start_fresh_response)
         self.scan_page.cancel_requested.connect(self.cancel_active)
+        self.scan_page.grading_requested.connect(
+            lambda: self.main_window.navigate_to(self.main_window.GRADING_PAGE)
+        )
         self.scan_page.help_requested.connect(self.main_window.show_help)
         self.scan_page.reset_requested.connect(self._reset_scan)
         self.scan_page.profile_browse_requested.connect(self._pick_profile)
@@ -354,6 +373,9 @@ class AppController(QObject):
         self.settings_page.save_requested.connect(self._save_settings)
         self.settings_page.profile_browse_requested.connect(self._pick_settings_profile)
         self.settings_page.profile_import_requested.connect(self._import_profile)
+        self.settings_page.data_folder_requested.connect(self._open_data_folder)
+        if self.services.data_dir is not None:
+            self.settings_page.set_data_path_display(str(self.services.data_dir))
         self.main_window.write_authority_requested.connect(self.set_write_authority)
         self.main_window.detail_navigation_requested.connect(self._detail_navigation_requested)
         self.main_window.close_requested.connect(self.close)
@@ -409,6 +431,25 @@ class AppController(QObject):
     def _handle_dashboard_request(
         self, request: DashboardRequest | DashboardGlobalRequest
     ) -> None:
+        if request.action == "refresh":
+            if not self._closing and (
+                self._active_bridge is None or not self._active_bridge.active
+            ):
+                self._reload_dashboard()
+            return
+        if isinstance(request, DashboardRequest) and request.action in {
+            "grade",
+            "open_book",
+            "open_folder",
+        }:
+            entry = self.dashboard_page.model.entry_for(request.selection.session_ids[0])
+            if entry is None:
+                return
+            if request.action == "grade":
+                self._grade_from_dashboard(entry)
+            else:
+                self._open_from_dashboard(entry, book=request.action == "open_book")
+            return
         if request.action == "detail":
             if not isinstance(request, DashboardRequest):
                 self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
@@ -463,7 +504,52 @@ class AppController(QObject):
                 result, expected_type, refresh_dashboard=refresh_dashboard
             ),
             self.dashboard_page.set_busy,
+            kind="dashboard-action",
         )
+
+    def _open_data_folder(self) -> None:
+        folder = self.services.data_dir
+        if folder is None or not folder.is_dir():
+            self.main_window.show_error_dialog(
+                "열 수 없음", "데이터 폴더가 아직 없습니다. 첫 시험을 저장하면 만들어집니다."
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _grade_from_dashboard(self, entry: DashboardIndexEntry) -> None:
+        """Connect a saved exam to the grading page, as a finished scan does."""
+        session = ConnectedSessionDisplay(
+            entry.session_id,
+            entry.revision,
+            entry.exam_name,
+            "세션 내 응답 결과",
+            entry.state is SessionState.GRADED,
+        )
+        self.grading_page.set_connected_session(session)
+        self.grading_page.clear_result_available()
+        self.grading_page.set_operation_id(uuid4().hex)
+        self.main_window.set_current_session(entry.exam_name)
+        self.main_window.set_grading_available(True)
+        self.main_window.navigate_to(self.main_window.GRADING_PAGE)
+
+    def _open_from_dashboard(self, entry: DashboardIndexEntry, *, book: bool) -> None:
+        folder = (
+            None if self.services.data_dir is None else self.services.data_dir / entry.display_folder
+        )
+        if folder is None or not folder.is_dir():
+            self.main_window.show_error_dialog(
+                "열 수 없음", "시험 폴더를 찾을 수 없습니다. 새로고침한 뒤 다시 시도하세요."
+            )
+            return
+        target: Path | None = folder
+        if book:
+            target = _result_book(folder)
+            if target is None:
+                self.main_window.show_error_dialog(
+                    "열 수 없음", "이 시험 폴더에 결과 엑셀이 없습니다."
+                )
+                return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def _show_detail(self, result: object) -> None:
         if not isinstance(result, DetailPageDisplay):
@@ -1031,7 +1117,12 @@ class AppController(QObject):
     def _succeeded(self, result: object) -> None:
         if self._closing:
             return
-        if self._active_kind in {"desktop-service", "profile-import", "form-detection"}:
+        if self._active_kind in {
+            "desktop-service",
+            "profile-import",
+            "form-detection",
+            "dashboard-action",
+        }:
             callback = self._desktop_success
             if callback is not None:
                 callback(result)
@@ -1126,6 +1217,10 @@ class AppController(QObject):
                 self.main_window.set_session_progress("정답/채점 완료")
             if self._active_kind == "fresh-response-import":
                 self.main_window.navigate_to(self.main_window.GRADING_PAGE)
+            elif isinstance(page, ScanPage):
+                # Only the label: a session ID here would make the next scan reuse it.
+                page.set_session(None, connected_session.exam_name)
+                self.main_window.set_next_step(self.main_window.GRADING_PAGE)
         if isinstance(page, ScanPage):
             self.main_window.set_session_progress("OMR 인식 완료")
         self.main_window.set_status(get_message("status.completed"))
@@ -1156,9 +1251,11 @@ class AppController(QObject):
                 return
             self._fail_form_detection(_error_text(error))
             return
-        if self._active_kind in {"desktop-service", "profile-import"}:
+        if self._active_kind in {"desktop-service", "profile-import", "dashboard-action"}:
             text = _error_text(error)
             self.main_window.show_diagnostic(text)
+            if self._active_kind == "dashboard-action":
+                self.main_window.show_error_dialog("작업을 완료하지 못했습니다", text)
             if self._active_kind == "profile-import":
                 self.scan_page.set_profile_import_error(text)
             return
@@ -1177,7 +1274,7 @@ class AppController(QObject):
     def _cancelled(self) -> None:
         if self._closing:
             return
-        if self._active_kind == "desktop-service":
+        if self._active_kind in {"desktop-service", "dashboard-action"}:
             self.main_window.set_status("작업이 취소되었습니다")
             return
         if self._closing or self._active_page is None:

@@ -15,6 +15,7 @@ from omr_grader.ui.dashboard_model import (
     COLUMN_GRADED_AT,
     COLUMN_MANAGEMENT,
     COLUMN_SELECTION,
+    COLUMN_STATUS,
     HEADERS,
     DashboardSelection,
     DashboardTableModel,
@@ -235,6 +236,7 @@ def test_dashboard_columns_are_flexible_and_row_actions_are_buttons(qtbot) -> No
     assert action_cell is not None
     assert {button.text() for button in action_cell.findChildren(QPushButton)} == {
         "상세 보기",
+        "엑셀",
         "삭제",
     }
 
@@ -300,3 +302,72 @@ def test_average_column_rounds_to_two_fraction_digits(average: str, shown: str) 
     index = model.index(0, COLUMN_AVERAGE)
     assert model.data(index, Qt.ItemDataRole.DisplayRole) == shown
     assert model.data(index, Qt.ItemDataRole.ToolTipRole) == shown
+
+
+def test_times_are_shown_in_korean_time_and_the_year_follows_them() -> None:
+    model = DashboardTableModel()
+    late = replace(_entry("session-late", "연말 시험"), graded_at="2026-12-31T16:30:00.000000Z")
+    model.set_entries((late,))
+
+    shown = model.data(model.index(0, COLUMN_GRADED_AT), Qt.ItemDataRole.DisplayRole)
+
+    # 16:30 UTC on 31 December is 01:30 on 1 January in Korea.
+    assert shown == "2027-01-01 01:30"
+    model.set_filters("", 2027)
+    assert model.rowCount() == 1
+
+
+def test_status_column_and_summary_say_what_is_left_to_do(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    waiting = replace(
+        _entry("session-wait", "채점 안 한 시험"),
+        state=SessionState.RECOGNIZED,
+        graded_at=None,
+        needs_review_count=2,
+    )
+    page.set_entries((_entry("session-done", "채점한 시험"), waiting))
+
+    statuses = {
+        page.model.data(page.model.index(row, COLUMN_STATUS), Qt.ItemDataRole.DisplayRole)
+        for row in range(2)
+    }
+    assert statuses == {"채점 완료", "채점 전 · 확인 필요 2장"}
+    assert page.summary_label.text() == "시험 2개 · 채점 전 1개 · 확인 필요가 남은 시험 1개"
+
+
+@pytest.mark.parametrize(
+    ("button_name", "action"),
+    (
+        ("grade_button", "grade"),
+        ("open_book_button", "open_book"),
+        ("open_folder_button", "open_folder"),
+    ),
+)
+def test_row_actions_ask_for_the_current_exam(qtbot, button_name, action) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.set_entries((_entry("session-a", "시험 A"), _entry("session-b", "시험 B")))
+    requests: list[object] = []
+    page.request_emitted.connect(requests.append)
+    page.table.selectRow(1)
+    chosen = page.model.entry_at(1)
+
+    getattr(page, button_name).click()
+
+    assert requests == [
+        DashboardRequest(action, DashboardSelection((chosen.session_id,), (chosen.revision,)))
+    ]
+
+
+def test_a_final_exam_cannot_be_graded_again_and_refresh_is_offered(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.set_entries((replace(_entry("session-a", "확정 시험"), state=SessionState.FINALIZED),))
+    requests: list[object] = []
+    page.request_emitted.connect(requests.append)
+    page.table.selectRow(0)
+
+    assert not page.grade_button.isEnabled()
+    page.refresh_button.click()
+    assert requests == [DashboardGlobalRequest("refresh")]

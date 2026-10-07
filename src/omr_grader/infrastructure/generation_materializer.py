@@ -47,7 +47,7 @@ from omr_grader.infrastructure.io_retry import retry_mkdir, retry_unlink
 from omr_grader.infrastructure.result_layout import (
     SCORE_IMAGE_DIR,
     answer_key_filename,
-    ocr_filename,
+    response_filename,
 )
 from omr_grader.recognition.overlay import render_scored_overlay_scaled
 from omr_grader.workbooks.answer_key import answer_key_snapshot_bytes
@@ -350,7 +350,7 @@ class GenerationMaterializer:
         roster = RosterSnapshot.from_dict(_object(combined, "roster"))
         names = {row.student_id: row.name for row in roster.rows if row.student_id is not None}
         response_output = request.token.path(
-            ocr_filename(request.record.exam_name, request.record.created_at)
+            response_filename(request.record.exam_name, request.record.created_at)
         )
         write_effective_response_projection(
             response_output,

@@ -62,7 +62,7 @@ from omr_grader.infrastructure.result_layout import (
     COORDINATE_DIR,
     OCR_IMAGE_DIR,
     REVIEW_DIR,
-    ocr_filename,
+    response_filename,
     result_base_name,
     safe_exam_name,
 )
@@ -568,7 +568,7 @@ class ScanRuntime:
                     manifest_sha256="0" * 64,
                 )
                 output["responses.xlsx"] = book.read_bytes()
-                output[ocr_filename(command.exam_name, created_at)] = output["responses.xlsx"]
+                output[response_filename(command.exam_name, created_at)] = output["responses.xlsx"]
         except (OSError, TypeError, ValueError) as exc:
             return _error("SCAN_RESPONSE_PROJECTION_FAILED", str(exc))
         output["recognition/projection.json"] = _json_bytes(

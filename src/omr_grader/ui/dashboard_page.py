@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 
 from PySide6.QtCore import QModelIndex, Qt, Signal
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -25,13 +26,40 @@ from PySide6.QtWidgets import (
 )
 
 from omr_grader.domain.models import DashboardIndexEntry
-from omr_grader.ui.dashboard_model import DashboardSelection, DashboardTableModel
+from omr_grader.domain.enums import SessionState
+from omr_grader.ui.dashboard_model import (
+    COLUMN_AVERAGE,
+    COLUMN_EXAM_NAME,
+    COLUMN_GRADED_AT,
+    COLUMN_HIGH_LOW,
+    COLUMN_MANAGEMENT,
+    COLUMN_PARTICIPANTS,
+    COLUMN_SELECTION,
+    COLUMN_STATUS,
+    DashboardSelection,
+    DashboardTableModel,
+    graded_year,
+)
 from omr_grader.ui.trash_dialog import TrashDialog, TrashRequest
 
 _DASHBOARD_ACTIONS = frozenset(
-    {"detail", "delete", "backup", "restore", "trash", "trash_restore", "trash_delete"}
+    {
+        "detail",
+        "delete",
+        "backup",
+        "restore",
+        "trash",
+        "trash_restore",
+        "trash_delete",
+        "grade",
+        "open_book",
+        "open_folder",
+        "refresh",
+    }
 )
-_GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash"})
+_GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash", "refresh"})
+# Actions on the one exam of the current row.
+_ROW_DASHBOARD_ACTIONS = frozenset({"detail", "grade", "open_book", "open_folder"})
 _LOGGER = logging.getLogger("omr_grader.ui.dashboard")
 
 
@@ -81,6 +109,18 @@ class DashboardGlobalRequest:
         _validate_payload_json(self.payload_json)
 
 
+def _summary(entries: tuple[DashboardIndexEntry, ...]) -> str:
+    if not entries:
+        return "저장된 시험이 없습니다."
+    waiting = sum(
+        entry.state in (SessionState.CREATED, SessionState.RECOGNIZED) for entry in entries
+    )
+    review = sum(entry.needs_review_count > 0 for entry in entries)
+    return (
+        f"시험 {len(entries)}개 · 채점 전 {waiting}개 · 확인 필요가 남은 시험 {review}개"
+    )
+
+
 class DashboardPage(QWidget):
     """Exam-management dashboard with controller-bound value-only signals."""
 
@@ -116,6 +156,10 @@ class DashboardPage(QWidget):
         title.setObjectName("dashboardTitle")
         title.setProperty("role", "page-title")
         root.addWidget(title)
+        self.summary_label = QLabel("저장된 시험이 없습니다.")
+        self.summary_label.setObjectName("dashboardSummary")
+        self.summary_label.setAccessibleName("시험 현황 요약")
+        root.addWidget(self.summary_label)
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("dashboardSearch")
@@ -134,6 +178,7 @@ class DashboardPage(QWidget):
         self.backup_button = self._button("백업하기", "dashboardBackupButton", "backup")
         self.restore_button = self._button("백업 복구하기", "dashboardRestoreButton", "restore")
         self.trash_button = self._button("휴지통 보기", "dashboardTrashButton", "trash")
+        self.refresh_button = self._button("새로고침", "dashboardRefreshButton", "refresh")
         for button in (
             self.backup_button,
             self.restore_button,
@@ -141,6 +186,7 @@ class DashboardPage(QWidget):
         ):
             actions.addWidget(button)
         actions.addStretch()
+        actions.addWidget(self.refresh_button)
         root.addLayout(actions)
         table_frame = QFrame()
         table_frame.setObjectName("dashboardTableCard")
@@ -161,21 +207,38 @@ class DashboardPage(QWidget):
         header = self.table.horizontalHeader()
         header.setMinimumSectionSize(72)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        header.resizeSection(2, 180)
+        header.setSectionResizeMode(COLUMN_SELECTION, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_EXAM_NAME, QHeaderView.ResizeMode.Stretch)
+        for column in (
+            COLUMN_STATUS,
+            COLUMN_PARTICIPANTS,
+            COLUMN_AVERAGE,
+            COLUMN_HIGH_LOW,
+            COLUMN_MANAGEMENT,
+        ):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        header.resizeSection(COLUMN_GRADED_AT, 150)
         table_layout.addWidget(self.table)
         root.addWidget(table_frame)
         row_actions = QHBoxLayout()
         row_actions.addStretch()
         self.detail_button = self._button("상세 보기", "dashboardDetailButton", "detail")
+        self.grade_button = self._button("채점하기", "dashboardGradeButton", "grade")
+        self.open_book_button = self._button(
+            "결과 엑셀 열기", "dashboardOpenBookButton", "open_book"
+        )
+        self.open_folder_button = self._button(
+            "폴더 열기", "dashboardOpenFolderButton", "open_folder"
+        )
         self.delete_button = self._button("삭제", "dashboardDeleteButton", "delete")
-        row_actions.addWidget(self.detail_button)
-        row_actions.addWidget(self.delete_button)
+        for button in (
+            self.detail_button,
+            self.grade_button,
+            self.open_book_button,
+            self.open_folder_button,
+            self.delete_button,
+        ):
+            row_actions.addWidget(button)
         root.addLayout(row_actions)
         root.addStretch()
         self.scroll_area.setWidget(content)
@@ -189,7 +252,7 @@ class DashboardPage(QWidget):
         return button
 
     def _toggle_clicked_row(self, index: QModelIndex) -> None:
-        if not index.isValid() or index.column() == 6:
+        if not index.isValid() or index.column() == COLUMN_MANAGEMENT:
             return
         if index.column() != 0:
             selection_index = self.model.index(index.row(), 0)
@@ -213,6 +276,7 @@ class DashboardPage(QWidget):
             layout.setSpacing(4)
             for text, name, action in (
                 ("상세 보기", "dashboardDetailButton", "detail"),
+                ("엑셀", "dashboardOpenBookButton", "open_book"),
                 ("삭제", "dashboardDeleteButton", "delete"),
             ):
                 button = QPushButton(text, cell)
@@ -224,7 +288,7 @@ class DashboardPage(QWidget):
                     )
                 )
                 layout.addWidget(button)
-            self.table.setIndexWidget(self.model.index(row, 6), cell)
+            self.table.setIndexWidget(self.model.index(row, COLUMN_MANAGEMENT), cell)
 
     def _request_row(self, action: str, row: int) -> None:
         if not 0 <= row < self.model.rowCount():
@@ -244,13 +308,10 @@ class DashboardPage(QWidget):
         selected_id = current_entry.session_id if current_entry is not None else None
         self.model.set_entries(entries)
         years = sorted(
-            {
-                int(entry.graded_at[:4])
-                for entry in entries
-                if entry.graded_at is not None and entry.graded_at[:4].isdigit()
-            },
+            {year for entry in entries if (year := graded_year(entry)) is not None},
             reverse=True,
         )
+        self.summary_label.setText(_summary(entries))
         current = self.year_combo.currentData()
         self.year_combo.blockSignals(True)
         self.year_combo.clear()
@@ -314,7 +375,7 @@ class DashboardPage(QWidget):
             self.request_emitted.emit(DashboardGlobalRequest(action))
             return
         selection = self._selection()
-        if action == "detail":
+        if action in _ROW_DASHBOARD_ACTIONS:
             entry = self._current_entry()
             if entry is None:
                 return
@@ -515,6 +576,12 @@ class DashboardPage(QWidget):
         if not self._busy:
             self._request("detail")
 
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        """Read the list again whenever the page is opened; files may have changed."""
+        super().showEvent(event)
+        if not self._busy:
+            self.request_emitted.emit(DashboardGlobalRequest("refresh"))
+
     def _refresh_state(self) -> None:
         dialog_pending = self._file_dialog is not None or self._collision_dialog is not None
         available = not self._busy and not dialog_pending
@@ -523,6 +590,13 @@ class DashboardPage(QWidget):
         selection = self._selection()
         selected_count = 0 if selection is None else len(selection.session_ids)
         self.detail_button.setEnabled(available and one)
+        current = self._current_entry()
+        self.grade_button.setEnabled(
+            writable and current is not None and current.state is not SessionState.FINALIZED
+        )
+        self.open_book_button.setEnabled(available and one)
+        self.open_folder_button.setEnabled(available and one)
+        self.refresh_button.setEnabled(available)
         self.delete_button.setEnabled(writable and one)
         self.backup_button.setEnabled(writable and selected_count == 1)
         self.restore_button.setEnabled(writable)

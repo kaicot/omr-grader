@@ -954,3 +954,33 @@ def test_theme_styles_the_profile_card_roles_and_highlights_in_both_themes(theme
     assert tokens.warning not in (tokens.success, tokens.error)
     assert tokens.warning in stylesheet
     assert _contrast(tokens.warning, tokens.bg_surface) >= 4.5
+
+
+def test_a_finished_scan_points_to_grading_and_is_not_run_again(qtbot, clock):
+    page = _ready_page(qtbot)
+    requested = QSignalSpy(page.grading_requested)
+    page.set_busy(True, "operation")
+    page.set_progress(11, 12, 1, phase="save")
+
+    page.set_result()
+    page.set_busy(False)
+
+    assert page.progress_label.text() == (
+        "✓ OMR 인식 완료: 12장 중 11장 자동 판독, 확인 필요 1장\n"
+        "다음 단계: 정답/채점 화면에서 정답표를 불러와 채점하세요."
+    )
+    assert not page.run_button.isEnabled()
+    assert page.run_hint_label.text().startswith("인식을 마친 스캔입니다.")
+    assert page.next_step_button.isVisibleTo(page)
+    page.next_step_button.click()
+    assert requested.count() == 1
+
+    # Another exam name means another exam: the run is offered again.
+    page.exam_name_edit.setText("26-2 생리학 기말고사")
+    assert page.run_button.isEnabled()
+    assert not page.next_step_button.isVisibleTo(page)
+    page.exam_name_edit.setText("26-2 생리학 중간고사")
+    assert not page.run_button.isEnabled()
+
+    page.reset_button.click()
+    assert not page.next_step_button.isVisibleTo(page)

@@ -88,8 +88,8 @@ def test_malformed_parent_semantic_inputs_fail_closed(tmp_path: Path) -> None:
         ("evidence/page-1.png", False),
         ("images/page-1.png", True),
         ("correction_history.json", False),
-        ("artifacts/02_score_old.xlsx", False),
-        ("artifacts/03_final_old.xlsx", False),
+        ("artifacts/260730_120000_채점결과_old.xlsx", False),
+        ("artifacts/260730_120000_최종성적표_old.xlsx", False),
         ("corrected_overlay.json", False),
         ("detail_index.json", False),
         ("detail/work-item-1.json", False),
@@ -104,18 +104,20 @@ def test_lifecycle_materialization_copies_only_immutable_or_audit_artifacts(
 
 def test_finalization_preserves_the_last_score_workbook() -> None:
     assert _preserved_artifact(
-        "02_score_시험_260730_120000_채점결과.xlsx", OperationKind.FINALIZE
+        "260730_120000_채점결과_시험.xlsx", OperationKind.FINALIZE
     )
     assert not _preserved_artifact(
-        "artifacts/02_score_시험_260730_120000_채점결과.xlsx",
+        "artifacts/260730_120000_채점결과_시험.xlsx",
         OperationKind.FINALIZE,
     )
+    assert not _preserved_artifact("260730_120000_채점결과_시험.xlsx", OperationKind.REGRADE)
+    assert not _preserved_artifact("260730_120000_정답표_시험.xlsx", OperationKind.FINALIZE)
 
 
 def test_regrade_compacts_to_one_minimal_current_generation() -> None:
     retained = (
         "images/page-1.png",
-        "01_ocr_시험_260730_120000_응답결과.xlsx",
+        "260730_120000_응답결과_시험.xlsx",
         "correction_events.json",
         "correction_state.json",
     )
@@ -147,9 +149,9 @@ def test_compact_result_view_exposes_retained_source_scans_without_copying(
     pdf.parent.mkdir(parents=True)
     pdf.write_bytes(b"original pdf")
     workbook_names = (
-        "01_ocr_시험_260730_120000_응답결과.xlsx",
-        "02_score_시험_260730_120000_채점결과.xlsx",
-        "정답표_시험_260730_120000.xlsx",
+        "260730_120000_응답결과_시험.xlsx",
+        "260730_120000_채점결과_시험.xlsx",
+        "260730_120000_정답표_시험.xlsx",
     )
     for name in workbook_names:
         (generation / name).write_bytes(name.encode())
@@ -359,7 +361,7 @@ def test_regrade_after_compaction_uses_finalized_responses_and_new_answer_key(
     pointer = json.loads((session / "CURRENT.json").read_text(encoding="utf-8"))
     compacted = session / pointer["generation_relpath"]
     assert not (compacted / "projection_request.json").exists()
-    response_workbooks = tuple(compacted.glob("01_ocr_*_응답결과.xlsx"))
+    response_workbooks = tuple(compacted.glob("*_응답결과_*.xlsx"))
     assert len(response_workbooks) == 1
     response_workbook = load_workbook(response_workbooks[0], read_only=True)
     try:
@@ -369,7 +371,7 @@ def test_regrade_after_compaction_uses_finalized_responses_and_new_answer_key(
     finally:
         response_workbook.close()
     assert response_properties["revision"] == "2"
-    answer_key_workbooks = tuple(compacted.glob("정답표_*.xlsx"))
+    answer_key_workbooks = tuple(compacted.glob("*_정답표_*.xlsx"))
     assert len(answer_key_workbooks) == 1
     retained_key = import_answer_key(str(answer_key_workbooks[0]), "정답표")
     assert isinstance(retained_key, Ok)

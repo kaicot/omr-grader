@@ -67,6 +67,7 @@ class SettingsPage(QWidget):
     save_requested = Signal(object)
     profile_browse_requested = Signal()
     profile_import_requested = Signal(object)
+    data_folder_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -108,9 +109,24 @@ class SettingsPage(QWidget):
         self.data_path_edit.setObjectName("portableDataPathEdit")
         self.data_path_edit.setAccessibleName("포터블 데이터 저장 경로")
         self.data_path_edit.setReadOnly(True)
-        self.data_path_edit.setText("현재 실행 폴더 내 ./OMR_Grader/ 에 자동 저장됩니다.")
-        path_form.addRow("데이터 저장 경로", self.data_path_edit)
+        self.data_path_edit.setText("프로그램 폴더의 Data 폴더에 저장됩니다.")
+        self.data_folder_button = QPushButton("폴더 열기", self.path_card)
+        self.data_folder_button.setObjectName("dataFolderButton")
+        self.data_folder_button.setAccessibleName("데이터 폴더 열기")
+        self.data_folder_button.clicked.connect(self.data_folder_requested)
+        path_row = QHBoxLayout()
+        path_row.addWidget(self.data_path_edit, 1)
+        path_row.addWidget(self.data_folder_button)
+        path_form.addRow("데이터 저장 경로", path_row)
         path_layout.addLayout(path_form)
+        self.data_path_note = QLabel(
+            "시험 기록과 설정은 프로그램 폴더 안에 함께 저장됩니다. 다른 곳에 두려면 "
+            "프로그램을 끈 뒤 프로그램 폴더 전체를 옮기세요.",
+            self.path_card,
+        )
+        self.data_path_note.setObjectName("dataPathNote")
+        self.data_path_note.setWordWrap(True)
+        path_layout.addWidget(self.data_path_note)
         root.addWidget(self.path_card)
 
         self.profile_card = QFrame(self)

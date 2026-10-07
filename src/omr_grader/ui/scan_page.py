@@ -145,6 +145,7 @@ class ScanPage(QWidget):
     profile_browse_requested = Signal()
     profile_import_requested = Signal(object)
     profile_drop_requested = Signal(object)
+    grading_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -164,6 +165,8 @@ class ScanPage(QWidget):
         self._busy_text = ""
         self._progress_phase: str | None = None
         self._progress_counts = (0, 0, 0)
+        # The inputs of the last finished scan; while they are unchanged, the run waits.
+        self._completed_inputs: tuple[object, ...] | None = None
         self._progress_eta: float | None = None
         self._progress_event_at = 0.0
         self._progress_timer = QTimer(self)
@@ -381,9 +384,14 @@ class ScanPage(QWidget):
         self.run_button = QPushButton("OMR 인식 실행", self)
         self.run_button.setObjectName("scanRunButton")
         self.run_button.setAccessibleName("OMR 시험지 인식 및 응답결과 생성")
+        self.next_step_button = QPushButton("정답/채점으로 이동 →", self)
+        self.next_step_button.setObjectName("scanNextStepButton")
+        self.next_step_button.setAccessibleName("정답/채점 화면으로 이동해 채점하기")
+        self.next_step_button.hide()
         actions.addWidget(self.run_hint_label, 1)
         actions.addWidget(self.cancel_button)
         actions.addWidget(self.run_button)
+        actions.addWidget(self.next_step_button)
         root.addLayout(actions)
         self.session_footer = QLabel("현재 세션: 새 인식 작업", self)
         self.session_footer.setObjectName("scanSessionFooter")
@@ -414,6 +422,7 @@ class ScanPage(QWidget):
         self.profile_combo.currentIndexChanged.connect(self._profile_changed)
         self.profile_combo.activated.connect(self._profile_activated)
         self.run_button.clicked.connect(self._emit_recognition_request)
+        self.next_step_button.clicked.connect(self.grading_requested)
         self.fresh_response_button.clicked.connect(self._emit_fresh_response_request)
         self.cancel_button.clicked.connect(self._emit_cancel_request)
         self._show_form_hint()
@@ -655,6 +664,8 @@ class ScanPage(QWidget):
         self._busy = bool(busy)
         self._operation_id = operation_id if self._busy else None
         self._cancellable = bool(cancellable) if self._busy else True
+        if self._busy:
+            self._completed_inputs = None
         self.progress_bar.setVisible(self._busy)
         if self._busy:
             self._progress_phase = None
@@ -715,12 +726,32 @@ class ScanPage(QWidget):
         result: object | None = None,
         message: str = "OMR 인식과 응답결과 생성이 완료되었습니다.",
     ) -> None:
+        counts = self._progress_counts if self._progress_phase == "save" else None
         self._busy = False
         self._operation_id = None
         self._stop_progress_clock()
         self.progress_bar.hide()
-        self.progress_label.setText(message)
+        if counts is not None:
+            completed, total, failed = counts
+            message = f"✓ OMR 인식 완료: {total}장 중 {completed}장 자동 판독" + (
+                f", 확인 필요 {failed}장" if failed else ""
+            )
+        self.progress_label.setText(
+            f"{message}\n다음 단계: 정답/채점 화면에서 정답표를 불러와 채점하세요."
+        )
+        # These inputs are done; running them again would only make a second exam.
+        self._completed_inputs = self._run_inputs()
         self._update_gating()
+
+    def _run_inputs(self) -> tuple[object, ...]:
+        profile = self._selected_profile()
+        return (
+            self.exam_name_edit.text().strip(),
+            None if self._source is None else self._source.paths,
+            None if profile is None else profile.path,
+            self._roster_path,
+            self.sensitivity_slider.value(),
+        )
 
     def set_error(self, error: object | None = None, message: str | None = None) -> None:
         preserve_progress = not self.progress_bar.isHidden() and self.progress_bar.maximum() > 0
@@ -871,6 +902,7 @@ class ScanPage(QWidget):
     def _reset_inputs(self) -> None:
         if self._busy or not self._write_enabled:
             return
+        self._completed_inputs = None
         self.exam_name_edit.clear()
         self.profile_combo.setCurrentIndex(0)
         self._source = None
@@ -918,7 +950,12 @@ class ScanPage(QWidget):
         profile = self._selected_profile()
         if profile is None or not profile.validated or profile.validation_errors:
             return "인식 프로필을 고르면 실행할 수 있습니다."
+        if self._scan_completed():
+            return "인식을 마친 스캔입니다. 새 시험은 스캔을 바꾸거나 초기화하세요."
         return None
+
+    def _scan_completed(self) -> bool:
+        return self._completed_inputs is not None and self._completed_inputs == self._run_inputs()
 
     def _can_run(self) -> bool:
         return self._run_blocker() is None
@@ -936,12 +973,18 @@ class ScanPage(QWidget):
     def _update_gating(self, *_: object) -> None:
         blocker = self._run_blocker()
         self.run_button.setEnabled(blocker is None)
+        completed = not self._busy and self._write_enabled and self._scan_completed()
+        self.next_step_button.setVisible(completed)
         self.run_hint_label.setText(
             "준비되었습니다. 'OMR 인식 실행'을 누르세요." if blocker is None else blocker
         )
         self._set_role(
             self.run_hint_label,
-            "success" if blocker is None else "hint" if self._write_enabled else "error",
+            "success"
+            if blocker is None or completed
+            else "hint"
+            if self._write_enabled
+            else "error",
         )
         self.fresh_response_button.setEnabled(self._write_enabled and not self._busy)
         # Once results are being saved the exam is created either way, so a cancel

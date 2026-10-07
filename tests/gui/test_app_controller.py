@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     QThread,
 )
 from PySide6.QtGui import QColor, QImage
+from PySide6.QtWidgets import QMessageBox
 
 from omr_grader.application.detail_presenter import (
     DetailAnswerDisplay,
@@ -47,10 +48,16 @@ from omr_grader.application.settings_use_case import SettingsState
 from omr_grader.bootstrap import _canonical_response_workbook_selection
 from omr_grader.domain.enums import AnswerStatus, IndexState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok
-from omr_grader.domain.models import AnswerValue
+from omr_grader.domain.enums import ExamTerm, SessionState
+from omr_grader.domain.models import AnswerValue, DashboardIndexEntry
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
 from omr_grader.infrastructure.logging_setup import configure_logging
-from omr_grader.ui.app_controller import AppController, FreshResponseIntent, ServicePorts
+from omr_grader.ui.app_controller import (
+    AppController,
+    FreshResponseIntent,
+    ServicePorts,
+    _result_book,
+)
 from omr_grader.ui.dashboard_model import DashboardSelection
 from omr_grader.ui.dashboard_page import DashboardRequest
 from omr_grader.ui.grading_page import GradingPage
@@ -1012,15 +1019,23 @@ def test_scan_success_updates_session_and_preserves_page(qtbot):
     )
 
     scan.recognition_requested.emit(_request())
-    qtbot.waitUntil(
-        lambda: scan.progress_label.text() == "OMR 인식과 응답결과 생성이 완료되었습니다."
-    )
+    qtbot.waitUntil(lambda: "다음 단계: 정답/채점" in scan.progress_label.text())
 
     assert service.calls and not scan.cancel_button.isEnabled()
     assert len(session_results) == 1
     assert session_results[0].session_id == "session"
     assert session_results[0].operation_id == service.calls[0].operation_id
     assert window.session_name_label.text() == "완료"
+    assert scan.session_footer.text() == "현재 세션: 완료"
+    grading_button = window.nav_buttons[MainWindow.GRADING_PAGE]
+    assert grading_button.property("nextStep") is True
+    assert grading_button.text().endswith("◀ 다음")
+
+    scan.next_step_button.click()
+
+    assert window.pages.currentIndex() == MainWindow.GRADING_PAGE
+    assert grading_button.property("nextStep") is False
+    assert not grading_button.text().endswith("◀ 다음")
     controller.close()
 
 
@@ -1112,3 +1127,89 @@ def test_cancel_requires_the_exact_active_operation_id(qtbot) -> None:
     controller.cancel_active("other-operation")
 
     assert bridge.lifecycle.value == "idle"
+
+
+def _dashboard_entry(state: SessionState = SessionState.RECOGNIZED) -> DashboardIndexEntry:
+    return DashboardIndexEntry(
+        "session-a",
+        1,
+        "generation-a",
+        "a" * 64,
+        "시험A_261007_155703",
+        "시험A",
+        None,
+        ExamTerm.UNSPECIFIED,
+        state,
+        None,
+        12,
+        None,
+        None,
+        None,
+        0,
+    )
+
+
+def test_a_failed_delete_is_reported_in_a_dialog(qtbot):
+    window, scan, grading = _window(qtbot)
+    controller = AppController(
+        window,
+        scan,
+        grading,
+        _ready_ports(
+            dashboard_delete=lambda selection: Err(
+                (ErrorInfo("SESSION_MOVE_FAILED", "error.session_move_failed"),)
+            )
+        ),
+        write_enabled=True,
+    )
+
+    controller._handle_dashboard_request(
+        DashboardRequest("delete", DashboardSelection(("session-a",), (1,)))
+    )
+
+    qtbot.waitUntil(lambda: window.findChild(QMessageBox, "actionErrorDialog") is not None)
+    dialog = window.findChild(QMessageBox, "actionErrorDialog")
+    assert "다른 프로그램(엑셀, 탐색기 창 등)에서 열려" in dialog.text()
+    dialog.close()
+    controller.close()
+
+
+def test_grading_a_saved_exam_from_the_dashboard_opens_the_grading_page(qtbot):
+    window, scan, grading = _window(qtbot)
+    controller = AppController(window, scan, grading, _ready_ports(), write_enabled=True)
+    entry = _dashboard_entry()
+    window.dashboard_page.set_entries((entry,))
+
+    controller._handle_dashboard_request(
+        DashboardRequest("grade", DashboardSelection((entry.session_id,), (entry.revision,)))
+    )
+
+    assert window.pages.currentIndex() == MainWindow.GRADING_PAGE
+    assert grading.has_connected_session(entry.session_id, entry.revision)
+    assert window.session_name_label.text() == "시험A"
+    controller.close()
+
+
+def test_the_result_book_to_open_prefers_the_final_then_the_score_book(tmp_path):
+    folder = tmp_path / "exam"
+    folder.mkdir()
+    assert _result_book(folder) is None
+    response = folder / "261007_155703_응답결과_시험A.xlsx"
+    response.write_bytes(b"")
+    assert _result_book(folder) == response
+    score = folder / "261007_155703_채점결과_시험A.xlsx"
+    score.write_bytes(b"")
+    assert _result_book(folder) == score
+    final = folder / "261007_155703_최종성적표_시험A.xlsx"
+    final.write_bytes(b"")
+    assert _result_book(folder) == final
+
+
+def test_settings_show_the_real_data_folder(qtbot, tmp_path):
+    window, scan, grading = _window(qtbot)
+    controller = AppController(
+        window, scan, grading, _ready_ports(data_dir=tmp_path / "Data"), write_enabled=True
+    )
+
+    assert window.settings_page.data_path_edit.text() == str(tmp_path / "Data")
+    controller.close()

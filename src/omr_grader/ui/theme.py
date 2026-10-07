@@ -357,7 +357,7 @@ def stylesheet_for(theme: Theme | str) -> str:
             border-color: {values["primary"]}; background: {values["window"]};
         }}
         QPushButton#freshResponseButton, QPushButton#scanResetButton, QPushButton#scanCancelButton,
-        QPushButton#scanRunButton, QPushButton#primaryActionButton,
+        QPushButton#scanRunButton, QPushButton#scanNextStepButton, QPushButton#primaryActionButton,
         QPushButton#profileImportButton,
         QPushButton#sampleRosterButton, QPushButton#sourceFolderButton,
         QPushButton#sourcePdfButton, QPushButton#sampleAnswerKeyButton,
@@ -376,13 +376,13 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#detailBackButton:hover {{
             border-color: {values["primary"]}; background: {values["window"]};
         }}
-        QPushButton#freshResponseButton, QPushButton#scanRunButton,
+        QPushButton#freshResponseButton, QPushButton#scanRunButton, QPushButton#scanNextStepButton,
         QPushButton#primaryActionButton {{
             background: {values["primary"]}; color: #FFFFFF;
             border-color: {values["primary"]};
         }}
         QPushButton#freshResponseButton:hover:enabled,
-        QPushButton#scanRunButton:hover:enabled,
+        QPushButton#scanRunButton:hover:enabled, QPushButton#scanNextStepButton:hover:enabled,
         QPushButton#primaryActionButton:hover:enabled {{
             background: {values["primary_hover"]}; color: #FFFFFF;
             border-color: {values["primary_hover"]};
@@ -390,7 +390,7 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#scanCancelButton {{ color: {values["error"]}; }}
         QPushButton#freshResponseButton:pressed, QPushButton#scanResetButton:pressed,
         QPushButton#scanCancelButton:pressed,
-        QPushButton#scanRunButton:pressed, QPushButton#primaryActionButton:pressed,
+        QPushButton#scanRunButton:pressed, QPushButton#scanNextStepButton:pressed, QPushButton#primaryActionButton:pressed,
         QPushButton#profileImportButton:pressed,
         QPushButton#sampleRosterButton:pressed, QPushButton#sourceFolderButton:pressed,
         QPushButton#sourcePdfButton:pressed, QPushButton#sampleAnswerKeyButton:pressed,
@@ -401,7 +401,7 @@ def stylesheet_for(theme: Theme | str) -> str:
         }}
         QPushButton#freshResponseButton:disabled, QPushButton#scanResetButton:disabled,
         QPushButton#scanCancelButton:disabled,
-        QPushButton#scanRunButton:disabled, QPushButton#primaryActionButton:disabled,
+        QPushButton#scanRunButton:disabled, QPushButton#scanNextStepButton:disabled, QPushButton#primaryActionButton:disabled,
         QPushButton#profileImportButton:disabled,
         QPushButton#sampleRosterButton:disabled, QPushButton#sourceFolderButton:disabled,
         QPushButton#sourcePdfButton:disabled, QPushButton#sampleAnswerKeyButton:disabled,
@@ -409,6 +409,9 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#gradingResetButton:disabled, QPushButton#detailBackButton:disabled {{
             background: {values["window"]}; color: {values["disabled"]};
             border-color: {values["border"]};
+        }}
+        QPushButton#navButton[nextStep="true"] {{
+            border: 2px solid {values["primary"]};
         }}
         QPushButton#profileImportButton[attention="true"] {{
             border: 2px solid {values["error"]}; padding: 4px 12px;
@@ -473,6 +476,8 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#dashboardBackupButton, QPushButton#dashboardRestoreButton,
         QPushButton#dashboardTrashButton,
         QPushButton#dashboardDetailButton, QPushButton#dashboardDeleteButton,
+        QPushButton#dashboardGradeButton, QPushButton#dashboardOpenBookButton,
+        QPushButton#dashboardOpenFolderButton, QPushButton#dashboardRefreshButton,
         QPushButton#trashRestoreButton, QPushButton#trashPermanentDeleteButton,
         QPushButton#trashEmptyButton {{
             background: {values["surface"]}; border: 1px solid {values["border"]};
@@ -481,11 +486,13 @@ def stylesheet_for(theme: Theme | str) -> str:
         QPushButton#dashboardBackupButton:hover, QPushButton#dashboardRestoreButton:hover,
         QPushButton#dashboardTrashButton:hover,
         QPushButton#dashboardDetailButton:hover, QPushButton#dashboardDeleteButton:hover,
+        QPushButton#dashboardGradeButton:hover, QPushButton#dashboardOpenBookButton:hover,
+        QPushButton#dashboardOpenFolderButton:hover, QPushButton#dashboardRefreshButton:hover,
         QPushButton#trashRestoreButton:hover {{
             border-color: {values["primary"]}; background: {values["window"]};
         }}
         QWidget#dashboardActionCell {{ background: transparent; }}
-        QPushButton#dashboardDetailButton, QPushButton#dashboardDeleteButton {{
+        QWidget#dashboardActionCell QPushButton {{
             font-size: 12px; min-height: 24px; padding: 3px 6px;
         }}
         QPushButton#dashboardDeleteButton, QPushButton#trashPermanentDeleteButton,

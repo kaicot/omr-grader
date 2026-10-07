@@ -5,11 +5,9 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
 from itertools import groupby
 from pathlib import Path
 from typing import Any, cast
-from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import Cell
@@ -32,14 +30,6 @@ _NOTE_SEPARATOR = " / "
 _MIN_RANGE_LENGTH = 3
 
 
-def response_projection_filename(exam_name: str, committed_at: datetime) -> str:
-    """Use the immutable generation time once, displayed in Korean local time."""
-    if committed_at.tzinfo is None:
-        raise ValueError("committed_at must be timezone-aware")
-    stamp = committed_at.astimezone(ZoneInfo("Asia/Seoul")).strftime("%y%m%d_%H%M%S")
-    return f"01_ocr_{exam_name}_{stamp}_응답결과.xlsx"
-
-
 def _text(cell: Cell, value: str) -> None:
     cell.value = escape_formula_text(value)
     cell.data_type = "s"
@@ -55,11 +45,11 @@ def mark_review(cell: StyleableObject) -> None:
     cell.font = _REVIEW_FONT
 
 
-def style_header_row(sheet: Worksheet) -> None:
-    """Bold the header and freeze it with the four identity columns (E2) for wide sheets."""
+def style_header_row(sheet: Worksheet, freeze_panes: str = "E2") -> None:
+    """Bold the header and freeze it with the identity columns (E2 by default) for wide sheets."""
     for cell in sheet[1]:
         cell.font = _HEADER_FONT
-    sheet.freeze_panes = "E2"
+    sheet.freeze_panes = freeze_panes
 
 
 def join_notes(*notes: str) -> str:
@@ -154,7 +144,7 @@ def write_effective_response_sheet(
     *,
     review_notes: bool,
 ) -> None:
-    """Fill ``sheet`` in the importable 응답결과 layout from effective responses.
+    """Fill ``sheet`` in the importable 응답원본 layout from effective responses.
 
     With ``review_notes`` the 비고 also names unconfirmed answers, so a book a teacher
     re-imports is held back until those yellow cells have been checked.
@@ -211,7 +201,6 @@ __all__ = [
     "join_notes",
     "mark_review",
     "recognition_note",
-    "response_projection_filename",
     "review_note",
     "style_header_row",
     "write_effective_response_sheet",
