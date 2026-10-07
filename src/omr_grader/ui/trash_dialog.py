@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_grader.domain.models import DashboardIndexEntry
+from omr_grader.ui.dashboard_model import status_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +73,11 @@ class TrashDialog(QDialog):
         self._entries = entries
         self.list_widget.clear()
         for entry in entries:
-            item_text = f"{entry.exam_name} ({entry.exam_year or '-'}년)"
+            # The folder name starts with the date, so old exams are easy to tell apart.
+            item_text = (
+                f"{entry.display_folder}  ·  {status_text(entry)}  ·  "
+                f"{entry.participant_count}명"
+            )
             self.list_widget.addItem(item_text)
             item = self.list_widget.item(self.list_widget.count() - 1)
             if item is not None:
@@ -125,6 +130,8 @@ class TrashDialog(QDialog):
                 tuple(item.revision for item in entries),
             )
         )
+        # The list is now out of date; the dashboard reloads and the trash can be reopened.
+        self.accept()
 
     def _refresh(self) -> None:
         selected = bool(self._selected())

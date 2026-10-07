@@ -46,7 +46,8 @@ def result_timestamp(value: str) -> str:
 
 
 def result_base_name(exam_name: str, created_at: str) -> str:
-    return f"{safe_exam_name(exam_name)}_{result_timestamp(created_at)}"
+    """The exam folder name: creation time first so folders sort by date."""
+    return f"{result_timestamp(created_at)}_{safe_exam_name(exam_name)}"
 
 
 def result_workbook_filename(kind: str, exam_name: str, created_at: str) -> str:

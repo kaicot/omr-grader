@@ -109,6 +109,9 @@ class DashboardGlobalRequest:
         _validate_payload_json(self.payload_json)
 
 
+_ACTION_CELL_WIDTH = 200
+
+
 def _summary(entries: tuple[DashboardIndexEntry, ...]) -> str:
     if not entries:
         return "저장된 시험이 없습니다."
@@ -214,9 +217,10 @@ class DashboardPage(QWidget):
             COLUMN_PARTICIPANTS,
             COLUMN_AVERAGE,
             COLUMN_HIGH_LOW,
-            COLUMN_MANAGEMENT,
         ):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_MANAGEMENT, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(COLUMN_MANAGEMENT, _ACTION_CELL_WIDTH)
         header.resizeSection(COLUMN_GRADED_AT, 150)
         table_layout.addWidget(self.table)
         root.addWidget(table_frame)
@@ -268,6 +272,7 @@ class DashboardPage(QWidget):
         self._refresh_state()
 
     def _install_row_actions(self) -> None:
+        widths: list[int] = []
         for row in range(self.model.rowCount()):
             cell = QWidget(self.table)
             cell.setObjectName("dashboardActionCell")
@@ -289,6 +294,13 @@ class DashboardPage(QWidget):
                 )
                 layout.addWidget(button)
             self.table.setIndexWidget(self.model.index(row, COLUMN_MANAGEMENT), cell)
+            cell.ensurePolished()
+            widths.append(cell.sizeHint().width())
+        # A fixed width from the polished buttons: measuring the column while the page is
+        # still hidden (just back from the detail page) squeezed the buttons.
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(COLUMN_MANAGEMENT, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(COLUMN_MANAGEMENT, max(widths, default=_ACTION_CELL_WIDTH) + 8)
 
     def _request_row(self, action: str, row: int) -> None:
         if not 0 <= row < self.model.rowCount():
@@ -613,12 +625,12 @@ class DashboardPage(QWidget):
     def _forward_trash(self, request: TrashRequest) -> None:
         if not isinstance(request, TrashRequest):
             raise TypeError("request must be TrashRequest")
-        if self._busy or (
-            request.action in {"restore", "delete"} and not self._write_enabled
-        ):
+        if self._busy or not self._write_enabled:
             return
+        # The dialog says restore / permanent_delete / empty; emptying deletes them all.
+        action = "trash_restore" if request.action == "restore" else "trash_delete"
         wrapped = DashboardRequest(
-            f"trash_{request.action}", DashboardSelection(request.session_ids, request.revisions)
+            action, DashboardSelection(request.session_ids, request.revisions)
         )
         self.request_emitted.emit(wrapped)
 

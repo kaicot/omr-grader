@@ -364,7 +364,10 @@ def run(
         EffectiveResponse,
     )
     from omr_grader.infrastructure.config_store import config_revision
-    from omr_grader.infrastructure.dashboard_repository import DashboardRepository
+    from omr_grader.infrastructure.dashboard_repository import (
+        DashboardRepository,
+        trash_lister,
+    )
     from omr_grader.infrastructure.detail_repository import DetailRepository
     from omr_grader.infrastructure.form_detection import FormDetector
     from omr_grader.infrastructure.grading_runtime import (
@@ -483,6 +486,7 @@ def run(
         repository = DashboardRepository(
             runtime_paths.data_dir / "dashboard_index.json",
             store.discover_active_committed_leases,
+            list_trash_entries=trash_lister(store.discover_trash_committed_leases),
         )
         dashboard_service = DashboardApplicationService(
             coordinator, repository, write_enabled=write_enabled
@@ -889,21 +893,32 @@ def run(
             def trash_dashboard(
                 request: DashboardRequest,
             ) -> Result[TrashRestoreResult | PermanentDeleteResult]:
-                identity = selected(request.selection)
-                if isinstance(identity, Err):
-                    return identity
-                command = SessionMutationRequest(identity[0], identity[1], uuid4().hex)
-                if request.action == "trash_restore":
-                    restored = dashboard_service.restore_from_trash(command)
-                    if isinstance(restored, Err):
-                        return restored
-                    return Ok(restored.value, restored.warnings)
-                if request.action == "trash_delete":
-                    deleted = dashboard_service.permanently_delete(command)
-                    if isinstance(deleted, Err):
-                        return deleted
-                    return Ok(deleted.value, deleted.warnings)
-                return unavailable("DASHBOARD_ACTION_INVALID")
+                selection = request.selection
+                if (
+                    not selection.session_ids
+                    or len(selection.session_ids) != len(selection.revisions)
+                    or request.action not in {"trash_restore", "trash_delete"}
+                ):
+                    return unavailable("DASHBOARD_ACTION_INVALID")
+                # Several exams may be chosen in the trash; stop at the first failure.
+                last: Result[TrashRestoreResult | PermanentDeleteResult] = unavailable(
+                    "DASHBOARD_ACTION_INVALID"
+                )
+                for session_id, revision in zip(
+                    selection.session_ids, selection.revisions, strict=True
+                ):
+                    command = SessionMutationRequest(session_id, revision, uuid4().hex)
+                    if request.action == "trash_restore":
+                        restored = dashboard_service.restore_from_trash(command)
+                        if isinstance(restored, Err):
+                            return restored
+                        last = Ok(restored.value, restored.warnings)
+                    else:
+                        deleted = dashboard_service.permanently_delete(command)
+                        if isinstance(deleted, Err):
+                            return deleted
+                        last = Ok(deleted.value, deleted.warnings)
+                return last
 
             dashboard_delete = delete_dashboard
             dashboard_backup = backup_dashboard

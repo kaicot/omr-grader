@@ -371,3 +371,60 @@ def test_a_final_exam_cannot_be_graded_again_and_refresh_is_offered(qtbot) -> No
     assert not page.grade_button.isEnabled()
     page.refresh_button.click()
     assert requests == [DashboardGlobalRequest("refresh")]
+
+
+@pytest.mark.parametrize(
+    ("button", "action"),
+    (("restore_button", "trash_restore"), ("delete_button", "trash_delete")),
+)
+def test_trash_buttons_send_requests_the_controller_understands(
+    qtbot, monkeypatch, button, action
+) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    requests: list[object] = []
+    page.request_emitted.connect(requests.append)
+    entry = _entry("session-a", "시험 A")
+    dialog = page.create_trash_dialog((entry,))
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    dialog.list_widget.setCurrentRow(0)
+
+    getattr(dialog, button).click()
+
+    assert requests == [
+        DashboardRequest(action, DashboardSelection((entry.session_id,), (entry.revision,)))
+    ]
+    assert not dialog.isVisible()
+    assert entry.display_folder in dialog.list_widget.item(0).text()
+
+
+def test_emptying_the_trash_deletes_every_listed_exam(qtbot, monkeypatch) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    requests: list[object] = []
+    page.request_emitted.connect(requests.append)
+    entries = (_entry("session-a", "시험 A"), _entry("session-b", "시험 B"))
+    dialog = page.create_trash_dialog(entries)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+
+    dialog.empty_button.click()
+
+    assert requests == [
+        DashboardRequest(
+            "trash_delete", DashboardSelection(("session-a", "session-b"), (1, 1))
+        )
+    ]
+
+
+def test_the_action_column_keeps_room_for_its_buttons_after_a_reload(qtbot) -> None:
+    page = DashboardPage()
+    qtbot.addWidget(page)
+    page.set_entries((_entry("session-a", "시험 A"),))
+    page.hide()
+    page.set_entries((_entry("session-a", "시험 A"),))  # a reload while another page is shown
+    page.show()
+
+    cell = page.table.indexWidget(page.model.index(0, COLUMN_MANAGEMENT))
+    width = page.table.horizontalHeader().sectionSize(COLUMN_MANAGEMENT)
+    assert width >= cell.sizeHint().width()
+    assert all(button.width() >= 30 for button in cell.findChildren(QPushButton))

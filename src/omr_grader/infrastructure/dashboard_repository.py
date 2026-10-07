@@ -24,6 +24,7 @@ from omr_grader.infrastructure.dashboard_index import (
     ActiveLeaseDiscovery,
     DashboardIndexBuild,
     EntryProjector,
+    build_dashboard_index,
     rebuild_dashboard_index,
 )
 
@@ -38,12 +39,19 @@ def _error(code: str, reason: str) -> Err:
     return Err((ErrorInfo(code, f"error.{code.lower()}", context={"reason": reason}),))
 
 
-def project_dashboard_entry(lease: CommittedSnapshotLease) -> Result[DashboardIndexEntry]:
+def project_trash_entry(lease: CommittedSnapshotLease) -> Result[DashboardIndexEntry]:
+    """Project a trashed session; older trash folders are named by session ID."""
+    return project_dashboard_entry(lease, trash=True)
+
+
+def project_dashboard_entry(
+    lease: CommittedSnapshotLease, *, trash: bool = False
+) -> Result[DashboardIndexEntry]:
     """Project metadata from an allowlisted generation control payload."""
     try:
         ref = lease.snapshot_ref
         semantic = _semantic_statistics(lease)
-        location = _location(lease)
+        location = _location(lease, trash=trash)
         if semantic is None or location is None:
             return _error("DASHBOARD_SESSION_INVALID", "커밋된 세션 교차 참조가 올바르지 않습니다.")
         record, participant_count, average, highest, lowest = semantic
@@ -116,7 +124,7 @@ def _semantic_statistics(
         return None
 
 
-def _location(lease: CommittedSnapshotLease) -> str | None:
+def _location(lease: CommittedSnapshotLease, *, trash: bool = False) -> str | None:
     """Read only the session-local metadata bound to the pinned generation identity."""
     try:
         session = Path(lease.root_path).parent.parent
@@ -131,7 +139,9 @@ def _location(lease: CommittedSnapshotLease) -> str | None:
             or isinstance(validate_portable_component(display_name), Err)
         ):
             return None
-        if session.name != display_name:
+        if session.name != display_name and not (
+            trash and session.name == lease.snapshot_ref.session_id
+        ):
             return None
         return display_name
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -142,6 +152,23 @@ def _mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise ValueError("session payload is not an object")
     return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def trash_lister(
+    discover_trash_leases: ActiveLeaseDiscovery,
+) -> Callable[[], Result[tuple[DashboardIndexEntry, ...]]]:
+    """List the trashed sessions the way the dashboard lists active ones."""
+
+    def list_entries() -> Result[tuple[DashboardIndexEntry, ...]]:
+        discovered = discover_trash_leases()
+        if isinstance(discovered, Err):
+            return discovered
+        built = build_dashboard_index(discovered.value, project_trash_entry)
+        if isinstance(built, Err):
+            return built
+        return Ok(built.value.record.entries, built.value.quarantined)
+
+    return list_entries
 
 
 class DashboardRepository:
@@ -183,4 +210,10 @@ class DashboardRepository:
         return rebuild_dashboard_index(self._discover, self._projector, self._index_path)
 
 
-__all__ = ["DashboardListing", "DashboardRepository", "project_dashboard_entry"]
+__all__ = [
+    "DashboardListing",
+    "DashboardRepository",
+    "project_dashboard_entry",
+    "project_trash_entry",
+    "trash_lister",
+]

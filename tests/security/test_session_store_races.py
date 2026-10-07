@@ -197,7 +197,8 @@ def test_identity_uniqueness_covers_active_trash_reservation_and_deleting(tmp_pa
         == "SESSION_ID_CONFLICT"
     )
 
-    trash = tmp_path / "_휴지통" / "세션" / "race-session"
+    # The trashed folder keeps the exam folder name.
+    (trash,) = tuple((tmp_path / "_휴지통" / "세션").iterdir())
     trash.rename(tmp_path / "_saved-trash")
     reservation = tmp_path / ".reservations" / "race-session.json"
     reservation.write_text(

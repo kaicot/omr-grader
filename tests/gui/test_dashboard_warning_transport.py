@@ -369,6 +369,6 @@ def test_trash_load_keeps_rows_and_presents_warning(qtbot, monkeypatch: pytest.M
     qtbot.waitUntil(lambda: controller._active_bridge is None)
     assert len(dialogs) == 1
     assert dialogs[0].list_widget.count() == 1
-    assert _entry().exam_name in dialogs[0].list_widget.item(0).text()
+    assert _entry().display_folder in dialogs[0].list_widget.item(0).text()
     assert window.status_label.text() == "휴지통 경고"
     controller.close()

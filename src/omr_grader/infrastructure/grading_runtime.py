@@ -32,6 +32,7 @@ from omr_grader.domain.enums import (
     SnapshotPurpose,
 )
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.infrastructure.result_layout import result_base_name
 from omr_grader.domain.models import (
     AnswerKeyEntry,
     AnswerKeySnapshot,
@@ -343,7 +344,7 @@ class ResponseImportCommitCoordinator:
                 identity=identity,
                 manifest=manifest,
                 session=record,
-                display_name=command.session_id,
+                display_name=result_base_name(record.exam_name, record.created_at),
                 artifacts=artifacts,
             )
         except (TypeError, ValueError, OSError) as exc:

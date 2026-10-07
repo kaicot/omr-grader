@@ -16,7 +16,7 @@ from omr_grader.infrastructure.result_layout import (
 def test_result_layout_uses_safe_exam_name_and_korean_timestamp() -> None:
     base = result_base_name("26-2 생리학/중간고사", "2026-07-26T05:30:00.000000Z")
 
-    assert base == "26-2_생리학_중간고사_260726_143000"
+    assert base == "260726_143000_26-2_생리학_중간고사"
     assert OCR_IMAGE_DIR == "01인식결과이미지"
     assert SCORE_IMAGE_DIR == "02채점결과이미지"
     assert COORDINATE_DIR == "좌표데이터"

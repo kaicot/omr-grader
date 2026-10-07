@@ -923,8 +923,9 @@ class SessionStore:
                 for path in self._active().iterdir()
                 if path.is_dir() and not path.name.startswith(".") and path.name != "_휴지통"
             ) if self._root.exists() else []
-        if trash is not False:
-            locations.append(self._trash() / session_id)
+        if trash is not False and self._trash().is_dir():
+            # Trashed folders keep their exam folder name; older ones carry the session ID.
+            locations.extend(path for path in self._trash().iterdir() if path.is_dir())
         found: list[Path] = []
         for path in locations:
             identity = path / "IDENTITY.json"
@@ -1145,10 +1146,16 @@ class SessionStore:
             return False
 
     def open_committed_snapshot(self, request: SnapshotRequest) -> Result[CommittedSnapshotLease]:
+        return self._open_committed_snapshot(request, trash=False)
+
+    def _open_committed_snapshot(
+        self, request: SnapshotRequest, *, trash: bool
+    ) -> Result[CommittedSnapshotLease]:
+        """Open a session's CURRENT generation; ``trash`` reads a trashed session instead."""
         self._mkdirs()
         for _ in range(3):
             try:
-                session = self._locate(request.session_id, trash=False)
+                session = self._locate(request.session_id, trash=trash)
                 self._locate(request.session_id)
             except ValueError as exc:
                 return _error("SESSION_LOCATION_AMBIGUOUS", str(exc))
@@ -1196,6 +1203,17 @@ class SessionStore:
         self,
     ) -> Result[tuple[CommittedSnapshotLeasePort, ...]]:
         """Open one pinned CURRENT lease per active session for disposable projections."""
+        return self._discover_committed_leases(trash=False)
+
+    def discover_trash_committed_leases(
+        self,
+    ) -> Result[tuple[CommittedSnapshotLeasePort, ...]]:
+        """Open one pinned CURRENT lease per trashed session for the trash list."""
+        return self._discover_committed_leases(trash=True)
+
+    def _discover_committed_leases(
+        self, *, trash: bool
+    ) -> Result[tuple[CommittedSnapshotLeasePort, ...]]:
         self._mkdirs()
         root = self._lock(self._root_lock(), exclusive=False, busy="SESSION_DISCOVERY_IN_PROGRESS")
         if isinstance(root, Err):
@@ -1203,10 +1221,15 @@ class SessionStore:
         leases: list[CommittedSnapshotLeasePort] = []
         completed = False
         try:
+            folders = (
+                (self._trash().iterdir() if self._trash().is_dir() else ())
+                if trash
+                else self._active().iterdir()
+            )
             candidates = sorted(
                 (
                     path
-                    for path in self._active().iterdir()
+                    for path in folders
                     if path.is_dir()
                     and not path.is_symlink()
                     and not path.name.startswith(".")
@@ -1229,8 +1252,9 @@ class SessionStore:
                 if isinstance(reader, Err):
                     return reader
                 try:
-                    opened = self.open_committed_snapshot(
-                        SnapshotRequest(identity.session_id, None, SnapshotPurpose.COMBINED)
+                    opened = self._open_committed_snapshot(
+                        SnapshotRequest(identity.session_id, None, SnapshotPurpose.COMBINED),
+                        trash=trash,
                     )
                     if isinstance(opened, Err):
                         return opened
@@ -2033,7 +2057,7 @@ class SessionStore:
                 return locked
             gates = locked.value
             if to_trash:
-                destination = self._trash() / request.session_id
+                destination = self._trash() / source.name
                 written = atomic_write_json(
                     source / "LOCATION.json",
                     self._location_metadata(request.session_id, source.name, request.operation_id),

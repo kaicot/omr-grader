@@ -35,6 +35,7 @@ from omr_grader.application.dto import (
     ScanCommand,
     ScanProgress,
     SessionCreateResult,
+    SoftDeleteResult,
     Settings,
     SettingsSaveCommand,
     SettingsSaveResult,
@@ -59,7 +60,7 @@ from omr_grader.ui.app_controller import (
     _result_book,
 )
 from omr_grader.ui.dashboard_model import DashboardSelection
-from omr_grader.ui.dashboard_page import DashboardRequest
+from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardRequest
 from omr_grader.ui.grading_page import GradingPage
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
 from omr_grader.ui.main_window import MainWindow
@@ -1212,4 +1213,70 @@ def test_settings_show_the_real_data_folder(qtbot, tmp_path):
     )
 
     assert window.settings_page.data_path_edit.text() == str(tmp_path / "Data")
+    controller.close()
+
+
+def test_the_dashboard_reloads_once_a_delete_has_finished(qtbot):
+    window, scan, grading = _window(qtbot)
+    loads: list[int] = []
+
+    def load():
+        loads.append(1)
+        return Ok(DashboardListing(()))
+
+    controller = AppController(
+        window,
+        scan,
+        grading,
+        _ready_ports(
+            dashboard_load=load,
+            dashboard_delete=lambda selection: Ok(
+                SoftDeleteResult(True, "trash", IndexState.STALE, "operation")
+            ),
+        ),
+        write_enabled=True,
+    )
+    qtbot.waitUntil(lambda: controller._active_bridge is None)
+    before = len(loads)
+
+    controller._handle_dashboard_request(
+        DashboardRequest("delete", DashboardSelection(("session-a",), (1,)))
+    )
+
+    qtbot.waitUntil(lambda: len(loads) > before)
+    qtbot.waitUntil(lambda: controller._active_bridge is None)
+    assert "올바르지 않은" not in window.status_label.text()
+    controller.close()
+
+
+def test_a_refresh_asked_for_during_another_action_runs_after_it(qtbot):
+    window, scan, grading = _window(qtbot)
+    loads: list[int] = []
+    release = Event()
+
+    def load():
+        loads.append(1)
+        return Ok(DashboardListing(()))
+
+    def slow_delete(selection):
+        release.wait(5)
+        return Ok(SoftDeleteResult(True, "trash", IndexState.STALE, "operation"))
+
+    controller = AppController(
+        window,
+        scan,
+        grading,
+        _ready_ports(dashboard_load=load, dashboard_delete=slow_delete),
+        write_enabled=True,
+    )
+    qtbot.waitUntil(lambda: controller._active_bridge is None)
+    controller._handle_dashboard_request(
+        DashboardRequest("delete", DashboardSelection(("session-a",), (1,)))
+    )
+    before = len(loads)
+
+    controller._handle_dashboard_request(DashboardGlobalRequest("refresh"))
+    release.set()
+
+    qtbot.waitUntil(lambda: len(loads) > before)
     controller.close()

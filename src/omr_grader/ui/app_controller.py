@@ -336,6 +336,8 @@ class AppController(QObject):
         self._form_detection_paths: tuple[str, ...] | None = None
         self._form_detection_stale = False
         self._form_detection_choices = 0
+        # A dashboard reload asked for while another action ran; it runs when that ends.
+        self._dashboard_reload_pending = False
         self._bind_pages()
         self.main_window.set_close_requires_controller(True)
         self._apply_access(diagnostic)
@@ -432,10 +434,7 @@ class AppController(QObject):
         self, request: DashboardRequest | DashboardGlobalRequest
     ) -> None:
         if request.action == "refresh":
-            if not self._closing and (
-                self._active_bridge is None or not self._active_bridge.active
-            ):
-                self._reload_dashboard()
+            self._reload_dashboard()
             return
         if isinstance(request, DashboardRequest) and request.action in {
             "grade",
@@ -618,11 +617,15 @@ class AppController(QObject):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
         if refresh_dashboard:
-            QTimer.singleShot(0, self._reload_dashboard)
+            # This action's worker is still winding down; reload once it has finished.
+            self._dashboard_reload_pending = True
 
     def _reload_dashboard(self) -> None:
         loader = self.services.dashboard_load
-        if loader is None:
+        if loader is None or self._closing:
+            return
+        if self._active_bridge is not None and self._active_bridge.active:
+            self._dashboard_reload_pending = True
             return
         self._start_desktop_action(
             self.dashboard_page,
@@ -1069,6 +1072,9 @@ class AppController(QObject):
             self._retired_bridges.popleft().deleteLater()
         if not self._closing:
             self.main_window.set_close_requires_controller(True)
+        if self._dashboard_reload_pending and not self._closing:
+            self._dashboard_reload_pending = False
+            QTimer.singleShot(0, self._reload_dashboard)
         if self._form_detection_stale and not self._closing:
             self._form_detection_stale = False
             self._form_detection_paths = None
