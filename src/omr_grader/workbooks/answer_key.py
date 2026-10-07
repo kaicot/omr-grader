@@ -25,6 +25,8 @@ MAX_PACKAGE_BYTES = 16 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_PACKAGE_MEMBERS = 2_000
 MAX_ROWS = 102
+# Columns after 배점 (a 비고 column, say) are the teacher's own and are not read.
+MAX_COLUMNS = 26
 MAX_RELATIONSHIP_BYTES = 1024 * 1024
 
 
@@ -117,10 +119,14 @@ def _canonical_points(value: object, field: str) -> Result[str]:
     return Ok("0" if text in {"", "-0"} else text)
 
 
+# Ways teachers write "every student gets this question".
+_EVERYONE_CORRECT = frozenset({"0", "전체", "전원", "전원정답", "전체정답"})
+
+
 def _answer(value: str, field: str) -> Result[tuple[AnswerValue, KeyQuestionStatus]]:
     if value == "":
         return Ok((AnswerValue((), AnswerStatus.UNASKED), KeyQuestionStatus.UNASKED))
-    if value in {"0", "전체"}:
+    if value.replace(" ", "") in _EVERYONE_CORRECT:
         return Ok((AnswerValue((), AnswerStatus.ALL), KeyQuestionStatus.ALL))
     if (
         not value.isascii()
@@ -164,9 +170,9 @@ def import_answer_key_bytes(
         if sheet_name not in workbook.sheetnames:
             return Err((_error("XLSX_SHEET_NOT_FOUND", "sheet_name"),))
         sheet = workbook[sheet_name]
-        if sheet.max_row > MAX_ROWS or sheet.max_column != 3:
+        if sheet.max_row > MAX_ROWS or not 3 <= sheet.max_column <= MAX_COLUMNS:
             return Err((_error("XLSX_DIMENSION_QUOTA", "sheet_name"),))
-        header = next(sheet.iter_rows(min_row=1, max_row=1))
+        header = next(sheet.iter_rows(min_row=1, max_row=1, max_col=3))
         if (
             any(cell.data_type == "f" or type(cell.value) is not str for cell in header)
             or tuple(cell.value for cell in header) != ANSWER_KEY_HEADERS

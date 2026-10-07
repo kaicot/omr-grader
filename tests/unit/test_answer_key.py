@@ -25,6 +25,25 @@ def _book(path, rows):
     workbook.close()
 
 
+def test_a_note_column_after_the_points_is_left_alone(tmp_path):
+    path = tmp_path / "key.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "정답표"
+    sheet.append((*answer_key.ANSWER_KEY_HEADERS, "비고"))
+    sheet.append((1, "3", 1, None))
+    sheet.append((2, "전원", 1, "출제 오류로 모두 정답 처리"))
+    workbook.save(path)
+    workbook.close()
+
+    result = answer_key.import_answer_key(str(path), "정답표")
+
+    assert isinstance(result, Ok)
+    entries = {entry.question: entry for entry in result.value.entries}
+    assert entries[1].answer.choices == (3,)
+    assert entries[2].status is KeyQuestionStatus.ALL
+
+
 def _append_member(path, name, content=b"hostile"):
     with ZipFile(path, "a") as package:
         package.writestr(name, content)
@@ -126,6 +145,8 @@ def test_answer_key_rejects_duplicate_question_and_n_plus_one_rows(tmp_path, mon
         ("531", (1, 3, 5), AnswerStatus.MULTIPLE),
         ("0", (), AnswerStatus.ALL),
         ("전체", (), AnswerStatus.ALL),
+        ("전원", (), AnswerStatus.ALL),
+        ("전원 정답", (), AnswerStatus.ALL),
         ("", (), AnswerStatus.UNASKED),
     ],
 )
