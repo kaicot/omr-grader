@@ -304,6 +304,9 @@ def stylesheet_for(theme: Theme | str) -> str:
             background: {values["sidebar_hover"]}; border: 1px solid {values["border"]};
             border-radius: 10px;
         }}
+        QLabel#sidebarCredit {{
+            background: transparent; color: {values["sidebar_muted"]}; font-size: 11px;
+        }}
         QLabel#sessionCaption {{
             background: transparent; color: {values["sidebar_muted"]};
             font-size: 11px; font-weight: 700;
@@ -474,7 +477,7 @@ def stylesheet_for(theme: Theme | str) -> str:
             font-weight: 600;
         }}
         QPushButton#dashboardBackupButton, QPushButton#dashboardRestoreButton,
-        QPushButton#dashboardTrashButton,
+        QPushButton#dashboardTrashButton, QPushButton#dashboardCombineButton,
         QPushButton#dashboardDetailButton, QPushButton#dashboardDeleteButton,
         QPushButton#dashboardGradeButton, QPushButton#dashboardOpenBookButton,
         QPushButton#dashboardOpenFolderButton, QPushButton#dashboardRefreshButton,
@@ -484,7 +487,7 @@ def stylesheet_for(theme: Theme | str) -> str:
             border-radius: 6px; padding: 7px 12px;
         }}
         QPushButton#dashboardBackupButton:hover, QPushButton#dashboardRestoreButton:hover,
-        QPushButton#dashboardTrashButton:hover,
+        QPushButton#dashboardTrashButton:hover, QPushButton#dashboardCombineButton:hover,
         QPushButton#dashboardDetailButton:hover, QPushButton#dashboardDeleteButton:hover,
         QPushButton#dashboardGradeButton:hover, QPushButton#dashboardOpenBookButton:hover,
         QPushButton#dashboardOpenFolderButton:hover, QPushButton#dashboardRefreshButton:hover,

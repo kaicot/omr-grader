@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_grader import __version__
+
 from .dashboard_page import DashboardPage
 from .detail_page import DetailPage
 from .grading_page import GradingPage
@@ -40,6 +42,8 @@ from .scan_page import ScanPage
 from .settings_page import SettingsPage
 from .theme import Theme, apply_theme, tokens_for
 from shiboken6 import isValid
+
+AUTHOR_CREDIT = "조승현 (kaic21@gmail.com)"
 
 
 class MainWindow(QMainWindow):
@@ -403,6 +407,14 @@ class MainWindow(QMainWindow):
             self.navigation.addButton(button, index)
             self.nav_buttons.append(button)
             layout.addWidget(button)
+        layout.addSpacing(18)
+        self.credit_label = QLabel(
+            f"프로그램 제작\n{AUTHOR_CREDIT}\nv{__version__}", sidebar
+        )
+        self.credit_label.setObjectName("sidebarCredit")
+        self.credit_label.setContentsMargins(16, 0, 0, 0)
+        self.credit_label.setAccessibleName("프로그램 제작자")
+        layout.addWidget(self.credit_label)
         layout.addStretch(1)
 
         self.session_card = QFrame(sidebar)
@@ -499,8 +511,8 @@ class MainWindow(QMainWindow):
                 https://github.com/kaicot/omr-grader
               </a>
             </p>
-            <p>프로그램개발: 조승현(kaic21@gmail.com)</p>
-            """
+            <p>프로그램 제작: {AUTHOR_CREDIT} · v{__version__}</p>
+            """.replace("{AUTHOR_CREDIT}", AUTHOR_CREDIT).replace("{__version__}", __version__)
         browser.setHtml(self._help_html)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
         buttons.rejected.connect(dialog.close)

@@ -160,13 +160,17 @@ def test_formulas_and_garbage_are_refused(tmp_path):
     assert isinstance(parse_subject_config(str(tmp_path / "missing.xlsx")), Err)
 
 
-def test_the_sample_parses_with_two_subjects_over_two_parts():
+def test_the_sample_is_a_two_part_graduation_exam_of_seven_subjects():
     result = parse_subject_config_bytes(subject_config_sample_bytes())
 
     assert isinstance(result, Ok)
-    assert len(result.value.subjects) == 2
+    subjects = {subject.name: subject.ranges for subject in result.value.subjects}
+    assert len(subjects) == 7
+    # The law subject spans the end of part 1 and the start of part 2.
+    assert subjects["보건의료관계법규"] == (SubjectRange(1, 91, 100), SubjectRange(2, 1, 10))
+    assert subjects["해부생리학"] == (SubjectRange(1, 1, 30),)
     assert result.value.part_numbers() == (1, 2)
     assert result.value.criteria.total_percent == Decimal(60)
-    assert result.value.criteria.per_subject_percent == Decimal(40)
+    assert result.value.criteria.per_subject_percent == Decimal(60)
     book = openpyxl.load_workbook(io.BytesIO(subject_config_sample_bytes()))
     assert book.sheetnames == ["과목구성", "합격기준", "설명"]

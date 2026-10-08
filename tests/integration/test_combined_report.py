@@ -160,13 +160,27 @@ def test_two_graded_parts_are_combined_with_a_student_missing_from_part_two(tmp_
         140,
         1,
     )
-    # The sample config: 의학용어 = P1 1~50 + P2 11~50, 법규 = P1 51~60 + P2 1~10.
-    assert (both["의학용어"], both["법규"]) == (80, 20)
-    assert both["합격 여부"] == "합격"
+    # The sample config: 해부생리학 = P1 1~30, 보건의료관계법규 = P1 91~100 + P2 1~10,
+    # 작업치료평가 = P2 11~40, 아동작업치료 = P2 41~70, 정신사회작업치료 = P2 71~100.
+    assert (both["해부생리학"], both["보건의료관계법규"], both["작업치료평가"]) == (30, 20, 30)
+    assert (both["아동작업치료"], both["정신사회작업치료"]) == (0, 0)
+    # 140 of 200 clears the total, but two subjects are below 60%.
+    assert both["합격 여부"] == "불합격"
     assert only_first["총점"] is None and only_first["합격 여부"] is None
     assert only_first["비고"] == "확인 필요: 파트2 기록 없음 (학번 확인)"
-    sheet = openpyxl.load_workbook(destination)["합산결과"]
+    book = openpyxl.load_workbook(destination)
+    sheet = book["합산결과"]
     assert sheet["A3"].fill.start_color.rgb == "FFFFEB9C"
+    assert book.sheetnames[0] == "과목별 합격"
+    subject_sheet = book["과목별 합격"]
+    headers = [cell.value for cell in subject_sheet[1]]
+    first, second = (
+        dict(zip(headers, (cell.value for cell in subject_sheet[row]), strict=True))
+        for row in (4, 5)
+    )
+    assert first["학번"] == "20260001" and first["판정"] == "불합격"
+    assert first["미달 과목"] == "아동작업치료, 정신사회작업치료"
+    assert second["판정"] == "확인 필요" and second["합계"] is None
     parts = _table(str(destination), "파트")
     assert [row["시험명"] for row in parts[:2]] == ["졸업고사 1교시", "졸업고사 2교시"]
     assert parts[0]["폴더"].endswith("졸업고사_1교시")

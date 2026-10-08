@@ -35,7 +35,12 @@ MAX_SUBJECTS = 30
 MAX_SUBJECT_NAME_LENGTH = 30
 MAX_REPORTED_PROBLEMS = 20
 # Names the combined sheet already uses for its own columns.
-_RESERVED_NAMES = frozenset({"순번", "학번", "이름", "총점", "통합 석차", "합격 여부", "비고"})
+_RESERVED_NAMES = frozenset(
+    {
+        "순번", "학번", "이름", "총점", "통합 석차", "합격 여부", "비고",
+        "합계", "미달 과목 수", "판정", "미달 과목",
+    }
+)
 _PART_TEXT = re.compile(r"(?:파트\s*)?(\d+)")
 
 
@@ -286,7 +291,7 @@ def parse_subject_config(path: str) -> Result[SubjectConfig]:
 
 
 def subject_config_sample_bytes() -> bytes:
-    """A deterministic sample: two subjects over two parts, pass criteria, and a short guide."""
+    """A deterministic sample: a two-part graduation exam of seven subjects with pass criteria."""
     workbook = Workbook()
     sheet = workbook.active
     if sheet is None:
@@ -294,16 +299,20 @@ def subject_config_sample_bytes() -> bytes:
     sheet.title = SUBJECT_SHEET_NAME
     sheet.append(list(SUBJECT_HEADERS))
     for row in (
-        ("의학용어", 1, 1, 50),
-        ("법규", 1, 51, 60),
-        ("법규", 2, 1, 10),
-        ("의학용어", 2, 11, 50),
+        ("해부생리학", 1, 1, 30),
+        ("근골격계 작업치료", 1, 31, 60),
+        ("신경계 작업치료", 1, 61, 90),
+        ("보건의료관계법규", 1, 91, 100),
+        ("보건의료관계법규", 2, 1, 10),
+        ("작업치료평가", 2, 11, 40),
+        ("아동작업치료", 2, 41, 70),
+        ("정신사회작업치료", 2, 71, 100),
     ):
         sheet.append(list(row))
     criteria = workbook.create_sheet(CRITERIA_SHEET_NAME)
     criteria.append(list(CRITERIA_HEADERS))
     criteria.append([TOTAL_CRITERION, 60])
-    criteria.append([PER_SUBJECT_CRITERION, 40])
+    criteria.append([PER_SUBJECT_CRITERION, 60])
     guide = workbook.create_sheet("설명")
     for line in (
         "과목구성: 과목마다 파트와 문항 범위를 적습니다. 같은 과목명을 여러 줄에 적으면 범위가 합쳐집니다.",

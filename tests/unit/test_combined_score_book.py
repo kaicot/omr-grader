@@ -22,6 +22,9 @@ from omr_grader.workbooks.subject_config import (
 )
 
 _YELLOW = "FFFFEB9C"
+_ORANGE = "FFF8CBAD"
+_RED_FILL, _RED_FONT = "FFFFC7CE", "FF9C0006"
+_GREEN_FILL = "FFC6EFCE"
 
 
 def _points(asked: int) -> tuple[Decimal | None, ...]:
@@ -333,6 +336,190 @@ def test_config_for_a_part_that_is_not_selected_is_refused():
         build_combined_score_book([first], _config(), "now")
     with pytest.raises(ValueError):
         build_combined_score_book([], None, "now")
+
+
+def _subject_rows(book, name="과목별 합격", first=4) -> list[dict[str, object]]:
+    sheet = book[name]
+    headers = [cell.value for cell in sheet[1]]
+    return [
+        dict(zip(headers, (cell.value for cell in sheet[row]), strict=True))
+        for row in range(first, sheet.max_row + 1)
+        if isinstance(sheet.cell(row, 1).value, int)
+    ]
+
+
+def _graduation() -> tuple[tuple[PartScores, PartScores], SubjectConfig]:
+    """Three students over two ten-question parts; 법규 spans both parts."""
+    first = _part(
+        "파트1",
+        (
+            _student("20260001", "가", set(range(1, 11)), 1),
+            _student("20260002", "나", {1, 2, 6, 7, 8, 9, 10}, 2),
+            _student("20260003", "다", {1, 2, 3, 6, 7}, 3),
+        ),
+    )
+    second = _part(
+        "파트2",
+        (
+            _student("20260001", "가", set(range(1, 11)), 1),
+            _student("20260002", "나", set(range(1, 11)), 2),
+            _student("20260003", "다", {1, 2, 3, 6, 7}, 3),
+        ),
+    )
+    config = SubjectConfig(
+        (
+            Subject("해부", (SubjectRange(1, 1, 5),)),
+            Subject("법규", (SubjectRange(1, 6, 10), SubjectRange(2, 1, 5))),
+            Subject("평가", (SubjectRange(2, 6, 10),)),
+        ),
+        PassCriteria(total_percent=Decimal(60), per_subject_percent=Decimal(60)),
+    )
+    return (first, second), config
+
+
+def test_the_subject_sheet_comes_first_with_minimums_and_colored_verdicts():
+    parts, config = _graduation()
+
+    book = _book(parts, config)
+
+    assert book.sheetnames == ["과목별 합격", "합산결과", "파트", "과목구성"]
+    assert book.active.title == "과목별 합격"
+    assert [sheet.sheet_view.tabSelected for sheet in book.worksheets] == [
+        True,
+        False,
+        False,
+        False,
+    ]
+    sheet = book["과목별 합격"]
+    assert [cell.value for cell in sheet[1]] == [
+        "순번", "학번", "이름", "해부", "법규", "평가", "합계",
+        "미달 과목 수", "판정", "미달 과목", "비고",
+    ]  # fmt: skip
+    assert [sheet.cell(2, column).value for column in range(1, 8)] == [
+        "만점", None, None, 5, 10, 5, 20,
+    ]  # fmt: skip
+    # 60% of 5 is 3, of 10 is 6, of 20 is 12.
+    assert [sheet.cell(3, column).value for column in range(1, 8)] == [
+        "합격 최소 점수", None, None, 3, 6, 3, 12,
+    ]  # fmt: skip
+    assert sheet.freeze_panes == "D4"
+    rows = _subject_rows(book)
+    assert [(row["이름"], row["해부"], row["법규"], row["평가"], row["합계"]) for row in rows] == [
+        ("가", 5, 10, 5, 20),
+        ("나", 2, 10, 5, 17),
+        ("다", 3, 5, 2, 10),
+    ]
+    assert [(row["미달 과목 수"], row["판정"], row["미달 과목"]) for row in rows] == [
+        (0, "합격", None),
+        (1, "불합격", "해부"),
+        (2, "불합격", "법규, 평가, 총점"),
+    ]
+    passed, failed = sheet["I4"], sheet["I5"]
+    assert passed.fill.start_color.rgb == _GREEN_FILL
+    assert failed.fill.start_color.rgb == _RED_FILL and failed.font.color.rgb == _RED_FONT
+    assert sheet["J5"].font.color.rgb == _RED_FONT
+    # Only below-minimum scores are orange; the short total is orange too.
+    assert sheet["D5"].fill.start_color.rgb == _ORANGE
+    assert sheet["E5"].fill.start_color.rgb != _ORANGE
+    assert [sheet.cell(6, column).fill.start_color.rgb == _ORANGE for column in range(4, 8)] == [
+        False,
+        True,
+        True,
+        True,
+    ]
+    # The verdict on 합산결과 carries the same colors.
+    verdicts = book["합산결과"]
+    column = [cell.value for cell in verdicts[1]].index("합격 여부") + 1
+    assert verdicts.cell(2, column).fill.start_color.rgb == _GREEN_FILL
+    assert verdicts.cell(3, column).font.color.rgb == _RED_FONT
+
+
+def test_the_subject_sheet_footer_counts_passes_and_averages():
+    parts, config = _graduation()
+
+    sheet = _book(parts, config)["과목별 합격"]
+
+    labels = {sheet.cell(row, 1).value: row for row in range(1, sheet.max_row + 1)}
+    passes, means, rates = (
+        labels["과목 통과 인원"],
+        labels["과목 평균"],
+        labels["과목 평균 정답률"],
+    )
+    assert passes == 8  # one blank row after the three students
+    assert [sheet.cell(passes, column).value for column in range(4, 7)] == [2, 2, 2]
+    assert (sheet.cell(passes, 8).value, sheet.cell(passes, 9).value) == ("합격 인원", 1)
+    assert [sheet.cell(means, column).value for column in range(4, 8)] == pytest.approx(
+        [10 / 3, 25 / 3, 4, 47 / 3]
+    )
+    assert sheet.cell(means, 4).number_format == "0.0"
+    assert sheet.cell(rates, 5).value == pytest.approx(25 / 30)
+    assert sheet.cell(rates, 5).number_format == "0%"
+    notes = [
+        str(sheet.cell(row, 1).value)
+        for row in range(rates + 1, sheet.max_row + 1)
+        if sheet.cell(row, 1).value
+    ]
+    assert notes[0] == (
+        "과목 구성: 해부 파트1 1~5번; 법규 파트1 6~10번 + 파트2 1~5번; 평가 파트2 6~10번"
+    )
+    assert notes[1].startswith("합격 기준: 모든 과목 60% 이상 · 총점 60% 이상.")
+
+
+def test_a_student_needing_review_has_no_scores_and_is_left_out_of_the_footer():
+    (first, second), config = _graduation()
+    second = _part("파트2", second.rows[:2])
+
+    book = _book((first, second), config)
+
+    rows = _subject_rows(book)
+    review = rows[2]
+    assert review["이름"] == "다" and review["판정"] == "확인 필요"
+    assert review["합계"] is None and review["해부"] is None
+    assert review["비고"] == "확인 필요: 파트2 기록 없음 (학번 확인)"
+    sheet = book["과목별 합격"]
+    assert all(cell.fill.start_color.rgb == _YELLOW for cell in sheet[6])
+    passes = next(
+        row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 1).value == "과목 통과 인원"
+    )
+    assert [sheet.cell(passes, column).value for column in range(4, 7)] == [1, 2, 2]
+
+
+def test_without_criteria_the_subject_sheet_only_scores():
+    parts, config = _graduation()
+    plain = SubjectConfig(config.subjects)
+
+    book = _book(parts, plain)
+
+    assert book.sheetnames[0] == "과목별 점수"
+    sheet = book["과목별 점수"]
+    assert [cell.value for cell in sheet[1]][-2:] == ["합계", "비고"]
+    assert sheet.cell(3, 1).value == 1 and sheet.freeze_panes == "D3"
+    assert all(cell.fill.start_color.rgb != _ORANGE for cell in sheet[3])
+
+
+def test_fractional_points_show_the_exact_minimum():
+    points = tuple(Decimal("2.5") if number <= 4 else None for number in range(1, 101))
+    student = PartStudent(
+        "20260001",
+        "가",
+        Decimal("7.5"),
+        tuple(
+            Decimal("2.5") if number <= 3 else Decimal(0) if number == 4 else None
+            for number in range(1, 101)
+        ),
+        "scan.pdf p1",
+        1,
+    )
+    part = PartScores("파트1", "시험", "folder", None, points, (student,))
+    config = SubjectConfig(
+        (Subject("가", (SubjectRange(1, 1, 4),)),), PassCriteria(per_subject_percent=Decimal(55))
+    )
+
+    sheet = _book([part], config)["과목별 합격"]
+
+    # 55% of 10 is 5.5; scores move in steps of 2.5, so the minimum is shown as is.
+    assert sheet["D3"].value == 5.5
+    assert sheet["G4"].value == "합격"
 
 
 def test_text_that_looks_like_a_formula_is_stored_as_text():
