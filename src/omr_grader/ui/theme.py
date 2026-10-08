@@ -500,6 +500,14 @@ def stylesheet_for(theme: Theme | str) -> str:
         }}
         QPushButton#dashboardDeleteButton, QPushButton#trashPermanentDeleteButton,
         QPushButton#trashEmptyButton {{ color: {values["error"]}; }}
+        QPushButton#dashboardDeleteButton:disabled,
+        QPushButton#trashPermanentDeleteButton:disabled,
+        QPushButton#trashEmptyButton:disabled {{ color: {values["disabled"]}; }}
+        QPushButton#trashCloseButton {{
+            background: {values["surface"]}; border: 1px solid {values["border"]};
+            border-radius: 6px; padding: 7px 12px;
+        }}
+        QLabel#trashSummary {{ color: {values["muted"]}; }}
     """
 
 

@@ -72,6 +72,11 @@ def _timestamp(value: str | None) -> str:
     return value if moment is None else moment.strftime("%Y-%m-%d %H:%M")
 
 
+def timestamp_text(value: str | None) -> str:
+    """A stored UTC time as Korean local time for the screen, or "-" when there is none."""
+    return _timestamp(value)
+
+
 def status_text(entry: DashboardIndexEntry) -> str:
     """Where the exam stands, and how many pages still need a look."""
     state = {

@@ -10,15 +10,15 @@ from PySide6.QtGui import (
     QDesktopServices,
     QGuiApplication,
     QKeyEvent,
+    QKeySequence,
     QResizeEvent,
     QScreen,
+    QShortcut,
     QShowEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QDialog,
-    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -38,9 +38,11 @@ from omr_grader import __version__
 from .dashboard_page import DashboardPage
 from .detail_page import DetailPage
 from .grading_page import GradingPage
+from .help_content import PAGE_SECTIONS, help_html, help_stylesheet
+from .help_dialog import HelpDialog
 from .scan_page import ScanPage
 from .settings_page import SettingsPage
-from .theme import Theme, apply_theme, tokens_for
+from .theme import Theme, apply_theme
 from shiboken6 import isValid
 
 AUTHOR_CREDIT = "조승현 (kaic21@gmail.com)"
@@ -107,6 +109,8 @@ class MainWindow(QMainWindow):
         self.resize(self.initial_size)
         self.setAccessibleName("OMR Grader 메인 창")
         self.help_dialog, self.help_browser = self._create_help_dialog()
+        self.help_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
+        self.help_shortcut.activated.connect(lambda: self.show_help())
 
         root = QWidget(self)
         root_layout = QHBoxLayout(root)
@@ -457,68 +461,16 @@ class MainWindow(QMainWindow):
         self.help_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.help_button.setObjectName("helpButton")
         self.help_button.setAccessibleName("도움말")
-        self.help_button.clicked.connect(self.show_help)
+        self.help_button.clicked.connect(lambda: self.show_help())
         layout.addWidget(self.theme_button)
         layout.addWidget(self.help_button)
         return top_bar
 
-    def _create_help_dialog(self) -> tuple[QDialog, QTextBrowser]:
-        dialog = QDialog(self)
-        dialog.setObjectName("helpDialog")
-        dialog.setWindowTitle("OMR Grader 도움말 / 사용 설명서")
-        dialog.setMinimumSize(760, 620)
-        dialog.setModal(False)
-        layout = QVBoxLayout(dialog)
-        browser = QTextBrowser(dialog)
-        browser.setObjectName("helpBrowser")
-        browser.setOpenExternalLinks(True)
-        self._help_html = """
-            <h1>OMR Grader 사용 설명서</h1>
-            <h2>1. OMR 스캔</h2>
-            <ol>
-              <li>시험명을 입력합니다.</li>
-              <li>필요하면 응시 학생 명단 엑셀을 선택합니다.</li>
-              <li>스캔 이미지 폴더 또는 PDF를 선택합니다. 답안지 양식을 자동으로 확인해
-                  인식 프로필을 지정합니다. 처음 보는 양식이면 요약과 미리보기를 보고
-                  저장합니다.</li>
-              <li><b>인식 프로필</b> 칸에서 지정된 양식을 확인합니다. 다른 양식이면 목록에서
-                  바꾸거나 <b>다른 프로필 불러오기</b>를 누릅니다.</li>
-              <li><b>OMR 인식 실행</b>을 눌러 응답 결과를 생성합니다.</li>
-            </ol>
-            <h2>2. 정답/채점</h2>
-            <p>스캔이 완료되면 정답표 엑셀을 불러와 검증한 뒤 채점을 실행합니다.
-               채점결과 엑셀에서 틀린 답·무응답·중복 표기는 분홍, 인식이 애매해
-               확인이 필요한 답은 노랑으로 표시됩니다.</p>
-            <h2>3. 시험 관리</h2>
-            <p>저장된 시험을 열어 학생별 응답과 채점 이미지를 보고, 시험별 백업과 복원을
-               수행할 수 있습니다. 채점하지 않은 시험은 <b>채점하기</b>로 정답/채점
-               화면에 연결하고, <b>결과 엑셀 열기</b>와 <b>폴더 열기</b>로 결과를 바로
-               엽니다. 채점이 끝난 시험 폴더에는 채점결과 엑셀 하나가 있고, 그 안에
-               채점결과·결과OX·문항 분석·응답원본·판독 근거·정답표·색 설명 탭이 있습니다.
-               문항 분석은 정답률이 낮거나 오답이 몰린 문항을, 판독 근거는 판독이 애매했던
-               칸을 노랗게 표시합니다. 여러 파트로 나눈 시험은 시험을 둘 이상 체크한 뒤
-               <b>합산 성적표</b>로 학번 기준으로 합치고, 과목 구성 엑셀을 불러오면 과목별
-               점수와 합격 여부도 냅니다. 답을 고쳐야
-               하면 이 엑셀(채점 전이면 응답결과 엑셀)을 시험 폴더 밖으로 복사해
-               '응답원본' 탭을 고칩니다. 노란 칸(확인 필요)을 답안지와 맞춰 고치고 비고의
-               '확인 필요: …번'을 지운 뒤, OMR 스캔 화면의 <b>응답 엑셀로 시작</b>으로
-               불러오면 새 시험으로 만들어지고 다시 채점할 수 있습니다.</p>
-            <h2>4. 환경 설정</h2>
-            <p>기본 OMR 프로필, 인식 감도와 다중 처리 설정을 저장할 수 있습니다.</p>
-            <h2>문제 해결 및 Q&amp;A</h2>
-            <p>문의와 오류 제보:
-              <a href="https://github.com/kaicot/omr-grader">
-                https://github.com/kaicot/omr-grader
-              </a>
-            </p>
-            <p>프로그램 제작: {AUTHOR_CREDIT} · v{__version__}</p>
-            """.replace("{AUTHOR_CREDIT}", AUTHOR_CREDIT).replace("{__version__}", __version__)
-        browser.setHtml(self._help_html)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
-        buttons.rejected.connect(dialog.close)
-        layout.addWidget(browser, 1)
-        layout.addWidget(buttons)
-        return dialog, browser
+    def _create_help_dialog(self) -> tuple[HelpDialog, QTextBrowser]:
+        dialog = HelpDialog(self)
+        self._help_html = help_html(__version__, AUTHOR_CREDIT)
+        dialog.set_document(self._help_html, help_stylesheet(Theme.LIGHT))
+        return dialog, dialog.browser
 
     def _set_tab_order(self) -> None:
         widgets = [*self.nav_buttons, self.theme_button, self.help_button, self.pages]
@@ -706,8 +658,13 @@ class MainWindow(QMainWindow):
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
 
-    def show_help(self) -> None:
+    def show_help(self, section: str | None = None) -> None:
+        """Open the manual at ``section`` or at the chapter for the current screen."""
+        if not isinstance(section, str):
+            index = self.pages.currentIndex()
+            section = PAGE_SECTIONS[index] if 0 <= index < len(PAGE_SECTIONS) else "exam"
         self.help_dialog.show()
+        self.help_dialog.show_section(section)
         self.help_dialog.raise_()
         self.help_dialog.activateWindow()
         self.set_status("도움말 / 사용 설명서를 열었습니다.")
@@ -796,11 +753,7 @@ class MainWindow(QMainWindow):
         application = QApplication.instance()
         if isinstance(application, QApplication):
             apply_theme(application, self._theme)
-        link_color = tokens_for(self._theme).link_color
-        self.help_browser.document().setDefaultStyleSheet(
-            f"a {{ color: {link_color}; font-weight: 700; text-decoration: underline; }}"
-        )
-        self.help_browser.setHtml(self._help_html)
+        self.help_dialog.set_document(self._help_html, help_stylesheet(self._theme))
         self.theme_button.setText("밝은 테마" if self._theme is Theme.DARK else "어두운 테마")
 
     def _on_page_changed(self, page_index: int) -> None:

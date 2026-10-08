@@ -297,6 +297,15 @@ def _error_context(error: object) -> dict[str, object]:
     return {"reason": str(error) or type(error).__name__}
 
 
+# What the status bar says once a dashboard action has gone through.
+_DASHBOARD_DONE: dict[type[object], str] = {
+    SoftDeleteResult: "시험을 휴지통으로 옮겼습니다.",
+    TrashRestoreResult: "휴지통에서 시험을 복원했습니다.",
+    PermanentDeleteResult: "시험을 영구 삭제했습니다.",
+    BackupExportResult: "백업 파일을 저장했습니다.",
+    BackupRestoreResult: "백업을 복구했습니다.",
+}
+
 class AppController(QObject):
     """Single owner of write authority and all worker-to-view transitions."""
 
@@ -342,6 +351,10 @@ class AppController(QObject):
         self._form_detection_choices = 0
         # A dashboard reload asked for while another action ran; it runs when that ends.
         self._dashboard_reload_pending = False
+        # Trash entries just loaded; the dialog opens once the loading worker has ended, so
+        # the page is no longer busy and the dialog's request can start a new worker.
+        self._trash_entries_pending: tuple[DashboardIndexEntry, ...] | None = None
+        self._status_after_work: str | None = None
         self._bind_pages()
         self.main_window.set_close_requires_controller(True)
         self._apply_access(diagnostic)
@@ -615,8 +628,22 @@ class AppController(QObject):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
         self._present_warnings(result.warnings)
-        dialog = self.dashboard_page.create_trash_dialog(result.entries)
+        # This runs while the loading worker is still winding down: a dialog opened now
+        # would start with its buttons disabled and its requests refused.
+        self._trash_entries_pending = tuple(result.entries)
+
+    def _open_trash(self) -> None:
+        entries = self._trash_entries_pending
+        self._trash_entries_pending = None
+        if entries is None or self._closing:
+            return
+        if self._active_bridge is not None and self._active_bridge.active:
+            # Another action started first; open when it ends.
+            self._trash_entries_pending = entries
+            return
+        dialog = self.dashboard_page.create_trash_dialog(entries)
         dialog.exec()
+        dialog.deleteLater()
 
     def _start_desktop_action(
         self,
@@ -669,6 +696,9 @@ class AppController(QObject):
         if not isinstance(result, expected_type):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
             return
+        done = _DASHBOARD_DONE.get(expected_type)
+        if done is not None:
+            self.main_window.set_status(done)
         if refresh_dashboard:
             # This action's worker is still winding down; reload once it has finished.
             self._dashboard_reload_pending = True
@@ -680,6 +710,9 @@ class AppController(QObject):
         if self._active_bridge is not None and self._active_bridge.active:
             self._dashboard_reload_pending = True
             return
+        shown = self.main_window.status_label.text()
+        if shown != get_message("status.processing"):
+            self._status_after_work = shown
         self._start_desktop_action(
             self.dashboard_page,
             loader,
@@ -1129,6 +1162,8 @@ class AppController(QObject):
             self._dashboard_reload_pending = False
             # Tied to the page so a closing window cancels it.
             QTimer.singleShot(0, self.dashboard_page, self._reload_dashboard)
+        if self._trash_entries_pending is not None and not self._closing:
+            QTimer.singleShot(0, self.dashboard_page, self._open_trash)
         if self._form_detection_stale and not self._closing:
             self._form_detection_stale = False
             self._form_detection_paths = None
@@ -1351,6 +1386,11 @@ class AppController(QObject):
         if page is not None and not self._closing:
             next_operation_id = uuid4().hex if isinstance(page, GradingPage) else None
             self._set_busy(page, False, next_operation_id)
+            # Actions that report nothing themselves must not leave "처리 중" behind; a
+            # reload after an action keeps that action's message.
+            if self.main_window.status_label.text() == get_message("status.processing"):
+                self.main_window.set_status(self._status_after_work or get_message("status.ready"))
+        self._status_after_work = None
         self._active_page, self._active_operation_id = None, None
         self._active_kind = ""
         self._active_session_identity = None

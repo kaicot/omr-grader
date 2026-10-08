@@ -353,7 +353,7 @@ def test_trash_load_keeps_rows_and_presents_warning(qtbot, monkeypatch: pytest.M
 
     def create(entries):
         dialog = create_dialog(entries)
-        dialogs.append(dialog)
+        dialogs.append((dialog.table.rowCount(), dialog.table.item(0, 0).text()))
         QTimer.singleShot(0, dialog.accept)
         return dialog
 
@@ -366,9 +366,7 @@ def test_trash_load_keeps_rows_and_presents_warning(qtbot, monkeypatch: pytest.M
         write_enabled=True,
     )
     controller._handle_dashboard_request(DashboardGlobalRequest("trash"))
-    qtbot.waitUntil(lambda: controller._active_bridge is None)
-    assert len(dialogs) == 1
-    assert dialogs[0].list_widget.count() == 1
-    assert _entry().display_folder in dialogs[0].list_widget.item(0).text()
+    qtbot.waitUntil(lambda: len(dialogs) == 1)
+    assert dialogs[0] == (1, _entry().display_folder)
     assert window.status_label.text() == "휴지통 경고"
     controller.close()

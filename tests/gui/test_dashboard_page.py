@@ -137,7 +137,7 @@ def test_dashboard_and_trash_commands_emit_once(qtbot, monkeypatch) -> None:
     dialog = page.create_trash_dialog((entry,))
     qtbot.addWidget(dialog)
     dialog.show()
-    dialog.list_widget.setCurrentRow(0)
+    dialog.select_rows(0)
     QTest.mouseClick(dialog.restore_button, Qt.MouseButton.LeftButton)
 
     assert [request.action for request in emitted] == [
@@ -171,7 +171,7 @@ def test_trash_requires_confirmation_for_permanent_delete_and_respects_read_only
     qtbot.addWidget(dialog)
     dialog.set_entries((_entry("session-a", "생리학"),))
     dialog.show()
-    dialog.list_widget.setCurrentRow(0)
+    dialog.select_rows(0)
     emitted: list[object] = []
     dialog.request_emitted.connect(emitted.append)
     monkeypatch.setattr("omr_grader.ui.trash_dialog.QMessageBox.question", lambda *_: 65536)
@@ -387,7 +387,7 @@ def test_trash_buttons_send_requests_the_controller_understands(
     entry = _entry("session-a", "시험 A")
     dialog = page.create_trash_dialog((entry,))
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
-    dialog.list_widget.setCurrentRow(0)
+    dialog.select_rows(0)
 
     getattr(dialog, button).click()
 
@@ -395,7 +395,7 @@ def test_trash_buttons_send_requests_the_controller_understands(
         DashboardRequest(action, DashboardSelection((entry.session_id,), (entry.revision,)))
     ]
     assert not dialog.isVisible()
-    assert entry.display_folder in dialog.list_widget.item(0).text()
+    assert dialog.table.item(0, 0).text() == entry.display_folder
 
 
 def test_emptying_the_trash_deletes_every_listed_exam(qtbot, monkeypatch) -> None:
