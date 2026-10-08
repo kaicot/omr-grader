@@ -55,6 +55,9 @@ def test_desktop_navigation_help_and_idle_close(qtbot):
     assert window.pages.currentIndex() == MainWindow.SCAN_PAGE
 
     window.set_grading_available(True)
+    # Key events go to the active window's focus widget, so make the window active first.
+    window.activateWindow()
+    qtbot.waitActive(window)
     scan_button.setFocus(Qt.FocusReason.TabFocusReason)
     qtbot.waitUntil(scan_button.hasFocus)
     for button, page_index, key in (
