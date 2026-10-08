@@ -3,19 +3,32 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from threading import Event
 from typing import Protocol
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, QTimer, QUrl
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox, QWidget
 
+from omr_grader import __version__
+
+from omr_grader.infrastructure.data_import import ImportProgress, ImportSummary
+from omr_grader.infrastructure.update_check import (
+    RELEASES_PAGE_URL,
+    ReleaseInfo,
+    UpdatePreferences,
+    is_newer,
+    now_text,
+    offer,
+)
 from omr_grader.application.detail_presenter import (
     DetailLoadRequest,
     DetailLoadResult,
@@ -179,6 +192,20 @@ class ServicePorts:
     data_dir: Path | None = None
     combined_export: Callable[[tuple[str, ...], str | None, str], Result[object]] | None = None
     subject_sample: Callable[[str], Result[None]] | None = None
+    # Update check: GitHub request (run off the GUI thread) and the stored preference.
+    update_fetch: Callable[[], Result[ReleaseInfo]] | None = None
+    update_prefs_load: Callable[[], UpdatePreferences] | None = None
+    update_prefs_save: Callable[[UpdatePreferences], None] | None = None
+    # Copy exams, forms and settings from an older install folder.
+    data_import: Callable[[str, Callable[[object], None]], Result[ImportSummary]] | None = None
+    # A fresh folder: offer to import an older install once the window is up.
+    first_run: bool = False
+
+
+class _UpdateRelay(QObject):
+    """Carries a finished update check from its thread back to the GUI thread."""
+
+    finished = Signal(object, bool)
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,9 +382,14 @@ class AppController(QObject):
         # the page is no longer busy and the dialog's request can start a new worker.
         self._trash_entries_pending: tuple[DashboardIndexEntry, ...] | None = None
         self._status_after_work: str | None = None
+        self._update_relay = _UpdateRelay(self)
+        self._update_relay.finished.connect(self._finish_update_check)
+        self._update_running = False
+        self._offered_release: ReleaseInfo | None = None
         self._bind_pages()
         self.main_window.set_close_requires_controller(True)
         self._apply_access(diagnostic)
+        self._start_update_features()
 
     def _bind_pages(self) -> None:
         self.scan_page.recognition_requested.connect(self.start_scan)
@@ -393,6 +425,11 @@ class AppController(QObject):
         self.settings_page.profile_browse_requested.connect(self._pick_settings_profile)
         self.settings_page.profile_import_requested.connect(self._import_profile)
         self.settings_page.data_folder_requested.connect(self._open_data_folder)
+        self.settings_page.update_check_toggled.connect(self._set_update_check)
+        self.settings_page.update_check_requested.connect(lambda: self._check_for_update(True))
+        self.settings_page.data_import_requested.connect(self._import_previous)
+        self.main_window.update_download_requested.connect(self._open_release_page)
+        self.main_window.update_skip_requested.connect(self._skip_release)
         if self.services.data_dir is not None:
             self.settings_page.set_data_path_display(str(self.services.data_dir))
         self.main_window.write_authority_requested.connect(self.set_write_authority)
@@ -571,6 +608,174 @@ class AppController(QObject):
             self.main_window.show_result_dialog(
                 "샘플 저장", f"과목 구성 샘플을 저장했습니다.\n{path}", path
             )
+
+    def _update_prefs(self) -> UpdatePreferences:
+        load = self.services.update_prefs_load
+        return UpdatePreferences() if load is None else load()
+
+    def _save_update_prefs(self, prefs: UpdatePreferences) -> None:
+        save = self.services.update_prefs_save
+        if save is not None and self.write_enabled:
+            save(prefs)
+
+    def _start_update_features(self) -> None:
+        prefs = self._update_prefs()
+        self.settings_page.set_update_state(prefs.enabled)
+        if self.services.update_fetch is None:
+            self.settings_page.update_check_box.setEnabled(False)
+            self.settings_page.update_now_button.setEnabled(False)
+        elif prefs.due(datetime.now(UTC)):
+            # Let the window settle first; the check never blocks it.
+            QTimer.singleShot(2000, self.main_window, lambda: self._check_for_update(False))
+        if self.services.first_run and self.write_enabled and self.services.data_import:
+            QTimer.singleShot(600, self.main_window, self._offer_import)
+
+    def _check_for_update(self, manual: bool) -> None:
+        fetch = self.services.update_fetch
+        if fetch is None or self._update_running or self._closing:
+            return
+        self._update_running = True
+        if manual:
+            self.settings_page.set_update_state(
+                self._update_prefs().enabled, "새 버전을 확인하는 중입니다…"
+            )
+        relay = self._update_relay
+
+        def run() -> None:
+            try:
+                result: object = fetch()
+            except Exception:  # noqa: BLE001 - a failed check must never reach the user
+                result = None
+            try:
+                relay.finished.emit(result, manual)
+            except RuntimeError:
+                pass  # the window closed while GitHub was answering
+
+        threading.Thread(target=run, name="omr-update-check", daemon=True).start()
+
+    def _finish_update_check(self, result: object, manual: bool) -> None:
+        self._update_running = False
+        if self._closing:
+            return
+        prefs = self._update_prefs()
+        if not isinstance(result, Ok) or not isinstance(result.value, ReleaseInfo):
+            if manual:
+                reason = (
+                    result.errors[0].context.get("reason")
+                    if isinstance(result, Err) and result.errors
+                    else None
+                )
+                self.settings_page.set_update_state(
+                    prefs.enabled, f"확인하지 못했습니다. {reason or '인터넷 연결을 확인하세요.'}"
+                )
+            return
+        release = result.value
+        self._save_update_prefs(
+            UpdatePreferences(prefs.enabled, now_text(), prefs.skipped_version)
+        )
+        newer = is_newer(release.version, __version__)
+        if newer and (manual or offer(release, __version__, prefs)):
+            self._offered_release = release
+            self.main_window.show_update(release.version)
+        if manual:
+            self.settings_page.set_update_state(
+                prefs.enabled,
+                f"새 버전 v{release.version}이 있습니다. 왼쪽 아래 안내에서 받으세요."
+                if newer
+                else f"최신 버전입니다 (v{__version__}).",
+            )
+
+    def _set_update_check(self, enabled: bool) -> None:
+        prefs = self._update_prefs()
+        self._save_update_prefs(
+            UpdatePreferences(enabled, prefs.last_checked, prefs.skipped_version)
+        )
+        self.settings_page.set_update_state(
+            enabled,
+            "프로그램을 켤 때 새 버전을 확인합니다."
+            if enabled
+            else "새 버전을 자동으로 확인하지 않습니다. '지금 확인'으로 직접 확인할 수 있습니다.",
+        )
+
+    def _open_release_page(self) -> None:
+        release = self._offered_release
+        QDesktopServices.openUrl(QUrl(release.page_url if release else RELEASES_PAGE_URL))
+
+    def _skip_release(self) -> None:
+        release = self._offered_release
+        if release is not None:
+            prefs = self._update_prefs()
+            self._save_update_prefs(
+                UpdatePreferences(prefs.enabled, prefs.last_checked, release.version)
+            )
+        self.main_window.show_update(None)
+
+    def _offer_import(self) -> None:
+        if self._closing or not self.write_enabled:
+            return
+        answer = QMessageBox.question(
+            self.main_window,
+            "이전 버전 자료 가져오기",
+            "새로 설치한 폴더입니다.\n예전 OMR Grader 폴더가 있으면 시험·답안지 양식·설정을"
+            " 가져올 수 있습니다. 예전 폴더는 그대로 남습니다.\n\n지금 가져올까요?"
+            " (나중에 환경 설정에서도 할 수 있습니다.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._import_previous()
+
+    def _import_previous(self) -> None:
+        importer = self.services.data_import
+        if importer is None or not self.write_enabled:
+            self.main_window.show_error_dialog("가져오기", _error_text(self._unavailable()))
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self.main_window, "예전 OMR Grader 폴더 선택 (OMR Grader.exe가 있는 폴더)"
+        )
+        if not folder:
+            return
+        self.settings_page.set_update_state(
+            self._update_prefs().enabled, "이전 버전 자료를 가져오는 중입니다. 시험이 많으면 몇 분 걸립니다."
+        )
+        self._start_reporting_action(
+            self.settings_page,
+            partial(importer, folder),
+            self._finish_import,
+            self.settings_page.set_busy,
+            kind="dashboard-action",
+        )
+
+    def _finish_import(self, result: object) -> None:
+        if not isinstance(result, ImportSummary):
+            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+            return
+        lines = [f"시험 {result.exams}개를 가져왔습니다."]
+        if result.already_present:
+            lines.append(f"이미 있는 시험 {result.already_present}개는 건너뛰었습니다.")
+        if result.failed:
+            lines.append(f"가져오지 못한 시험: {', '.join(result.failed)}")
+        if result.trash:
+            lines.append(f"예전 휴지통의 시험 {result.trash}개는 휴지통으로 가져왔습니다.")
+        if result.profiles:
+            lines.append(f"답안지 양식 {result.profiles}개를 가져왔습니다.")
+        if result.settings is not None:
+            lines.append("환경 설정도 가져왔습니다.")
+        lines.append("예전 폴더는 그대로 남아 있습니다.")
+        message = "\n".join(lines)
+        self.settings_page.set_update_state(self._update_prefs().enabled, message)
+        self.main_window.set_status(lines[0])
+        self.main_window.show_info_dialog("이전 버전 자료 가져오기", message)
+        self._dashboard_reload_pending = True
+        self._reload_settings_page()
+
+    def _reload_settings_page(self) -> None:
+        loader = self.services.settings_load
+        if loader is None:
+            return
+        loaded = loader()
+        if isinstance(loaded, Ok) and isinstance(loaded.value, SettingsState):
+            self._apply_settings_snapshot(loaded.value.settings, loaded.value.revision)
 
     def _open_data_folder(self) -> None:
         folder = self.services.data_dir
@@ -1179,6 +1384,12 @@ class AppController(QObject):
 
     def _progress(self, progress: object) -> None:
         if self._closing or self._active_page is None:
+            return
+        if isinstance(progress, ImportProgress):
+            self.settings_page.set_update_state(
+                self._update_prefs().enabled,
+                f"이전 버전 자료를 가져오는 중입니다… 시험 {progress.done}/{progress.total}",
+            )
             return
         if self._active_kind == "form-detection":
             # Detection runs beside the scan inputs, which stay editable meanwhile, so

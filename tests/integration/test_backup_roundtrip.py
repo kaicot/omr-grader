@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import zipfile
 from pathlib import Path
@@ -139,7 +140,9 @@ def test_nonempty_current_only_archive_restores_with_provenance_and_collision(
         RestoreCommand(validated.value, str(destination.root), "restore-1")
     )
     assert isinstance(restored, Ok)
-    session = destination.root / "session-1"
+    # The restored exam gets the usual date-first folder name, not its internal id.
+    (session,) = [path for path in destination.root.iterdir() if (path / "IDENTITY.json").exists()]
+    assert re.fullmatch(r"\d{6}_\d{6}_.+", session.name)
     assert (
         session / "generations" / "g00000001_generation-1" / "payload.bin"
     ).read_bytes() == b"nonempty backup payload"

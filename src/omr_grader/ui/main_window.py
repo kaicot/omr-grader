@@ -62,6 +62,8 @@ class MainWindow(QMainWindow):
     write_authority_requested = Signal(bool)
     close_requested = Signal()
     detail_navigation_requested = Signal(int)
+    update_download_requested = Signal()
+    update_skip_requested = Signal()
 
     SCAN_PAGE = 0
     GRADING_PAGE = 1
@@ -421,6 +423,32 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.credit_label)
         layout.addStretch(1)
 
+        # Shown only when the update check found a newer release.
+        self.update_banner = QFrame(sidebar)
+        self.update_banner.setObjectName("updateBanner")
+        self.update_banner.setAccessibleName("새 버전 안내")
+        banner_layout = QVBoxLayout(self.update_banner)
+        banner_layout.setContentsMargins(14, 12, 14, 12)
+        banner_layout.setSpacing(8)
+        self.update_label = QLabel(self.update_banner)
+        self.update_label.setObjectName("updateLabel")
+        self.update_label.setWordWrap(True)
+        banner_buttons = QHBoxLayout()
+        self.update_download_button = QPushButton("다운로드 페이지", self.update_banner)
+        self.update_download_button.setObjectName("updateDownloadButton")
+        self.update_skip_button = QPushButton("건너뛰기", self.update_banner)
+        self.update_skip_button.setObjectName("updateSkipButton")
+        self.update_skip_button.setToolTip("이 버전은 다시 알리지 않습니다.")
+        banner_buttons.addWidget(self.update_download_button)
+        banner_buttons.addWidget(self.update_skip_button)
+        banner_layout.addWidget(self.update_label)
+        banner_layout.addLayout(banner_buttons)
+        self.update_download_button.clicked.connect(self.update_download_requested.emit)
+        self.update_skip_button.clicked.connect(self.update_skip_requested.emit)
+        self.update_banner.hide()
+        layout.addWidget(self.update_banner)
+        layout.addSpacing(8)
+
         self.session_card = QFrame(sidebar)
         self.session_card.setObjectName("sessionCard")
         self.session_card.setAccessibleName("현재 세션")
@@ -613,6 +641,14 @@ class MainWindow(QMainWindow):
         box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         box.open()
 
+    def show_info_dialog(self, title: str, message: str) -> None:
+        """Report a finished action that has no file to open."""
+        box = QMessageBox(QMessageBox.Icon.Information, title, message, parent=self)
+        box.setObjectName("actionInfoDialog")
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.addButton("확인", QMessageBox.ButtonRole.AcceptRole)
+        box.open()
+
     def show_result_dialog(self, title: str, message: str, path: str) -> None:
         """Report a saved file with a button that opens it."""
         box = QMessageBox(QMessageBox.Icon.Information, title, message, parent=self)
@@ -657,6 +693,17 @@ class MainWindow(QMainWindow):
         self.status_label.setProperty("role", role or "")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
+
+    def show_update(self, version: str | None) -> None:
+        """Show the newer release in the sidebar, or hide the notice with ``None``."""
+        if version is None:
+            self.update_banner.hide()
+            return
+        self.update_label.setText(
+            f"새 버전 v{version}이 있습니다.\n다운로드 페이지에서 받아 새 폴더에 풀고,"
+            " 처음 실행할 때 지금 자료를 가져오세요."
+        )
+        self.update_banner.show()
 
     def show_help(self, section: str | None = None) -> None:
         """Open the manual at ``section`` or at the chapter for the current screen."""

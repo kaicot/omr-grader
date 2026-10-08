@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,12 +15,22 @@ from typing import TYPE_CHECKING, TypeVar
 from uuid import uuid4
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader import __version__
 from omr_grader.infrastructure.capabilities import (
     CapabilityToken,
     bootstrap_managed_paths,
     probe_root_capability,
 )
-from omr_grader.infrastructure.config_store import AppConfig, load_config
+from omr_grader.infrastructure.atomic_io import atomic_write_bytes
+from omr_grader.infrastructure.config_store import AppConfig, load_config, save_config
+from omr_grader.infrastructure.data_import import ImportSummary, import_previous_install
+from omr_grader.infrastructure.update_check import (
+    UPDATE_PREFS_FILENAME,
+    ReleaseInfo,
+    UpdatePreferences,
+    fetch_latest_release,
+)
+from omr_grader.infrastructure.data_format import ensure_data_format
 from omr_grader.infrastructure.logging_setup import configure_logging, daily_log_path
 from omr_grader.infrastructure.paths import ManagedPaths, resolve_portable_root
 from omr_grader.resources.messages import get_message
@@ -38,6 +49,8 @@ class BootstrapState:
     write_enabled: bool
     diagnostic: str | None = None
     capability_token: CapabilityToken | None = None
+    # No config.json existed: a fresh folder, where importing an older install makes sense.
+    first_run: bool = False
 
 
 def _state(
@@ -159,7 +172,8 @@ def bootstrap(paths: ManagedPaths | None = None) -> Result[BootstrapState]:
             + tuple(_warning_copy(issue) for issue in config.errors)
             + _result_warnings(logging_result),
         )
-    if any(warning.code == "CONFIG_MISSING" for warning in config.warnings):
+    first_run = any(warning.code == "CONFIG_MISSING" for warning in config.warnings)
+    if first_run:
         reloaded = load_config(managed.value, token)
         if isinstance(reloaded, Err) or any(
             warning.code == "CONFIG_MISSING" for warning in reloaded.warnings
@@ -212,9 +226,28 @@ def bootstrap(paths: ManagedPaths | None = None) -> Result[BootstrapState]:
             + _result_warnings(logging_result),
         )
     logging_result = configure_logging(log_target.value)
+    data_format = ensure_data_format(managed.value.data_dir, __version__)
+    if isinstance(data_format, Err):
+        return Ok(
+            _state(
+                managed.value,
+                config=config.value,
+                write_enabled=False,
+                diagnostic=str(data_format.errors[0].context["reason"]),
+            ),
+            capability.warnings
+            + config.warnings
+            + tuple(_warning_copy(issue) for issue in data_format.errors)
+            + _result_warnings(logging_result),
+        )
     return Ok(
-        BootstrapState(managed.value, config.value, True, capability_token=token),
-        capability.warnings + config.warnings + _result_warnings(logging_result),
+        BootstrapState(
+            managed.value, config.value, True, capability_token=token, first_run=first_run
+        ),
+        capability.warnings
+        + config.warnings
+        + tuple(_warning_copy(issue) for issue in data_format.warnings)
+        + _result_warnings(logging_result),
     )
 
 
@@ -1205,7 +1238,54 @@ def run(
 
                 settings_load = load_readonly_settings
 
+    # Automated release checks must not wait on GitHub or a first-run question.
+    smoke_run = bool(os.environ.get("OMR_GRADER_SMOKE_MODE"))
+    update_fetch = None
+    update_prefs_load = None
+    update_prefs_save = None
+    data_import = None
+    if runtime_paths is not None:
+        prefs_path = runtime_paths.root / UPDATE_PREFS_FILENAME
+
+        def load_update_prefs() -> UpdatePreferences:
+            try:
+                return UpdatePreferences.from_json(prefs_path.read_bytes())
+            except OSError:
+                return UpdatePreferences()
+
+        def save_update_prefs(prefs: UpdatePreferences) -> None:
+            atomic_write_bytes(prefs_path, prefs.to_json())
+
+        update_prefs_load = load_update_prefs
+        update_prefs_save = save_update_prefs
+        if not smoke_run:
+
+            def fetch_update() -> Result[ReleaseInfo]:
+                return fetch_latest_release(__version__)
+
+            update_fetch = fetch_update
+        if store is not None and write_enabled and runtime_token is not None:
+            import_store, import_paths, import_token = store, runtime_paths, runtime_token
+            form_store = ProfileStore(runtime_paths, runtime_token)
+
+            def import_install(
+                folder: str, report: Callable[[object], None]
+            ) -> Result[ImportSummary]:
+                imported = import_previous_install(
+                    folder, import_paths, import_store, form_store.save_generated, report
+                )
+                if isinstance(imported, Ok) and imported.value.settings is not None:
+                    save_config(import_paths, imported.value.settings, import_token)
+                return imported
+
+            data_import = import_install
+
     services = ServicePorts(
+        update_fetch=update_fetch,
+        update_prefs_load=update_prefs_load,
+        update_prefs_save=update_prefs_save,
+        data_import=data_import,
+        first_run=isinstance(outcome, Ok) and outcome.value.first_run and not smoke_run,
         scan=scan_service,
         scan_context=scan_context,
         data_dir=None if runtime_paths is None else runtime_paths.data_dir,

@@ -304,6 +304,18 @@ def stylesheet_for(theme: Theme | str) -> str:
             background: {values["sidebar_hover"]}; border: 1px solid {values["border"]};
             border-radius: 10px;
         }}
+        QFrame#updateBanner {{
+            background: {values["sidebar_active"]}; border: 1px solid {values["primary"]};
+            border-radius: 10px;
+        }}
+        QLabel#updateLabel {{
+            background: transparent; color: {values["sidebar_text"]}; font-size: 12px;
+        }}
+        QPushButton#updateDownloadButton, QPushButton#updateSkipButton {{
+            background: transparent; color: {values["sidebar_text"]};
+            border: 1px solid {values["sidebar_muted"]}; border-radius: 6px; padding: 4px 8px;
+        }}
+        QPushButton#updateDownloadButton {{ font-weight: 700; }}
         QLabel#sidebarCredit {{
             background: transparent; color: {values["sidebar_muted"]}; font-size: 11px;
         }}
@@ -337,7 +349,7 @@ def stylesheet_for(theme: Theme | str) -> str:
         QFrame#scanSourceCard, QFrame#scanProfileCard, QFrame#scanSensitivityCard,
         QFrame#answerKeyUploadCard, QFrame#answerKeyValidationCard, QFrame#gradingProgressPanel,
         QFrame#dashboardTableCard, QFrame#settingsPortablePathCard,
-        QFrame#settingsProfileCard, QFrame#settingsRecognitionCard {{
+        QFrame#settingsProfileCard, QFrame#settingsRecognitionCard, QFrame#settingsUpdateCard {{
             background: {values["surface"]}; border: 1px solid {values["border"]};
             border-radius: 12px;
         }}

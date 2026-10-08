@@ -68,6 +68,9 @@ class SettingsPage(QWidget):
     profile_browse_requested = Signal()
     profile_import_requested = Signal(object)
     data_folder_requested = Signal()
+    update_check_toggled = Signal(bool)
+    update_check_requested = Signal()
+    data_import_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -188,6 +191,50 @@ class SettingsPage(QWidget):
         recognition_layout.addLayout(recognition_form)
         root.addWidget(self.recognition_card)
 
+        self.update_card = QFrame(self)
+        self.update_card.setObjectName("settingsUpdateCard")
+        update_layout = QVBoxLayout(self.update_card)
+        self.update_heading = QLabel("4. 업데이트와 자료 가져오기", self.update_card)
+        self.update_heading.setProperty("role", "card-title")
+        update_layout.addWidget(self.update_heading)
+        self.update_check_box = QCheckBox(
+            "프로그램을 켤 때 새 버전 확인 (하루 한 번, 인터넷 연결 시)", self.update_card
+        )
+        self.update_check_box.setObjectName("updateCheckBox")
+        self.update_check_box.setChecked(True)
+        self.update_now_button = QPushButton("지금 확인", self.update_card)
+        self.update_now_button.setObjectName("updateNowButton")
+        update_row = QHBoxLayout()
+        update_row.addWidget(self.update_check_box, 1)
+        update_row.addWidget(self.update_now_button)
+        update_layout.addLayout(update_row)
+        self.update_status_label = QLabel(
+            "GitHub에 최신 버전 번호만 묻습니다. 시험이나 학생 자료는 보내지 않습니다.",
+            self.update_card,
+        )
+        self.update_status_label.setObjectName("updateStatusLabel")
+        self.update_status_label.setWordWrap(True)
+        update_layout.addWidget(self.update_status_label)
+        self.import_button = QPushButton("이전 버전 자료 가져오기…", self.update_card)
+        self.import_button.setObjectName("dataImportButton")
+        import_row = QHBoxLayout()
+        import_row.addWidget(self.import_button)
+        import_row.addStretch()
+        update_layout.addLayout(import_row)
+        self.import_note = QLabel(
+            "새 버전을 새 폴더에 풀었다면, 예전 프로그램 폴더를 골라 시험·양식·설정을 복사해"
+            " 옵니다. 예전 폴더는 그대로 남으므로 언제든 예전 버전으로 돌아갈 수 있습니다."
+            " 이미 가져온 시험은 건너뜁니다.",
+            self.update_card,
+        )
+        self.import_note.setObjectName("dataImportNote")
+        self.import_note.setWordWrap(True)
+        update_layout.addWidget(self.import_note)
+        root.addWidget(self.update_card)
+        self.update_check_box.toggled.connect(self.update_check_toggled)
+        self.update_now_button.clicked.connect(self.update_check_requested)
+        self.import_button.clicked.connect(self.data_import_requested)
+
         self.status_label = QLabel("저장된 설정을 불러오는 중입니다.", self)
         self.status_label.setObjectName("settingsStatusLabel")
         self.status_label.setAccessibleName("설정 저장 상태")
@@ -289,6 +336,14 @@ class SettingsPage(QWidget):
             self._write_revoked = True
             self.status_label.setText(reason or "실행 폴더에 쓸 수 없어 설정을 저장할 수 없습니다.")
         self._refresh_gating()
+
+    def set_update_state(self, enabled: bool, message: str | None = None) -> None:
+        """Show the stored update preference without echoing a toggle back."""
+        blocked = self.update_check_box.blockSignals(True)
+        self.update_check_box.setChecked(enabled)
+        self.update_check_box.blockSignals(blocked)
+        if message is not None:
+            self.update_status_label.setText(message)
 
     def set_busy(self, busy: bool) -> None:
         if type(busy) is not bool:
@@ -422,6 +477,8 @@ class SettingsPage(QWidget):
         self.profile_import_button.setEnabled(editable)
         self.sensitivity_slider.setEnabled(editable)
         self.multiprocessing_checkbox.setEnabled(editable)
+        self.update_check_box.setEnabled(self._write_enabled and not self._busy)
+        self.import_button.setEnabled(self._write_enabled and not self._busy)
         self.save_button.setEnabled(self._can_save())
 
     def _request_profile_browse(self) -> None:

@@ -88,6 +88,7 @@ from omr_grader.infrastructure.result_layout import (
     SCORE_KIND,
     SOURCE_IMAGE_DIR,
     external_artifact_relpath,
+    result_base_name,
     result_workbook_kind,
 )
 from omr_grader.infrastructure.session_lease import (
@@ -867,6 +868,27 @@ class SessionStore:
             raise ValueError("session display location escapes the managed root") from exc
         return candidate
 
+    def _restored_display_name(self, session_json: Path, identity: IdentityRecord) -> str:
+        """``<yymmdd>_<HHMMSS>_<exam>`` from the restored record; ``_2``, ``_3`` … when taken.
+
+        Falls back to the session id when the record cannot give a valid name.
+        """
+        try:
+            record = SessionRecord.from_dict(_read_json_object(session_json))
+            base = result_base_name(record.exam_name, identity.created_at)
+            self._display_path(base)
+        except (OSError, ValueError, TypeError, KeyError):
+            return identity.session_id
+        # The trash keeps folder names too, so a name there would clash on deletion.
+        taken = {path.name for path in self._root.iterdir()}
+        if self._trash().is_dir():
+            taken |= {path.name for path in self._trash().iterdir()}
+        candidate, number = base, 1
+        while candidate in taken:
+            number += 1
+            candidate = f"{base}_{number}"
+        return candidate
+
     def _display_name(self, session: Path, session_id: str) -> str:
         payload = _read_json_object(session / "LOCATION.json")
         display_name = payload.get("display_name")
@@ -1147,6 +1169,10 @@ class SessionStore:
 
     def open_committed_snapshot(self, request: SnapshotRequest) -> Result[CommittedSnapshotLease]:
         return self._open_committed_snapshot(request, trash=False)
+
+    def open_trash_snapshot(self, request: SnapshotRequest) -> Result[CommittedSnapshotLease]:
+        """Read-only lease on a trashed session, e.g. to carry it into a newer install."""
+        return self._open_committed_snapshot(request, trash=True)
 
     def _open_committed_snapshot(
         self, request: SnapshotRequest, *, trash: bool
@@ -2544,8 +2570,13 @@ class _SessionStoreRestorePublisher:
                 prepared_owned = True
                 prepared_identity = _path_identity(prepared)
                 prepared_parent_identity = _path_identity(prepared.parent)
+                # A restored exam gets the same date-first folder name it had, made unique.
+                display_name = store._restored_display_name(
+                    prepared / extracted.current.generation_relpath / "session.json",
+                    extracted.identity,
+                )
                 location_metadata = store._location_metadata(
-                    extracted.identity.session_id, extracted.identity.session_id, operation_id
+                    extracted.identity.session_id, display_name, operation_id
                 )
                 written = atomic_write_json(
                     prepared / "LOCATION.json", location_metadata
@@ -2579,7 +2610,7 @@ class _SessionStoreRestorePublisher:
                 store._barrier("after_restore_gate_create")
                 if store._identity_exists(extracted.identity.session_id):
                     return _error("SESSION_ID_CONFLICT", "session_id가 이미 존재합니다.")
-                target = store._display_path(extracted.identity.session_id)
+                target = store._display_path(display_name)
                 target_parent_identity = _path_identity(target.parent)
                 if prepared_identity is None or prepared_parent_identity is None:
                     return _error("BACKUP_RESTORE_OWNERSHIP_LOST", "restore staging changed")
