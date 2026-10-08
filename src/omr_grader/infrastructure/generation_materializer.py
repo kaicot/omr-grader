@@ -52,7 +52,7 @@ from omr_grader.infrastructure.result_layout import (
 from omr_grader.recognition.overlay import render_scored_overlay_scaled
 from omr_grader.workbooks.answer_key import answer_key_snapshot_bytes
 from omr_grader.workbooks.response_book import write_effective_response_projection
-from omr_grader.workbooks.score_book import write_final_book, write_score_book
+from omr_grader.workbooks.score_book import scored_image_names, write_final_book, write_score_book
 
 if TYPE_CHECKING:
     from omr_grader.domain.models import SessionManifest
@@ -282,6 +282,13 @@ class GenerationMaterializer:
             )
         _materialize_correction_events(request, correction_state)
         combined = _combined(request, parent, projection, correction_state)
+        review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...] = (
+            projection.automatic_pages
+            if projection is not None
+            else parent_projection.automatic_pages
+            if parent_projection is not None
+            else parent_review_geometry
+        )
         if combined is not None:
             request.token.write_json("semantic_inputs.json", {"combined": combined})
             if correction_state is not None:
@@ -298,13 +305,6 @@ class GenerationMaterializer:
             compact = mutation.operation_kind in (
                 OperationKind.REGRADE,
                 OperationKind.FINALIZE,
-            )
-            review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...] = (
-                projection.automatic_pages
-                if projection is not None
-                else parent_projection.automatic_pages
-                if parent_projection is not None
-                else parent_review_geometry
             )
             if compact and review_pages:
                 request.token.write_json(
@@ -336,10 +336,13 @@ class GenerationMaterializer:
             OperationKind.FINALIZE,
             OperationKind.CORRECT,
         ):
-            self._write_workbook(request, combined)
+            self._write_workbook(request, combined, review_pages)
 
     def _write_workbook(
-        self, request: GenerationMaterializationInput, combined: dict[str, object] | None
+        self,
+        request: GenerationMaterializationInput,
+        combined: dict[str, object] | None,
+        review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...],
     ) -> None:
         if combined is None:
             raise ValueError("required pinned generation inputs are absent")
@@ -361,6 +364,7 @@ class GenerationMaterializer:
             names_by_student_id=names,
         )
         _validate_xlsx(response_output)
+        evidence = {_page_work_item_id(page): page.evidence for page in review_pages}
         key_output = request.token.path(
             answer_key_filename(request.record.exam_name, request.record.created_at)
         )
@@ -380,6 +384,7 @@ class GenerationMaterializer:
                 key=answer_key,
                 scores=scores,
                 names_by_student_id=names,
+                evidence_by_work_item=evidence,
             )
         else:
             output = write_score_book(
@@ -393,6 +398,7 @@ class GenerationMaterializer:
                 key=answer_key,
                 scores=scores,
                 names_by_student_id=names,
+                evidence_by_work_item=evidence,
             )
         _validate_xlsx(output)
         request.token.write_bytes(output.name, output.read_bytes())
@@ -414,14 +420,8 @@ class GenerationMaterializer:
         roster = RosterSnapshot.from_dict(_object(combined, "roster"))
         names = {row.student_id: row.name for row in roster.rows if row.student_id is not None}
         scores = _score_rows(combined.get("scores"))
-        pages = {
-            (
-                page.page_ref.work_item_id
-                if isinstance(page, AutomaticPage)
-                else page.work_item_id
-            ): page
-            for page in review_pages
-        }
+        pages = {_page_work_item_id(page): page for page in review_pages}
+        image_names = scored_image_names(responses, names)
         snapshot = {
             "session_id": request.record.session_id,
             "revision": request.record.revision,
@@ -475,7 +475,7 @@ class GenerationMaterializer:
                     if raster is None:
                         raise ValueError("committed detail image cannot be decoded")
                     review_raster: NDArray[np.uint8] = np.asarray(raster, dtype=np.uint8)
-                    image_path = f"{SCORE_IMAGE_DIR}/{response.work_item_id}.jpg"
+                    image_path = f"{SCORE_IMAGE_DIR}/{image_names[response.work_item_id]}"
                     request.token.write_bytes(
                         image_path,
                         _encode_review_image(
@@ -526,6 +526,10 @@ class GenerationMaterializer:
             "detail_index.json",
             {"schema_version": 1, "snapshot": snapshot, "work_items": index},
         )
+
+
+def _page_work_item_id(page: AutomaticPage | _ReviewGeometryPage) -> str:
+    return page.page_ref.work_item_id if isinstance(page, AutomaticPage) else page.work_item_id
 
 
 def _validate_xlsx(path: Path) -> None:
@@ -650,7 +654,8 @@ def _read_parent_correction_state(
         )
         current = project_correction_state(state, session_id=request.parent_manifest.session_id)
         canonical = tuple(
-            EffectiveResponse.from_dict(_mapping(value)) for value in _array(parent, "responses")
+            EffectiveResponse.from_dict(_mapping(value))
+            for value in _array(parent, "responses")
         )
         if isinstance(current, Err) or current.value != canonical:
             raise ValueError("legacy correction state does not match canonical responses")
@@ -986,8 +991,7 @@ def _combined(
         if parent is None:
             return None
         effective_responses = tuple(
-            EffectiveResponse.from_dict(_mapping(value))
-            for value in _array(parent, "responses")
+            EffectiveResponse.from_dict(_mapping(value)) for value in _array(parent, "responses")
         )
     else:
         from omr_grader.domain.corrections import project_effective_responses

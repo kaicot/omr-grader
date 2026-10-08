@@ -5,15 +5,18 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Iterable, Mapping, Sequence
+from io import BytesIO
 from itertools import groupby
 from pathlib import Path
 from typing import Any, cast
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.packaging.custom import StringProperty
 from openpyxl.styles import Font, PatternFill
 from openpyxl.styles.styleable import StyleableObject
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from omr_grader.domain.enums import AnswerStatus
@@ -28,6 +31,7 @@ _REVIEW_FONT = Font(name="Calibri", size=11, color="FF9C5700")
 _HEADER_FONT = Font(name="Calibri", size=11, bold=True)
 _NOTE_SEPARATOR = " / "
 _MIN_RANGE_LENGTH = 3
+_FIRST_ANSWER_COLUMN = 5
 
 
 def _text(cell: Cell, value: str) -> None:
@@ -37,6 +41,51 @@ def _text(cell: Cell, value: str) -> None:
 
 def _cell(sheet: Worksheet, row: int, column: int) -> Cell:
     return cast(Cell, sheet.cell(row, column))
+
+
+def response_text_ranges(last_row: int) -> tuple[str, ...]:
+    """Cell ranges of a 응답원본 sheet that hold text on purpose: 학번 and every answer."""
+    if last_row < 2:
+        return ()
+    last_answer = get_column_letter(_FIRST_ANSWER_COLUMN + 99)
+    return (f"C2:C{last_row}", f"E2:{last_answer}{last_row}")
+
+
+def save_workbook(
+    workbook: Workbook, destination: str | Path, text_ranges: Mapping[str, Sequence[str]]
+) -> None:
+    """Save ``workbook``, telling Excel the listed ranges are text on purpose.
+
+    openpyxl cannot write ``ignoredErrors``, so the saved package is patched: each sheet in
+    ``text_ranges`` (title to ranges) gets its ``numberStoredAsText`` warning switched off,
+    which keeps IDs and answers such as "12" free of green corner marks.
+    """
+    ranges = {
+        f"xl/worksheets/sheet{workbook.sheetnames.index(title) + 1}.xml": tuple(cells)
+        for title, cells in text_ranges.items()
+        if cells
+    }
+    if not ranges:
+        workbook.save(destination)
+        return
+    buffer = BytesIO()
+    workbook.save(buffer)
+    with ZipFile(buffer) as source, ZipFile(destination, "w", ZIP_DEFLATED) as target:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            if item.filename in ranges:
+                payload = _with_ignored_errors(payload, ranges[item.filename])
+            target.writestr(item, payload)
+
+
+def _with_ignored_errors(sheet_xml: bytes, cells: Sequence[str]) -> bytes:
+    closing = b"</worksheet>"
+    if not sheet_xml.endswith(closing) or any(
+        tag in sheet_xml for tag in (b"<drawing", b"<legacyDrawing", b"<tableParts", b"<extLst")
+    ):
+        raise ValueError("worksheet XML has an unexpected layout")
+    element = f'<ignoredErrors><ignoredError sqref="{" ".join(cells)}" numberStoredAsText="1"/>'
+    return sheet_xml[: -len(closing)] + element.encode() + b"</ignoredErrors>" + closing
 
 
 def mark_review(cell: StyleableObject) -> None:
@@ -130,7 +179,11 @@ def write_response_projection(
     ) as temporary:
         temporary_path = Path(temporary.name)
     try:
-        workbook.save(temporary_path)
+        save_workbook(
+            workbook,
+            temporary_path,
+            {RESPONSE_SHEET_NAME: response_text_ranges(len(rows) + 1)},
+        )
         os.replace(temporary_path, destination)
     finally:
         if temporary_path.exists():
@@ -194,14 +247,16 @@ def write_effective_response_projection(
     custom_doc_props.append(StringProperty(name="revision", value=str(revision)))
     custom_doc_props.append(StringProperty(name="manifest_sha256", value=manifest_sha256))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(destination)
+    save_workbook(workbook, destination, {RESPONSE_SHEET_NAME: response_text_ranges(len(rows) + 1)})
 
 
 __all__ = [
     "join_notes",
     "mark_review",
     "recognition_note",
+    "response_text_ranges",
     "review_note",
+    "save_workbook",
     "style_header_row",
     "write_effective_response_sheet",
     "write_effective_response_projection",

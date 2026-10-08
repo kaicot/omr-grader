@@ -6,6 +6,7 @@ import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
 from time import monotonic
@@ -363,6 +364,10 @@ def run(
         CorrectionDraft,
         EffectiveResponse,
     )
+    from omr_grader.infrastructure.combined_report import (
+        export_combined_report,
+        write_subject_config_sample,
+    )
     from omr_grader.infrastructure.config_store import config_revision
     from omr_grader.infrastructure.dashboard_repository import (
         DashboardRepository,
@@ -454,6 +459,7 @@ def run(
     dashboard_restore = None
     dashboard_trash = None
     dashboard_trash_load = None
+    combined_export = None
     detail_load = None
     detail_preview = None
     detail_save = None
@@ -483,6 +489,20 @@ def run(
     if runtime_paths is not None:
         store = SessionStore(runtime_paths)
         coordinator = SessionCommitCoordinator(store)
+        report_coordinator = coordinator
+
+        def export_combined(
+            session_ids: tuple[str, ...], subject_path: str | None, destination: str
+        ) -> Result[object]:
+            generated_at = datetime.now(UTC).isoformat(timespec="microseconds")
+            exported = export_combined_report(
+                report_coordinator, session_ids, subject_path, destination, generated_at
+            )
+            if isinstance(exported, Err):
+                return exported
+            return Ok(exported.value, exported.warnings)
+
+        combined_export = export_combined
         repository = DashboardRepository(
             runtime_paths.data_dir / "dashboard_index.json",
             store.discover_active_committed_leases,
@@ -1189,6 +1209,8 @@ def run(
         scan=scan_service,
         scan_context=scan_context,
         data_dir=None if runtime_paths is None else runtime_paths.data_dir,
+        combined_export=combined_export,
+        subject_sample=write_subject_config_sample,
         response_import=response_import_service,
         grading=grading_service,
         grading_context=grading_context,

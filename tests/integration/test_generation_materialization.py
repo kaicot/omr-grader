@@ -23,6 +23,7 @@ from omr_grader.domain.enums import (
     ExamTerm,
     KeyQuestionStatus,
     OperationKind,
+    RosterRowStatus,
     RosterSnapshotKind,
     SourceKind,
     StudentIdStatus,
@@ -33,6 +34,7 @@ from omr_grader.domain.models import (
     AnswerKeySnapshot,
     AnswerValue,
     EffectiveResponse,
+    RosterEntry,
     RosterSnapshot,
 )
 from omr_grader.infrastructure.generation_materializer import (
@@ -270,7 +272,7 @@ def test_grading_review_images_are_jpeg_quality_75_and_bounded_to_1600px_and_500
             ),
         )
     ]
-    review = root / "02채점결과이미지" / "work-item-1.jpg"
+    review = root / "02채점결과이미지" / "001_학번확인필요.jpg"
     payload = review.read_bytes()
     assert payload.startswith(b"\xff\xd8") and payload.endswith(b"\xff\xd9")
     decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -282,6 +284,94 @@ def test_grading_review_images_are_jpeg_quality_75_and_bounded_to_1600px_and_500
     assert original is not None
     assert original.shape == (3000, 2500, 3)
     assert not (root / "02채점결과이미지" / "work-item-1.png").exists()
+
+
+def test_scored_images_are_named_by_book_number_id_and_name_and_the_detail_index_follows(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "generation"
+    unanswered = AnswerValue((), AnswerStatus.UNASKED)
+    key = AnswerKeySnapshot(
+        1,
+        AnswerKeySnapshotKind.WORKBOOK,
+        "answer-key.xlsx",
+        "a" * 64,
+        "정답표",
+        "v1",
+        tuple(
+            AnswerKeyEntry(question, unanswered, "0", KeyQuestionStatus.UNASKED)
+            for question in range(1, 101)
+        ),
+        (),
+    )
+    responses = (
+        EffectiveResponse(
+            "wi-b", SourceKind.IMAGE, "b.png", "20240002", StudentIdStatus.NORMAL, (unanswered,) * 100
+        ),
+        EffectiveResponse(
+            "wi-a", SourceKind.IMAGE, "a.png", "20240001", StudentIdStatus.NORMAL, (unanswered,) * 100
+        ),
+        EffectiveResponse(
+            "wi-x", SourceKind.IMAGE, "x.png", None, StudentIdStatus.UNREADABLE, (unanswered,) * 100
+        ),
+    )
+    roster = RosterSnapshot(
+        1,
+        RosterSnapshotKind.WORKBOOK,
+        "roster.xlsx",
+        "b" * 64,
+        "명단",
+        "v1",
+        (
+            RosterEntry("r1", 2, 0, "20240001", "20240001", "나래", RosterRowStatus.NORMAL, ()),
+            RosterEntry("r2", 3, 1, "20240002", "20240002", "가윤", RosterRowStatus.NORMAL, ()),
+        ),
+        (),
+    )
+    combined = {
+        "responses": [response.to_dict() for response in responses],
+        "roster": roster.to_dict(),
+        "scores": [],
+        "answer_key": key.to_dict(),
+    }
+    pages = []
+    for response in responses:
+        image = root / "images" / f"{response.work_item_id}.png"
+        image.parent.mkdir(parents=True, exist_ok=True)
+        assert cv2.imwrite(str(image), np.zeros((40, 30, 3), dtype=np.uint8))
+        pages.append(
+            SimpleNamespace(
+                work_item_id=response.work_item_id,
+                page_ref=SimpleNamespace(work_item_id=response.work_item_id),
+                evidence=(),
+                answers=(),
+                to_dict=lambda: {},
+            )
+        )
+    request = SimpleNamespace(
+        token=StagingToken(root),
+        record=SimpleNamespace(session_id="session-1", revision=2),
+        generation_id="generation-2",
+        recognition_artifacts=None,
+    )
+
+    GenerationMaterializer()._write_details(
+        request,  # type: ignore[arg-type]
+        combined,
+        tuple(pages),  # type: ignore[arg-type]
+        persist_recognition=False,
+    )
+
+    index = json.loads((root / "detail_index.json").read_text(encoding="utf-8"))
+    paths = {item["work_item_id"]: item["image_path"] for item in index["work_items"]}
+    assert paths == {
+        "wi-b": "02채점결과이미지/001_20240002_가윤.jpg",
+        "wi-a": "02채점결과이미지/002_20240001_나래.jpg",
+        "wi-x": "02채점결과이미지/003_학번확인필요.jpg",
+    }
+    assert sorted(path.name for path in (root / "02채점결과이미지").iterdir()) == sorted(
+        value.rsplit("/", 1)[1] for value in paths.values()
+    )
 
 
 def test_regrade_after_compaction_uses_finalized_responses_and_new_answer_key(
@@ -361,6 +451,13 @@ def test_regrade_after_compaction_uses_finalized_responses_and_new_answer_key(
     pointer = json.loads((session / "CURRENT.json").read_text(encoding="utf-8"))
     compacted = session / pointer["generation_relpath"]
     assert not (compacted / "projection_request.json").exists()
+    score_workbooks = tuple(compacted.glob("*_채점결과_*.xlsx"))
+    assert len(score_workbooks) == 1
+    score_book = load_workbook(score_workbooks[0])
+    assert "문항 분석" in score_book.sheetnames and "판독 근거" in score_book.sheetnames
+    # An imported student has no recognition evidence.
+    evidence_sheet = score_book["판독 근거"]
+    assert [cell.value for cell in evidence_sheet[2]][:4] == [1, "00123456", "홍길동", None]
     response_workbooks = tuple(compacted.glob("*_응답결과_*.xlsx"))
     assert len(response_workbooks) == 1
     response_workbook = load_workbook(response_workbooks[0], read_only=True)

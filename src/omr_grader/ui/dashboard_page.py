@@ -55,6 +55,7 @@ _DASHBOARD_ACTIONS = frozenset(
         "open_book",
         "open_folder",
         "refresh",
+        "combine",
     }
 )
 _GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash", "refresh"})
@@ -182,10 +183,13 @@ class DashboardPage(QWidget):
         self.restore_button = self._button("백업 복구하기", "dashboardRestoreButton", "restore")
         self.trash_button = self._button("휴지통 보기", "dashboardTrashButton", "trash")
         self.refresh_button = self._button("새로고침", "dashboardRefreshButton", "refresh")
+        self.combine_button = self._button("합산 성적표", "dashboardCombineButton", "combine")
+        self.combine_button.setToolTip("체크한 시험(파트) 둘 이상을 학번 기준으로 합칩니다.")
         for button in (
             self.backup_button,
             self.restore_button,
             self.trash_button,
+            self.combine_button,
         ):
             actions.addWidget(button)
         actions.addStretch()
@@ -411,6 +415,8 @@ class DashboardPage(QWidget):
             return
         if action == "backup" and len(selection.session_ids) != 1:
             return
+        if action == "combine" and len(selection.session_ids) < 2:
+            return
         if action == "backup":
             self._open_file_dialog(action, selection)
             return
@@ -609,6 +615,10 @@ class DashboardPage(QWidget):
         self.open_book_button.setEnabled(available and one)
         self.open_folder_button.setEnabled(available and one)
         self.refresh_button.setEnabled(available)
+        checked = self.model.selection()
+        self.combine_button.setEnabled(
+            available and checked is not None and len(checked.session_ids) >= 2
+        )
         self.delete_button.setEnabled(writable and one)
         self.backup_button.setEnabled(writable and selected_count == 1)
         self.restore_button.setEnabled(writable)

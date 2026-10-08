@@ -70,6 +70,7 @@ from omr_grader.resources.messages import MESSAGE_CATALOG, get_message
 from omr_grader.ui.dashboard_model import DashboardSelection
 from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardPage, DashboardRequest
 from omr_grader.ui.detail_page import DetailPage
+from omr_grader.ui.combined_report_dialog import CombinedReportDialog
 from omr_grader.ui.form_confirm_dialog import FormConfirmDialog
 from omr_grader.ui.grading_page import GradingPage
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
@@ -176,6 +177,8 @@ class ServicePorts:
     settings_load: Callable[[], Result[SettingsState]] | None = None
     settings_save: Callable[[SettingsSaveCommand], Result[SettingsSaveResult]] | None = None
     data_dir: Path | None = None
+    combined_export: Callable[[tuple[str, ...], str | None, str], Result[object]] | None = None
+    subject_sample: Callable[[str], Result[None]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +336,7 @@ class AppController(QObject):
         self._desktop_busy: Callable[[bool], None] | None = None
         self._pending_navigation_page: int | None = None
         self._form_confirm_factory: FormConfirmFactory = FormConfirmDialog
+        self._combined_dialog_factory = CombinedReportDialog
         self._form_detection_paths: tuple[str, ...] | None = None
         self._form_detection_stale = False
         self._form_detection_choices = 0
@@ -433,6 +437,9 @@ class AppController(QObject):
     def _handle_dashboard_request(
         self, request: DashboardRequest | DashboardGlobalRequest
     ) -> None:
+        if request.action == "combine" and isinstance(request, DashboardRequest):
+            self._combine_from_dashboard(request.selection)
+            return
         if request.action == "refresh":
             self._reload_dashboard()
             return
@@ -505,6 +512,52 @@ class AppController(QObject):
             self.dashboard_page.set_busy,
             kind="dashboard-action",
         )
+
+    def _combine_from_dashboard(self, selection: DashboardSelection) -> None:
+        """Ask for part order, subjects and destination, then build the combined report."""
+        entries = tuple(
+            entry
+            for session_id in selection.session_ids
+            if (entry := self.dashboard_page.model.entry_for(session_id)) is not None
+        )
+        export = self.services.combined_export
+        if export is None or len(entries) < 2:
+            self.main_window.show_error_dialog("합산 성적표", _error_text(self._unavailable()))
+            return
+        dialog = self._combined_dialog_factory(entries, self.main_window)
+        dialog.sample_requested.connect(self._save_subject_sample)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        choice = dialog.choice
+        dialog.deleteLater()
+        if not accepted or choice is None:
+            return
+        self._start_desktop_action(
+            self.dashboard_page,
+            partial(export, choice.session_ids, choice.subject_config_path, choice.destination),
+            lambda result: self._finish_combined_report(result, choice.destination),
+            self.dashboard_page.set_busy,
+            kind="dashboard-action",
+        )
+
+    def _finish_combined_report(self, result: object, destination: str) -> None:
+        lines = [f"합산 성적표를 저장했습니다.\n{destination}"]
+        students = getattr(result, "students", None)
+        if isinstance(students, int):
+            lines.append(
+                f"학생 {students}명 · 확인 필요 {getattr(result, 'needs_review', 0)}명 · "
+                f"학번 확인 필요 {getattr(result, 'unreadable', 0)}건"
+            )
+        self.main_window.show_result_dialog("합산 성적표", "\n".join(lines), destination)
+
+    def _save_subject_sample(self, path: str) -> None:
+        write = self.services.subject_sample
+        result = Err((self._unavailable(),)) if write is None else write(path)
+        if isinstance(result, Err):
+            self.main_window.show_error_dialog("샘플 저장", _error_text(result.errors[0]))
+        else:
+            self.main_window.show_result_dialog(
+                "샘플 저장", f"과목 구성 샘플을 저장했습니다.\n{path}", path
+            )
 
     def _open_data_folder(self) -> None:
         folder = self.services.data_dir
@@ -1074,7 +1127,8 @@ class AppController(QObject):
             self.main_window.set_close_requires_controller(True)
         if self._dashboard_reload_pending and not self._closing:
             self._dashboard_reload_pending = False
-            QTimer.singleShot(0, self._reload_dashboard)
+            # Tied to the page so a closing window cancels it.
+            QTimer.singleShot(0, self.dashboard_page, self._reload_dashboard)
         if self._form_detection_stale and not self._closing:
             self._form_detection_stale = False
             self._form_detection_paths = None

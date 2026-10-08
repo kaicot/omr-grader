@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from weakref import ref
 
-from PySide6.QtCore import QEvent, QMargins, QObject, QPoint, QRect, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeyEvent, QResizeEvent, QScreen, QShowEvent
+from PySide6.QtCore import QEvent, QMargins, QObject, QPoint, QRect, QSize, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import (
+    QCloseEvent,
+    QDesktopServices,
+    QGuiApplication,
+    QKeyEvent,
+    QResizeEvent,
+    QScreen,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -318,7 +326,8 @@ class MainWindow(QMainWindow):
 
     def _queue_focus_visibility(self, widget: QWidget) -> None:
         widget_reference = ref(widget)
-        QTimer.singleShot(0, lambda: self._ensure_current_focus_is_visible(widget_reference))
+        # Bound to the window, so a window closed meanwhile cancels the check.
+        QTimer.singleShot(0, self, lambda: self._ensure_current_focus_is_visible(widget_reference))
 
     def _ensure_current_focus_is_visible(self, widget_reference: ref[QWidget]) -> None:
         widget = widget_reference()
@@ -473,7 +482,11 @@ class MainWindow(QMainWindow):
                수행할 수 있습니다. 채점하지 않은 시험은 <b>채점하기</b>로 정답/채점
                화면에 연결하고, <b>결과 엑셀 열기</b>와 <b>폴더 열기</b>로 결과를 바로
                엽니다. 채점이 끝난 시험 폴더에는 채점결과 엑셀 하나가 있고, 그 안에
-               채점결과·결과OX·응답원본·정답표·색 설명 탭이 있습니다. 답을 고쳐야
+               채점결과·결과OX·문항 분석·응답원본·판독 근거·정답표·색 설명 탭이 있습니다.
+               문항 분석은 정답률이 낮거나 오답이 몰린 문항을, 판독 근거는 판독이 애매했던
+               칸을 노랗게 표시합니다. 여러 파트로 나눈 시험은 시험을 둘 이상 체크한 뒤
+               <b>합산 성적표</b>로 학번 기준으로 합치고, 과목 구성 엑셀을 불러오면 과목별
+               점수와 합격 여부도 냅니다. 답을 고쳐야
                하면 이 엑셀(채점 전이면 응답결과 엑셀)을 시험 폴더 밖으로 복사해
                '응답원본' 탭을 고칩니다. 노란 칸(확인 필요)을 답안지와 맞춰 고치고 비고의
                '확인 필요: …번'을 지운 뒤, OMR 스캔 화면의 <b>응답 엑셀로 시작</b>으로
@@ -634,6 +647,16 @@ class MainWindow(QMainWindow):
         box = QMessageBox(QMessageBox.Icon.Warning, title, message, parent=self)
         box.setObjectName("actionErrorDialog")
         box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.open()
+
+    def show_result_dialog(self, title: str, message: str, path: str) -> None:
+        """Report a saved file with a button that opens it."""
+        box = QMessageBox(QMessageBox.Icon.Information, title, message, parent=self)
+        box.setObjectName("actionResultDialog")
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        open_button = box.addButton("파일 열기", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
+        open_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
         box.open()
 
     def show_diagnostic(self, message: str) -> None:

@@ -10,6 +10,7 @@ from omr_grader.infrastructure.result_layout import (
     result_base_name,
     result_workbook_filename,
     result_workbook_kind,
+    scored_image_filename,
 )
 
 
@@ -21,6 +22,15 @@ def test_result_layout_uses_safe_exam_name_and_korean_timestamp() -> None:
     assert SCORE_IMAGE_DIR == "02채점결과이미지"
     assert COORDINATE_DIR == "좌표데이터"
     assert REVIEW_DIR == "수동확인필요"
+
+
+def test_scored_image_names_use_serial_id_and_name_with_safe_parts() -> None:
+    assert scored_image_filename(7, "20240001", "홍 길동") == "007_20240001_홍_길동.jpg"
+    assert scored_image_filename(12, "20240001", "") == "012_20240001.jpg"
+    assert scored_image_filename(3, "", "홍길동") == "003_학번확인필요_홍길동.jpg"
+    assert scored_image_filename(4, "", "") == "004_학번확인필요.jpg"
+    assert scored_image_filename(5, "2024/01", r'..\a:b*"') == "005_2024_01_a_b.jpg"
+    assert scored_image_filename(1234, "1", "x" * 90) == "1234_1_" + "x" * 40 + ".jpg"
 
 
 def test_result_workbook_names_put_the_stamp_and_kind_before_the_exam_name() -> None:

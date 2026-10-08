@@ -149,7 +149,15 @@ def test_score_book_rejects_collisions_and_leaves_no_partial_file(tmp_path, monk
     assert not tuple(failed_destination.glob(".*.tmp"))
 
 
-SCORE_SHEETS = ["채점결과", "결과OX", RESPONSE_SHEET_NAME, "정답표", "색 설명"]
+SCORE_SHEETS = [
+    "채점결과",
+    "결과OX",
+    "문항 분석",
+    RESPONSE_SHEET_NAME,
+    "판독 근거",
+    "정답표",
+    "색 설명",
+]
 # Fill and font colors (ARGB) of an answer scored as wrong; YELLOW is shared with the response book.
 PINK = ("FFFFC7CE", "FF9C0006")
 _CORRECT = {
@@ -299,32 +307,25 @@ def test_outcome_sheet_says_how_each_answer_was_scored(tmp_path):
 def test_score_sheet_shows_the_chosen_answers(tmp_path):
     sheet = _scenario(write_score_book, tmp_path)["채점결과"]
 
-    assert [sheet.cell(2, column).value for column in range(6, 12)] == [
-        "1",
-        "2",
-        "1",
-        "3",
-        "1,2",
-        "1",
-    ]
+    assert [sheet.cell(2, column).value for column in range(6, 12)] == [1, 2, 1, 3, "1,2", 1]
     # Wrong choice, blank (Q3 accepts anything), blank on an asked question, several marks.
     assert [sheet.cell(3, column).value for column in range(6, 13)] == [
-        "1",
-        "3",
+        1,
+        3,
         None,
         None,
         "1,2,3",
-        "1",
+        1,
         "1,2",
     ]
     # An unconfirmed Q50 is still shown, although the key does not ask it.
-    assert sheet.cell(3, 55).value == "1"
+    assert sheet.cell(3, 55).value == 1
     assert [sheet.cell(4, column).value for column in (8, 9, 10, 14, 22)] == [
-        "2",
+        2,
         None,
         "1,2",
-        "2",
-        "4",
+        2,
+        4,
     ]
 
 
@@ -469,11 +470,22 @@ def test_score_and_final_books_explain_the_colors_on_a_legend_sheet(tmp_path, wr
     assert book.sheetnames[-1] == "색 설명"
     legend = book["색 설명"]
     rows = [[cell.value for cell in row] for row in legend.iter_rows()]
-    assert [row[0] for row in rows] == ["분홍", "노랑", "색 없음"]
+    assert [row[0] for row in rows] == [
+        "분홍",
+        "노랑",
+        "색 없음",
+        "노랑 (문항 분석)",
+        "노랑 (판독 근거)",
+        "전원",
+    ]
     assert all(term in rows[0][1] for term in ("오답", "무응답", "중복 표기"))
     assert "확인 필요" in rows[1][1] and "채점하지 않" in rows[1][1]
-    assert (_painted(legend, 1), _painted(legend, 2), _painted(legend, 3)) == (
+    assert [_painted(legend, row) for row in range(1, 7)] == [
         {1: PINK},
         {1: YELLOW},
         {},
-    )
+        {1: YELLOW},
+        {1: YELLOW},
+        {},
+    ]
+    assert "정답표의 '전원' = 모든 학생 정답 처리" in rows[5][1]

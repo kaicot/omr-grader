@@ -26,11 +26,28 @@ _RESULT_WORKBOOK = re.compile(
 )
 
 
+def _clean_part(value: str) -> str:
+    return _UNDERSCORES.sub("_", _UNSAFE.sub("_", value)).strip("._ ")
+
+
 def safe_exam_name(value: str) -> str:
     if not isinstance(value, str):
         raise TypeError("exam name must be a string")
-    cleaned = _UNDERSCORES.sub("_", _UNSAFE.sub("_", value)).strip("._ ")
-    return cleaned[:80] or "시험"
+    return _clean_part(value)[:80] or "시험"
+
+
+def scored_image_filename(serial: int, student_id: str, name: str) -> str:
+    """``<순번>_<학번>_<이름>.jpg`` for a scored page image.
+
+    The serial is the student's row number in the result workbook.  A missing student ID reads
+    ``학번확인필요`` and a missing name is left out.
+    """
+    parts = (
+        f"{serial:03d}",
+        _clean_part(student_id)[:20] or "학번확인필요",
+        _clean_part(name)[:40].strip("._ "),
+    )
+    return "_".join(part for part in parts if part) + ".jpg"
 
 
 def result_timestamp(value: str) -> str:
@@ -105,4 +122,5 @@ __all__ = [
     "result_workbook_filename",
     "result_workbook_kind",
     "safe_exam_name",
+    "scored_image_filename",
 ]
