@@ -339,3 +339,39 @@ def test_startup_drops_import_work_left_by_a_closed_program(tmp_path):
 
     assert not old.exists()
     assert fresh.is_dir()
+
+
+def test_regrading_with_a_page_image_open_loses_nothing_and_repairs_later(exam):
+    folder = exam.folder
+    before = set(_view_files(folder))
+    image = next((folder / SCORE_IMAGE_DIR).rglob("*.jpg"))
+    with image.open("rb"):
+        graded = exam.regrade()
+        assert isinstance(graded, Ok)
+        assert [warning.code for warning in graded.warnings] == ["POSTCOMMIT_RECOVERY_REQUIRED"]
+        # The new generation still holds every heavy file while the folder is incomplete.
+        generation = _current_generation(folder)
+        assert any((generation / name).is_dir() for name in ("images", "sources"))
+
+    listing = _active(exam.store)
+
+    assert [entry.revision for entry in listing.entries] == [exam.revision]
+    assert not [w for w in listing.warnings if w.code != "DASHBOARD_INDEX_STALE"]
+    _assert_externalized_view(exam)
+    assert set(_view_files(folder)) == before
+
+
+def test_a_file_lost_after_an_interrupted_externalize_is_shown_again(exam):
+    folder = exam.folder
+    generation = _current_generation(folder)
+    # Externalizing stopped after images/ and sources/: the score images are still inside.
+    shutil.copytree(folder / SCORE_IMAGE_DIR, generation / SCORE_IMAGE_DIR)
+    lost = next((folder / SCORE_IMAGE_DIR).rglob("*.jpg"))
+    lost.unlink()
+
+    listing = _active(exam.store)
+
+    assert [entry.session_id for entry in listing.entries] == [exam.session_id]
+    assert not [w for w in listing.warnings if w.code != "DASHBOARD_INDEX_STALE"]
+    assert lost.is_file()
+    assert not (generation / SCORE_IMAGE_DIR).exists()

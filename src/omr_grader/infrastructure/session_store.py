@@ -1610,17 +1610,31 @@ class SessionStore:
                 _refresh_result_view(session, generation)
             else:
                 _publish_result_books(session, generation, keep_user_edits=True)
+                # Externalizing stopped part-way; the folder may since have lost a file that
+                # the generation still holds, so show that copy again before finishing.
+                for path in internal:
+                    external = external_artifact_relpath(path)
+                    target = session.joinpath(*(external or path).split("/"))
+                    if not target.exists():
+                        retry_mkdir(target.parent, parents=True, exist_ok=True)
+                        retry_io(partial(os.link, generation.joinpath(*path.split("/")), target))
             if internal:
                 _externalize_generation_artifacts(session, generation)
             return None
         except OSError as exc:
-            return _warning(
-                "SESSION_VIEW_REPAIR_PENDING",
-                f"‘{session.name}’ 시험의 결과 Excel이나 폴더 안의 파일이 다른 프로그램에서 "
-                "열려 있어 시험 폴더를 최신 결과로 바꾸지 못했습니다. 닫은 뒤 새로고침을 "
-                "누르세요.",
-                detail=str(exc),
-            )
+            if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32, 33}:
+                reason = (
+                    f"‘{session.name}’ 시험의 결과 Excel이나 폴더 안의 파일이 다른 프로그램에서 "
+                    "열려 있어 시험 폴더를 최신 결과로 바꾸지 못했습니다. 닫은 뒤 새로고침을 "
+                    "누르세요."
+                )
+            else:
+                reason = (
+                    f"‘{session.name}’ 시험 폴더 안의 파일이 바뀌어 폴더를 정리하지 못했습니다. "
+                    "시험 폴더 안의 파일을 옮기거나 고쳤다면 되돌리세요. 시험 자료는 그대로 "
+                    "있습니다."
+                )
+            return _warning("SESSION_VIEW_REPAIR_PENDING", reason, detail=str(exc))
         except (ValueError, TypeError, json.JSONDecodeError):
             # Opening the snapshot reports a damaged exam with its folder name.
             return None
