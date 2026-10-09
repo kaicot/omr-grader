@@ -916,7 +916,7 @@ def _skipped_warning(session: Path, failure: Err) -> ErrorInfo:
     elif error.code in _BUSY_CODES:
         reason = (
             f"‘{session.name}’ 시험은 다른 작업이 쓰고 있어 이번 목록에서 빠졌습니다. "
-            "잠시 뒤 새로 고치세요."
+            "잠시 뒤 새로고침을 누르세요."
         )
     else:
         reason = (
@@ -1617,8 +1617,8 @@ class SessionStore:
             return _warning(
                 "SESSION_VIEW_REPAIR_PENDING",
                 f"‘{session.name}’ 시험의 결과 Excel이나 폴더 안의 파일이 다른 프로그램에서 "
-                "열려 있어 시험 폴더를 최신 결과로 바꾸지 못했습니다. 닫은 뒤 목록을 새로 "
-                "고치세요.",
+                "열려 있어 시험 폴더를 최신 결과로 바꾸지 못했습니다. 닫은 뒤 새로고침을 "
+                "누르세요.",
                 detail=str(exc),
             )
         except (ValueError, TypeError, json.JSONDecodeError):
@@ -2293,7 +2293,7 @@ class SessionStore:
                             "POSTCOMMIT_RECOVERY_REQUIRED",
                             "저장은 끝났지만 결과 Excel이나 시험 폴더 안의 파일이 다른 "
                             "프로그램에서 열려 있어 폴더의 결과 파일을 아직 바꾸지 못했습니다. "
-                            "Excel을 닫고 시험 관리 목록을 새로 고치면 바뀝니다.",
+                            "Excel을 닫고 시험 관리에서 새로고침을 누르면 바뀝니다.",
                             detail=str(exc),
                         ),
                     ),
