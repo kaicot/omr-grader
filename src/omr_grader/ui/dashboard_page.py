@@ -213,7 +213,7 @@ class DashboardPage(QWidget):
         empty_layout = QHBoxLayout(self.empty_state)
         empty_layout.setContentsMargins(0, 0, 0, 0)
         empty_text = QLabel(
-            "저장된 시험이 없습니다. 예전 버전을 쓰던 폴더가 있으면 시험을 가져올 수 있습니다."
+            "예전 버전을 쓰던 프로그램 폴더가 있으면 그 시험을 가져올 수 있습니다."
         )
         empty_text.setObjectName("dashboardEmptyText")
         empty_text.setWordWrap(True)
