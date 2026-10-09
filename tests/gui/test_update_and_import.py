@@ -177,7 +177,7 @@ def test_an_empty_dashboard_offers_the_import_and_reports_what_came_over(qtbot, 
         timeout=6000,
     )
     text = window.settings_page.update_status_label.text()
-    assert "가져오지 못한 시험: 261001_090000_퀴즈" in text
+    assert "확인이 필요한 시험: 261001_090000_퀴즈" in text
     assert "예전 휴지통의 시험 1개는 휴지통으로" in text
     assert "예전 폴더는 그대로" in text
     # The exam list is read again after the import.

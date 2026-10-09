@@ -828,13 +828,15 @@ class AppController(QObject):
         if result.already_present:
             lines.append(f"이미 있는 시험 {result.already_present}개는 건너뛰었습니다.")
         if result.failed:
-            lines.append(f"가져오지 못한 시험: {', '.join(result.failed)}")
+            lines.append(f"확인이 필요한 시험: {', '.join(result.failed)}")
         if result.trash:
             lines.append(f"예전 휴지통의 시험 {result.trash}개는 휴지통으로 가져왔습니다.")
         if result.profiles:
             lines.append(f"답안지 양식 {result.profiles}개를 가져왔습니다.")
         if result.settings is not None:
             lines.append("환경 설정도 가져왔습니다.")
+        elif result.settings_failed:
+            lines.append("환경 설정은 저장하지 못해 가져오지 않았습니다.")
         lines.append("예전 폴더는 그대로 남아 있습니다.")
         message = "\n".join(lines)
         self.settings_page.set_update_state(self._update_prefs().enabled, message)
