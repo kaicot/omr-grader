@@ -468,6 +468,41 @@ def test_answer_key_accepts_exact_opc_internal_relationship(tmp_path):
     assert isinstance(result, Ok)
 
 
+@pytest.mark.parametrize(
+    ("address", "field"),
+    [("D2", "row[2]"), ("E3", "row[3]"), ("Z4", "row[4]"), ("D1", "header")],
+)
+def test_a_formula_in_a_note_column_is_refused_like_one_in_the_key(
+    tmp_path, monkeypatch, address, field
+):
+    path = tmp_path / "key.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "정답표"
+    sheet.append((*answer_key.ANSWER_KEY_HEADERS, "비고"))
+    sheet.append((1, "3", 1, None))
+    sheet.append((2, "4", 1, None))
+    sheet.append((3, "1", 1, None))
+    sheet[address] = '=HYPERLINK("http://example.test","x")'
+    workbook.save(path)
+    workbook.close()
+
+    # Through the public reader the package scan already refuses any <f> element.
+    refused = answer_key.import_answer_key(str(path), "정답표")
+    assert isinstance(refused, Err)
+    assert refused.errors[0].code == "XLSX_FORMULA_FORBIDDEN"
+    # The cell reader must agree on its own, not only via the package scan.
+    data = path.read_bytes()
+    monkeypatch.setattr(
+        answer_key, "_package_bytes", lambda payload: Ok((payload, "0" * 64))
+    )
+
+    result = answer_key.import_answer_key_bytes(data, "key.xlsx", "정답표")
+
+    assert isinstance(result, Err)
+    assert result.errors[0].field_path == field
+
+
 def test_answer_key_formula_and_package_sheet_boundaries(tmp_path, monkeypatch):
     path = tmp_path / "key.xlsx"
     _book(path, [(1, "=1", 1)])

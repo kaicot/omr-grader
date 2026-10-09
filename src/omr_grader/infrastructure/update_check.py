@@ -7,6 +7,7 @@ The endpoint is one constant so it can move if the source repository ever become
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.error
@@ -88,13 +89,14 @@ def fetch_latest_release(current_version: str, opener: Opener = _open) -> Result
     try:
         with opener(request, TIMEOUT_SECONDS) as response:
             data = response.read(_MAX_BYTES + 1)
-    except (urllib.error.URLError, OSError, ValueError):
+    # HTTPException covers IncompleteRead/BadStatusLine from captive portals and proxies.
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         return _failure("인터넷에 연결할 수 없거나 GitHub가 응답하지 않습니다.")
     if len(data) > _MAX_BYTES:
         return _failure("응답이 너무 큽니다.")
     try:
         payload = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return _failure("응답 형식이 올바르지 않습니다.")
     return parse_release(payload)
 

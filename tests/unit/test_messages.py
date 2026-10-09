@@ -89,3 +89,12 @@ def test_title_uses_official_product_name() -> None:
 def test_unknown_message_key_raises_instead_of_falling_back() -> None:
     with pytest.raises(KeyError):
         get_message("error.not_declared")
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["error.backup_destination_exists", "error.session_delete_failed", "error.session_id_conflict"],
+)
+def test_storage_failures_that_users_hit_have_korean_text(key: str) -> None:
+    assert get_message(key) == MESSAGE_CATALOG[key]
+    assert "[" not in MESSAGE_CATALOG[key]

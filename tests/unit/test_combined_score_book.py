@@ -221,7 +221,16 @@ def test_no_unreadable_sheet_and_the_parts_sheet_describes_each_session():
     rows = _table(book, "파트")
     assert rows[0]["파트"] == "파트1" and rows[0]["폴더"] == "260101_090000_파트1"
     assert rows[0]["학생 수"] == 4 and rows[0]["만점"] == 10
-    assert rows[0]["채점 시각"] == "2026-01-01T09:30:00Z"
+    assert rows[0]["채점 시각"] == "2026-01-01 18:30"
+    assert book["파트"].cell(book["파트"].max_row, 2).value == "2026-02-01 10:00"
+
+
+def test_parts_sheet_shows_korean_time_for_utc_input():
+    parts = _two_parts()
+    book = openpyxl.load_workbook(
+        io.BytesIO(build_combined_score_book(parts, None, "2026-02-01T01:00:00.123456+00:00"))
+    )
+
     assert book["파트"].cell(book["파트"].max_row, 2).value == "2026-02-01 10:00"
 
 

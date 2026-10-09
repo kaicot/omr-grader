@@ -174,3 +174,62 @@ def test_the_sample_is_a_two_part_graduation_exam_of_seven_subjects():
     assert result.value.criteria.per_subject_percent == Decimal(60)
     book = openpyxl.load_workbook(io.BytesIO(subject_config_sample_bytes()))
     assert book.sheetnames == ["과목구성", "합격기준", "설명"]
+
+
+def _percent_cells(tmp_path: Path, rows: list[list[object]], formats: dict[str, str]) -> str:
+    path = Path(_write(tmp_path, [["법규", 1, 1, 10]], rows))
+    book = openpyxl.load_workbook(path)
+    for address, number_format in formats.items():
+        book["합격기준"][address].number_format = number_format
+    book.save(path)
+    return str(path)
+
+
+def test_percent_formatted_cells_are_read_as_percent_not_as_a_fraction(tmp_path):
+    # Typing "60%" makes Excel store 0.6 with a percent format.
+    path = _percent_cells(
+        tmp_path, [["총점", 0.6], ["과목별", 0.405]], {"B2": "0%", "B3": "0.00%"}
+    )
+
+    result = parse_subject_config(path)
+
+    assert isinstance(result, Ok)
+    assert result.value.criteria.total_percent == Decimal(60)
+    assert str(result.value.criteria.total_percent) == "60"
+    assert result.value.criteria.per_subject_percent == Decimal("40.5")
+
+
+def test_percent_text_is_accepted(tmp_path):
+    result = parse_subject_config(
+        _write(tmp_path, [["법규", 1, 1, 10]], [["총점", "60%"], ["과목별", " 40.5 % "]])
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value.criteria.total_percent == Decimal(60)
+    assert result.value.criteria.per_subject_percent == Decimal("40.5")
+
+
+@pytest.mark.parametrize("value", [0.6, 0.01, 1])
+def test_an_unformatted_value_up_to_one_is_refused_as_ambiguous(tmp_path, value):
+    path = _write(tmp_path, [["법규", 1, 1, 10]], [["총점", value]])
+
+    assert "60%" in _reasons(parse_subject_config(path))
+
+
+def test_percent_formatted_hundred_and_zero_and_out_of_range(tmp_path):
+    ok = parse_subject_config(
+        _percent_cells(tmp_path, [["총점", 1], ["과목별", 0]], {"B2": "0%", "B3": "0%"})
+    )
+    bad = parse_subject_config(_percent_cells(tmp_path, [["총점", 60]], {"B2": "0%"}))
+
+    assert isinstance(ok, Ok)
+    assert ok.value.criteria.total_percent == Decimal(100)
+    assert ok.value.criteria.per_subject_percent == Decimal(0)
+    assert "0~100" in _reasons(bad)
+
+
+@pytest.mark.parametrize("text", ["60 %%", "abc%", "%", "-5%", "101%"])
+def test_bad_percent_text_is_refused(tmp_path, text):
+    path = _write(tmp_path, [["법규", 1, 1, 10]], [["총점", text]])
+
+    assert isinstance(parse_subject_config(path), Err)

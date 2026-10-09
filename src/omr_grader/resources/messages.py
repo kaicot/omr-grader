@@ -38,6 +38,15 @@ MESSAGE_CATALOG: dict[str, str] = {
         "시험 폴더가 다른 프로그램(엑셀, 탐색기 창 등)에서 열려 있어 옮기지 못했습니다. "
         "그 파일이나 폴더 창을 닫고 다시 시도하세요."
     ),
+    "error.session_delete_failed": (
+        "시험을 지우지 못했습니다. 그 시험의 Excel이나 폴더를 연 창을 닫고 다시 시도하세요."
+    ),
+    "error.session_id_conflict": (
+        "같은 시험이 이미 있습니다(휴지통 포함). 휴지통을 확인하세요."
+    ),
+    "error.backup_destination_exists": (
+        "같은 이름의 백업 파일이 이미 있어 저장하지 않았습니다. 다른 이름으로 저장하세요."
+    ),
     "error.session_busy_readers": (
         "이 시험이 상세 보기 등 다른 화면에서 열려 있습니다. 닫은 뒤 다시 시도하세요."
     ),

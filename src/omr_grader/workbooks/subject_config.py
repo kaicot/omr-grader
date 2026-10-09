@@ -42,6 +42,7 @@ _RESERVED_NAMES = frozenset(
     }
 )
 _PART_TEXT = re.compile(r"(?:파트\s*)?(\d+)")
+_PERCENT_TEXT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +207,36 @@ def _parse_subjects(sheet: Any) -> Result[tuple[Subject, ...]]:
     )
 
 
+def _criterion_percent(raw: object, number_format: object) -> Decimal | str:
+    """The 기준(%) cell as a percentage, or a Korean reason when it cannot be read safely.
+
+    Typing ``60%`` in Excel stores 0.6 with a percent number format, so a percent-formatted
+    number is scaled by 100. An unformatted number up to 1 is ambiguous (0.6 could mean 60% or
+    0.6%; a real 1% criterion is implausible) and is refused instead of guessed. ``"60%"`` typed
+    as text is accepted.
+    """
+    if isinstance(raw, str):
+        match = _PERCENT_TEXT.fullmatch(raw.strip())
+        if match is None:
+            return "기준(%)은 숫자여야 합니다."
+        return Decimal(match.group(1))
+    if type(raw) not in (int, float):
+        return "기준(%)은 숫자여야 합니다."
+    try:
+        percent = Decimal(str(raw))
+    except InvalidOperation:
+        return "기준(%)은 숫자여야 합니다."
+    if not percent.is_finite():
+        return "기준(%)은 숫자여야 합니다."
+    if isinstance(number_format, str) and "%" in number_format:
+        percent = percent * 100
+        if percent == percent.to_integral_value():
+            percent = percent.quantize(Decimal(1))
+    elif 0 < percent <= 1:
+        return "기준(%)이 0~1 사이이면 비율인지 퍼센트인지 알 수 없습니다. 60 또는 60%처럼 적으세요."
+    return percent
+
+
 def _parse_criteria(sheet: Any) -> Result[PassCriteria]:
     max_row = getattr(sheet, "max_row", 0) or 0
     max_column = getattr(sheet, "max_column", 0) or 0
@@ -218,23 +249,26 @@ def _parse_criteria(sheet: Any) -> Result[PassCriteria]:
     problems: list[ErrorInfo] = []
     found: dict[str, Decimal] = {}
     width = max(columns.values()) + 1
-    for number, cells in _data_rows(sheet, width):
+    # Cells (not bare values) so the percent number format of 기준(%) is visible.
+    for number, row in enumerate(sheet.iter_rows(min_row=2), 2):
+        cells = tuple(row) + (None,) * max(0, width - len(row))
+        values = tuple(getattr(cell, "value", None) for cell in cells)
+        if not any(item is not None and item != "" for item in values):
+            continue
         where = f"{CRITERIA_SHEET_NAME} {number}행"
-        item = _text(cells[columns["항목"]])
-        raw = cells[columns["기준(%)"]]
+        item = _text(values[columns["항목"]])
+        raw = values[columns["기준(%)"]]
         if item not in (TOTAL_CRITERION, PER_SUBJECT_CRITERION):
             problems.append(_problem(f"{where}: 항목은 '총점' 또는 '과목별'이어야 합니다.", where))
             continue
         if item in found:
             problems.append(_problem(f"{where}: '{item}' 항목이 두 번 나옵니다.", where))
             continue
-        if type(raw) not in (int, float):
-            problems.append(_problem(f"{where}: 기준(%)은 숫자여야 합니다.", where))
-            continue
-        try:
-            percent = Decimal(str(raw))
-        except InvalidOperation:
-            problems.append(_problem(f"{where}: 기준(%)은 숫자여야 합니다.", where))
+        percent = _criterion_percent(
+            raw, getattr(cells[columns["기준(%)"]], "number_format", None)
+        )
+        if isinstance(percent, str):
+            problems.append(_problem(f"{where}: {percent}", where))
             continue
         if not percent.is_finite() or not 0 <= percent <= 100:
             problems.append(_problem(f"{where}: 기준(%)은 0~100 사이여야 합니다.", where))
@@ -318,6 +352,7 @@ def subject_config_sample_bytes() -> bytes:
         "과목구성: 과목마다 파트와 문항 범위를 적습니다. 같은 과목명을 여러 줄에 적으면 범위가 합쳐집니다.",
         "파트는 합산할 시험을 고른 순서대로 1, 2, ...입니다. 같은 파트 안에서 범위가 겹치면 안 됩니다.",
         "합격기준(선택): 총점 = 전체 만점 대비 최소 %, 과목별 = 모든 과목에서 필요한 최소 %.",
+        "기준(%)은 60 또는 60%처럼 적습니다. 0.6처럼 비율로 적으면 퍼센트인지 알 수 없어 읽지 않습니다.",
         "합격기준 시트나 그 안의 줄은 없어도 됩니다. 없는 기준은 적용하지 않습니다.",
         "이 시트와 표 오른쪽의 다른 열은 읽지 않습니다.",
     ):
