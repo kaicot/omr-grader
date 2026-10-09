@@ -1454,14 +1454,15 @@ class AppController(QObject):
     def _worker_active(self) -> bool:
         """Whether work is still in progress, so a new action has to be refused.
 
-        A worker whose operation has returned counts as finished even while its thread is
-        still ending: the pages already look idle then (``_terminal``), and refusing the
-        next action in those few milliseconds was wrong.
+        Once ``_terminal`` has run the pages look idle although the worker thread is still
+        ending for a few milliseconds; refusing the next action then was wrong, so it waits
+        for the thread instead (``_start``). ``_active_page`` is set by ``_start`` and
+        cleared only by ``_terminal``, which marks exactly that moment.
         """
         if self._deferred_start is not None:
             return True
         bridge = self._active_bridge
-        return bridge is not None and bridge.active and not bridge.operation_returned
+        return bridge is not None and bridge.active and self._active_page is not None
 
     def _refuse_busy(self) -> None:
         """Tell the user an action must wait for the running one."""
@@ -1728,9 +1729,11 @@ class AppController(QObject):
                 if self._refresh_after_action:
                     # The action may have changed some exams before it failed.
                     self._dashboard_reload_pending = True
+            if self._active_page is self.settings_page:
+                # The settings page says itself why its action did not happen.
+                self.settings_page.set_save_error(message=text)
             if self._active_kind == "profile-import":
                 self.scan_page.set_profile_import_error(text)
-                self.settings_page.set_save_error(message=text)
             if self._active_kind == "data-import":
                 message = f"가져오지 못했습니다. {text}"
                 self.settings_page.set_update_state(self._update_prefs().enabled, message)

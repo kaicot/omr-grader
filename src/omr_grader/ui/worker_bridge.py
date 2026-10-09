@@ -195,7 +195,6 @@ class WorkerBridge(QObject):
         self._cancel_hook: CancelHook | None = None
         self._thread: QThread | None = None
         self._worker: _OperationWorker | None = None
-        self._operation_returned = False
         self._retired_threads: deque[QThread] = deque(maxlen=64)
         self._retired_workers: deque[_OperationWorker] = deque(maxlen=64)
         self._lock = Lock()
@@ -209,11 +208,6 @@ class WorkerBridge(QObject):
         return self._thread is not None or self._lifecycle is WorkerLifecycle.CLOSING
 
     @property
-    def operation_returned(self) -> bool:
-        """Whether the operation itself has ended; only its thread may still be winding down."""
-        return self._operation_returned
-
-    @property
     def lifecycle(self) -> WorkerLifecycle:
         return self._lifecycle
 
@@ -221,7 +215,6 @@ class WorkerBridge(QObject):
         if self._thread is not None or self._lifecycle is WorkerLifecycle.CLOSING:
             raise RuntimeError("the previous operation has not finished")
         self._cancelled.clear()
-        self._operation_returned = False
         self._cancel_hook = cancel_hook
         self._terminal_emitted = False
         self._cancel_hook_called = False
@@ -237,7 +230,6 @@ class WorkerBridge(QObject):
         worker.failed.connect(self._on_failure)
         worker.cancelled.connect(self._on_cancelled)
         worker.finished.connect(thread.quit)
-        worker.finished.connect(self._on_worker_finished)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(self._clear_thread)
         thread.finished.connect(thread.deleteLater)
@@ -315,31 +307,20 @@ class WorkerBridge(QObject):
 
     @Slot(object)
     def _on_success(self, value: object) -> None:
-        try:
-            if self._cancelled.is_set():
-                return
-            self._emit_terminal(self.succeeded, value)
-        finally:
-            # Only after the success handlers ran: they may still set up the next action.
-            self._operation_returned = True
+        if self._cancelled.is_set():
+            return
+        self._emit_terminal(self.succeeded, value)
 
     @Slot(object)
     def _on_failure(self, error: object) -> None:
-        try:
-            if self._cancelled.is_set():
-                return
-            self._emit_terminal(self.failed, _worker_error(error))
-        finally:
-            self._operation_returned = True
+        if self._cancelled.is_set():
+            return
+        self._emit_terminal(self.failed, _worker_error(error))
 
     @Slot()
     def _on_cancelled(self) -> None:
         # A cancellation request remains active until the worker exits.
-        self._operation_returned = True
-
-    @Slot()
-    def _on_worker_finished(self) -> None:
-        self._operation_returned = True
+        return
 
     @Slot()
     def _clear_thread(self) -> None:

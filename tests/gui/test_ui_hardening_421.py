@@ -33,6 +33,7 @@ from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardReques
 from omr_grader.ui.grading_page import GradingProgressDisplay
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
 from omr_grader.ui.main_window import MainWindow
+from omr_grader.ui.scan_page import ScanPageRequest, ValidatedProfileState
 from omr_grader.ui.settings_page import SettingsPageRequest
 from omr_grader.workbooks.schemas import RESPONSE_SHEET_NAME
 
@@ -138,25 +139,34 @@ def test_the_scan_cancel_still_reaches_its_service(qtbot) -> None:
 
     service = Scan()
     window, controller, _ = _setup(qtbot, scan=service)
-    from omr_grader.ui.import_widgets import ImportKind as Kind
-    from omr_grader.ui.scan_page import ScanPageRequest, ValidatedProfileState
-
     controller.start_scan(
         ScanPageRequest(
             exam_name="시험",
             profile=ValidatedProfileState("p", "p.omrtemplate", (1, 1), "100문항", validated=True),
             roster_path=None,
-            source=ImportSelection(Kind.FOLDER, ("page.png",)),
+            source=ImportSelection(ImportKind.FOLDER, ("page.png",)),
             sensitivity=3,
             session_id="session",
         )
     )
     operation_id = controller._active_operation_id
+    bridge = controller._active_bridge
+    assert bridge is not None
     controller.cancel_active(operation_id)
+    # A cancelled worker counts as running until the controller has reset its pages: it is
+    # never "idle" while its bridge is still there.
+    idle_with_bridge: list[bool] = []
 
-    qtbot.waitUntil(lambda: cancelled != [], timeout=5000)
+    def poll() -> bool:
+        if controller._active_bridge is None:
+            return True
+        idle_with_bridge.append(not controller._worker_active())
+        return False
+
+    qtbot.waitUntil(poll, timeout=5000)
     assert cancelled == [CancelOperationCommand(operation_id)]
-    qtbot.waitUntil(lambda: controller._active_bridge is None, timeout=5000)
+    assert not any(idle_with_bridge)
+    assert not controller._worker_active()
     controller.close()
 
 
@@ -224,15 +234,14 @@ def test_a_failed_settings_save_does_not_leave_the_saving_text(qtbot) -> None:
         ),
     )
     page = window.settings_page
-    before = page.status_label.text()
 
     controller._save_settings(SettingsPageRequest(Settings("", 5, False), 1))
     assert page.status_label.text() == "설정을 저장하고 있습니다."
     qtbot.waitUntil(lambda: controller._active_bridge is None, timeout=5000)
 
-    assert page.status_label.text() == before
+    # The page itself says why, instead of keeping the saving text.
+    assert page.status_label.text() == "저장하지 못했습니다."
     assert page._busy is False
-    assert page.save_button.isEnabled() or not page._can_save()
     controller.close()
 
 

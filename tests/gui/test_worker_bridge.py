@@ -33,28 +33,6 @@ def test_success_emits_one_terminal(qtbot):
     assert not bridge.active
 
 
-def test_operation_returned_turns_true_only_once_the_operation_has_ended(qtbot):
-    bridge = WorkerBridge(progress_interval_ms=0)
-    release = Event()
-    finished: list[None] = []
-    bridge.finished.connect(lambda: finished.append(None))
-    assert not bridge.operation_returned
-
-    bridge.start(lambda _cancel, _progress: release.wait(5))
-    qtbot.wait(50)
-    assert bridge.active and not bridge.operation_returned
-
-    release.set()
-    qtbot.waitUntil(lambda: bridge.operation_returned)
-    qtbot.waitUntil(lambda: bool(finished))
-    assert not bridge.active
-
-    bridge.start(lambda _cancel, _progress: "again")
-    assert not bridge.operation_returned
-    qtbot.waitUntil(lambda: bridge.operation_returned)
-    qtbot.waitUntil(lambda: not bridge.active)
-
-
 def test_throttled_progress_flushes_latest_value_while_worker_is_running(qtbot):
     bridge = WorkerBridge(progress_interval_ms=20)
     release = Event()
