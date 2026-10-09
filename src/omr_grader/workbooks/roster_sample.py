@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import UTC, datetime
 from io import BytesIO
@@ -92,8 +93,6 @@ def write_roster_sample(path: str, sheet_name: str = SAMPLE_SHEET_NAME) -> Resul
         return Err((_error("XLSX_WRITE_FAILED", "path"),))
     finally:
         if temporary_name is not None:
-            try:
+            with contextlib.suppress(OSError):
                 Path(temporary_name).unlink(missing_ok=True)
-            except OSError:
-                pass
     return Ok(None)

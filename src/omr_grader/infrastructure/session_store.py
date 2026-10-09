@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import hashlib
@@ -843,10 +844,8 @@ def _remove_emptied_staging(session: Path) -> None:
                 child.rmdir()
         except OSError:
             pass
-    try:
+    with contextlib.suppress(OSError):
         staging_root.rmdir()
-    except OSError:
-        pass
 
 
 def _artifact_path(session: Path, generation: Path, relative: str) -> Path:
@@ -1652,10 +1651,8 @@ class SessionStore:
             if gate.exists():
                 continue
             retry_mkdir(gate.parent, parents=True, exist_ok=True)
-            try:
+            with contextlib.suppress(FileExistsError):
                 gate.touch(exist_ok=False)
-            except FileExistsError:
-                pass
 
     def _record_folder_name(self, session: Path, session_id: str, *, trash: bool) -> None:
         """Record the name of an exam folder renamed in Explorer; the caller holds its writer lock."""
@@ -2359,10 +2356,8 @@ class SessionStore:
                 if final is not None:
                     shutil.rmtree(final, ignore_errors=True)
                 if gate is not None:
-                    try:
+                    with contextlib.suppress(OSError):
                         retry_unlink(gate, missing_ok=True)
-                    except OSError:
-                        pass
             writer.value.close()
 
     def _prune_superseded_generations(
@@ -2861,13 +2856,13 @@ class SessionStore:
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     quarantined.append(RecoveryIssue(None, "DELETE_RESIDUE_INVALID", deleting.name))
 
-            for namespace in sorted(
-                (self._locks() / "lifetime").glob("*"), key=lambda item: item.name
-            ):
-                if namespace.is_dir() and namespace.name not in known_gate_sessions:
-                    quarantined.append(
-                        RecoveryIssue(namespace.name, "GENERATION_GATE_ORPHAN", namespace.name)
-                    )
+            quarantined.extend(
+                RecoveryIssue(namespace.name, "GENERATION_GATE_ORPHAN", namespace.name)
+                for namespace in sorted(
+                    (self._locks() / "lifetime").glob("*"), key=lambda item: item.name
+                )
+                if namespace.is_dir() and namespace.name not in known_gate_sessions
+            )
             return Ok(RecoveryReport(count, IndexState.STALE, tuple(quarantined), tuple(cleaned)))
         finally:
             root.value.close()

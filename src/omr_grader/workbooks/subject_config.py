@@ -8,12 +8,13 @@ Korean in the ``reason`` of its own ``ErrorInfo`` so the teacher can fix the she
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
-from typing import Any
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
@@ -75,7 +76,7 @@ class PassCriteria:
 @dataclass(frozen=True, slots=True)
 class SubjectConfig:
     subjects: tuple[Subject, ...]
-    criteria: PassCriteria = PassCriteria()
+    criteria: PassCriteria = PassCriteria()  # noqa: RUF009 - frozen, so one shared default is safe
 
     def part_numbers(self) -> tuple[int, ...]:
         """The 파트 numbers any subject refers to, ascending."""
@@ -309,10 +310,8 @@ def parse_subject_config_bytes(data: bytes) -> Result[SubjectConfig]:
         return _fail("엑셀 파일을 읽는 중 문제가 생겼습니다.")
     finally:
         if workbook is not None:
-            try:
+            with contextlib.suppress(OSError):
                 workbook.close()
-            except OSError:
-                pass
 
 
 def parse_subject_config(path: str) -> Result[SubjectConfig]:

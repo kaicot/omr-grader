@@ -74,7 +74,7 @@ Opener = Callable[[urllib.request.Request, float], Any]
 
 
 def _open(request: urllib.request.Request, timeout: float) -> Any:
-    return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 - fixed https URL
+    return urllib.request.urlopen(request, timeout=timeout)
 
 
 def fetch_latest_release(current_version: str, opener: Opener = _open) -> Result[ReleaseInfo]:

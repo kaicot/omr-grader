@@ -16,25 +16,25 @@ from time import monotonic
 from typing import TYPE_CHECKING, TypeVar
 from uuid import uuid4
 
-from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader import __version__
+from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.infrastructure.atomic_io import atomic_write_bytes
 from omr_grader.infrastructure.capabilities import (
     CapabilityToken,
     bootstrap_managed_paths,
     probe_root_capability,
 )
-from omr_grader.infrastructure.atomic_io import atomic_write_bytes
 from omr_grader.infrastructure.config_store import AppConfig, load_config, save_config
+from omr_grader.infrastructure.data_format import ensure_data_format
 from omr_grader.infrastructure.data_import import ImportSummary, import_previous_install
+from omr_grader.infrastructure.logging_setup import configure_logging, daily_log_path
+from omr_grader.infrastructure.paths import ManagedPaths, resolve_portable_root
 from omr_grader.infrastructure.update_check import (
     UPDATE_PREFS_FILENAME,
     ReleaseInfo,
     UpdatePreferences,
     fetch_latest_release,
 )
-from omr_grader.infrastructure.data_format import ensure_data_format
-from omr_grader.infrastructure.logging_setup import configure_logging, daily_log_path
-from omr_grader.infrastructure.paths import ManagedPaths, resolve_portable_root
 from omr_grader.resources.messages import get_message
 from omr_grader.workbooks.schemas import RESPONSE_SHEET_NAME
 
@@ -371,13 +371,13 @@ def run(
         DetailAnswerEdit,
         DetailLoadRequest,
         DetailLoadResult,
-        NormalizedCell,
         DetailPageDisplay,
         DetailPageRequest,
         DetailPreviewResult,
         DetailSaveResult,
         DetailStudentDisplay,
         DetailSummaryDisplay,
+        NormalizedCell,
     )
     from omr_grader.application.dto import (
         BackupExportRequest,

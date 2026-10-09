@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from weakref import ref
 
-from PySide6.QtCore import QEvent, QMargins, QObject, QPoint, QRect, QSize, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QMargins, QObject, QPoint, QRect, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QDesktopServices,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from omr_grader import __version__
 
@@ -43,7 +45,6 @@ from .help_dialog import HelpDialog
 from .scan_page import ScanPage
 from .settings_page import SettingsPage
 from .theme import Theme, apply_theme
-from shiboken6 import isValid
 
 AUTHOR_CREDIT = "조승현 (kaic21@gmail.com)"
 
@@ -502,7 +503,7 @@ class MainWindow(QMainWindow):
 
     def _set_tab_order(self) -> None:
         widgets = [*self.nav_buttons, self.theme_button, self.help_button, self.pages]
-        for current, following in zip(widgets, widgets[1:], strict=False):
+        for current, following in pairwise(widgets):
             self.setTabOrder(current, following)
         for widget in widgets:
             widget.installEventFilter(self)

@@ -13,7 +13,7 @@ import uuid
 import zipfile
 import zlib
 from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -245,10 +245,8 @@ class BackupArchive:
         ):
             return _error("BACKUP_EXPORT_FAILED", destination)
         finally:
-            try:
+            with suppress(OSError):
                 temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
 
     def preflight(self, token: ValidatedBackup) -> Result[SessionManifest]:
         try:
@@ -851,10 +849,8 @@ class _WindowsRestoreAdapter:
 
     def close(self) -> None:
         for descriptor, _identity in self._files:
-            try:
+            with suppress(OSError):
                 os.close(descriptor)
-            except OSError:
-                pass
         self._files.clear()
         for _path, handle, _identity in reversed(tuple(self._directories.values())):
             self._close_handle(handle)

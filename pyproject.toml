@@ -55,21 +55,5 @@ target-version = "py312"
 line-length = 100
 lint.select = ["E4", "E7", "E9", "F", "I", "B", "BLE", "DTZ", "RUF", "SIM", "PERF"]
 # RUF001-003 flag the Korean text (ambiguous-unicode checks) and are not useful here.
-lint.ignore = ["RUF001", "RUF002", "RUF003"]
-
-# Files edited in parallel 4.2.1 work. These rules fire there but are left for the
-# integrator to fix after the merge; remove each entry then.
-[tool.ruff.lint.per-file-ignores]
-"src/omr_grader/bootstrap.py" = ["I001"]
-"src/omr_grader/infrastructure/backup_archive.py" = ["SIM105"]
-"src/omr_grader/infrastructure/session_store.py" = ["SIM105", "PERF401"]
-"src/omr_grader/infrastructure/update_check.py" = ["RUF100"]
-"src/omr_grader/ui/app_controller.py" = ["I001", "SIM105", "SIM114", "RUF021"]
-"src/omr_grader/ui/dashboard_page.py" = ["I001", "RUF100"]
-"src/omr_grader/ui/main_window.py" = ["I001", "RUF007"]
-"src/omr_grader/workbooks/answer_key.py" = ["SIM105"]
-"src/omr_grader/workbooks/combined_book.py" = ["RUF005"]
-"src/omr_grader/workbooks/response_book.py" = ["RUF022"]
-"src/omr_grader/workbooks/response_import.py" = ["SIM105"]
-"src/omr_grader/workbooks/roster_sample.py" = ["SIM105"]
-"src/omr_grader/workbooks/subject_config.py" = ["I001", "RUF009", "SIM105"]
+# SIM105: try/except/pass reads plainer than contextlib.suppress in cleanup code.
+lint.ignore = ["RUF001", "RUF002", "RUF003", "SIM105"]

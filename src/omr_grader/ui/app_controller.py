@@ -19,16 +19,6 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
 
 from omr_grader import __version__
-
-from omr_grader.infrastructure.data_import import ImportProgress, ImportSummary
-from omr_grader.infrastructure.update_check import (
-    RELEASES_PAGE_URL,
-    ReleaseInfo,
-    UpdatePreferences,
-    is_newer,
-    now_text,
-    offer,
-)
 from omr_grader.application.detail_presenter import (
     DetailLoadRequest,
     DetailLoadResult,
@@ -77,13 +67,22 @@ from omr_grader.domain.enums import ExamTerm, SessionState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
+from omr_grader.infrastructure.data_import import ImportProgress, ImportSummary
 from omr_grader.infrastructure.form_detection import FormDetection
 from omr_grader.infrastructure.profile_store import ProfileCatalogItem
+from omr_grader.infrastructure.update_check import (
+    RELEASES_PAGE_URL,
+    ReleaseInfo,
+    UpdatePreferences,
+    is_newer,
+    now_text,
+    offer,
+)
 from omr_grader.resources.messages import MESSAGE_CATALOG, get_message
+from omr_grader.ui.combined_report_dialog import CombinedReportDialog
 from omr_grader.ui.dashboard_model import DashboardSelection
 from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardPage, DashboardRequest
 from omr_grader.ui.detail_page import DetailPage
-from omr_grader.ui.combined_report_dialog import CombinedReportDialog
 from omr_grader.ui.form_confirm_dialog import FormConfirmDialog
 from omr_grader.ui.grading_page import GradingPage
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection

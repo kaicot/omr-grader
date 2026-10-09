@@ -26,8 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.domain.enums import SessionState
+from omr_grader.domain.models import DashboardIndexEntry
 from omr_grader.ui.dashboard_model import (
     COLUMN_AVERAGE,
     COLUMN_EXAM_NAME,
@@ -638,7 +638,7 @@ class DashboardPage(QWidget):
         if not self._busy:
             self._request("detail")
 
-    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+    def showEvent(self, event: QShowEvent) -> None:
         """Read the list again whenever the page is opened; files may have changed."""
         super().showEvent(event)
         if not self._busy:

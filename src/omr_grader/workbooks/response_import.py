@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 import xml.etree.ElementTree as element_tree
 from hashlib import sha256
@@ -364,10 +365,8 @@ def parse_response_book(
         return Ok(tuple(rows))
     finally:
         if workbook is not None:
-            try:
+            with contextlib.suppress(OSError):
                 workbook.close()
-            except OSError:
-                pass
 
 
 def response_source_sha256(source: BinaryIO) -> str:

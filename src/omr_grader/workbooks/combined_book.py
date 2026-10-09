@@ -351,7 +351,7 @@ def build_combined_workbook(exams: Iterable[CombinedExam], generated_at: str) ->
     headers = ["연번", "학번", "이름", "이름상태"]
     for number in range(1, len(ordered) + 1):
         headers.extend((f"{number}_점수", f"{number}_만점", f"{number}_응시상태"))
-    score_sheet.append(headers + ["응시시험수", "취득점수합계", "만점합계", "환산평균(%)"])
+    score_sheet.append([*headers, "응시시험수", "취득점수합계", "만점합계", "환산평균(%)"])
     for ordinal, student_id in enumerate(sorted(ids), 1):
         candidates: list[str] = [
             entry[0]

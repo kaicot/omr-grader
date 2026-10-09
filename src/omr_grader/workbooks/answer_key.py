@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -217,10 +218,8 @@ def import_answer_key_bytes(
             parsed[question] = AnswerKeyEntry(question, value, points.value, status)
     finally:
         if workbook is not None:
-            try:
+            with contextlib.suppress(OSError):
                 workbook.close()
-            except OSError:
-                pass
     entries = tuple(
         parsed.get(
             question,
@@ -309,10 +308,8 @@ def write_answer_key_sample(path: str, sheet_name: str = "정답표") -> Result[
         return Err((_error("XLSX_WRITE_FAILED", "path"),))
     finally:
         if temporary_name is not None:
-            try:
+            with contextlib.suppress(OSError):
                 Path(temporary_name).unlink(missing_ok=True)
-            except OSError:
-                pass
     return Ok(None)
 
 
