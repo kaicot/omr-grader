@@ -39,13 +39,45 @@ analysis = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tests", "pytest", "pytestqt", "hypothesis", "mypy", "ruff", "pip", "setuptools"],
+    excludes=[
+        "tests",
+        "pytest",
+        "pytestqt",
+        "hypothesis",
+        "mypy",
+        "ruff",
+        "pip",
+        "setuptools",
+        "PySide6.QtNetwork",
+    ],
     noarchive=False,
 )
-# OpenCV's wheel carries an FFmpeg plugin for video; the application reads still images only.
-analysis.binaries = [
-    entry for entry in analysis.binaries if "opencv_videoio_ffmpeg" not in entry[0].lower()
-]
+# Parts the hooks collect that the application never loads. It reads still images and PDFs,
+# uses only QtCore, QtGui and QtWidgets, paints without OpenGL and installs no translator.
+_UNSHIPPED = (
+    "cv2/opencv_videoio_ffmpeg",  # OpenCV's FFmpeg video plugin
+    "pyside6/opengl32sw.dll",  # software OpenGL fallback
+    "pyside6/translations/",  # Qt's own translations
+    "pyside6/plugins/platforminputcontexts/qtvirtualkeyboardplugin",  # pulls in Qt Quick/QML
+    "pyside6/qt6virtualkeyboard",
+    "pyside6/qt6quick",
+    "pyside6/qt6qml",
+    "pyside6/qt6opengl",
+    "pyside6/plugins/imageformats/qpdf",  # PDF pages are rendered by pypdfium2
+    "pyside6/qt6pdf",
+    "pyside6/qtnetwork",  # the update check uses Python's own HTTPS client
+    "pyside6/qt6network",
+    "pyside6/plugins/tls/",
+    "pyside6/plugins/networkinformation/",
+)
+
+
+def _shipped(entry: tuple[str, str, str]) -> bool:
+    return not entry[0].replace("\\", "/").lower().startswith(_UNSHIPPED)
+
+
+analysis.binaries = [entry for entry in analysis.binaries if _shipped(entry)]
+analysis.datas = [entry for entry in analysis.datas if _shipped(entry)]
 pyz = PYZ(analysis.pure)
 
 icon_application = QGuiApplication.instance() or QGuiApplication([])
