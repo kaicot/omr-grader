@@ -7,7 +7,6 @@ import os
 from ctypes import wintypes
 from pathlib import Path
 
-
 _GENERIC_WRITE = 0x40000000
 _DELETE = 0x00010000
 _DACL_SECURITY_INFORMATION = 0x00000004

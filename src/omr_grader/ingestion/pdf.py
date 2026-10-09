@@ -334,8 +334,8 @@ def render_pdf_pages(inputs: tuple[PdfInput, ...]) -> Iterator[Result[RenderedPd
 
 __all__ = [
     "MAX_PDF_PAGES",
-    "MAX_PDF_RENDER_DIMENSION",
     "MAX_PDF_RENDERED_BYTES",
+    "MAX_PDF_RENDER_DIMENSION",
     "MAX_PDF_RENDER_PIXELS",
     "MAX_PDF_SOURCE_BYTES",
     "PDF_RENDER_DPI",

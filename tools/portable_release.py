@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, NoReturn
 
-
 FORMAT = 2
 PRODUCT = "OMR Grader"
 PAYLOAD_ROOT = "OMR Grader"
@@ -454,7 +453,7 @@ def _verify_archive(archive_path: Path, release: Path, receipt_bytes: bytes, rec
                         _fail(f"ZIP payload exceeds declared size: {record['path']}")
                     digest.update(chunk)
                     crc = binascii.crc32(chunk, crc)
-            if total != record["size"] or (info.CRC & 0xFFFFFFFF) != (crc & 0xFFFFFFFF) or digest.hexdigest() != record["sha256"]:
+            if total != record["size"] or (crc & 0xFFFFFFFF) != (info.CRC & 0xFFFFFFFF) or digest.hexdigest() != record["sha256"]:
                 _fail(f"ZIP payload bytes differ: {record['path']}")
     return archive_hash
 

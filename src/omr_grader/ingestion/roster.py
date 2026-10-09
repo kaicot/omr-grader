@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
@@ -152,10 +153,8 @@ def import_roster(path: str, sheet_name: str) -> Result[RosterSnapshot]:
             raw_rows.append((ordinal, row_number, parsed_student_id, name))
     finally:
         if workbook is not None:
-            try:
+            with contextlib.suppress(OSError):
                 workbook.close()
-            except OSError:
-                pass
 
     groups: dict[str, list[tuple[int, int, str, str]]] = {}
     for record in raw_rows:

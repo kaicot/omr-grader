@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import json
 import os
-import ctypes
 from ctypes import wintypes
 from hashlib import sha256
 from pathlib import Path
@@ -81,10 +82,8 @@ def _write_exclusive(path: Path, payload: dict[str, object], nonce: str) -> None
         if not kernel32.MoveFileExW(str(temporary), str(path), 0):
             raise OSError(ctypes.get_last_error(), "exclusive ready-file publication failed")
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise
 
 

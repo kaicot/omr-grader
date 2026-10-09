@@ -476,8 +476,7 @@ def parse_profile_bytes(payload: bytes) -> Result[Profile]:
 parse_profile = parse_profile_bytes
 
 __all__ = [
-    "BoundingBoxRatio",
-    "Grid",
+    "MAX_PAGE_DIMENSION",
     "MAX_PROFILE_BYTES",
     "MAX_PROFILE_CODEPOINTS",
     "MAX_PROFILE_DEPTH",
@@ -485,9 +484,10 @@ __all__ = [
     "MAX_PROFILE_NODES",
     "MAX_PROFILE_REGIONS",
     "MAX_PROFILE_STRING_LENGTH",
+    "BoundingBoxRatio",
+    "Grid",
     "Page",
     "Profile",
-    "MAX_PAGE_DIMENSION",
     "ProfileRegion",
     "parse_profile",
     "parse_profile_bytes",

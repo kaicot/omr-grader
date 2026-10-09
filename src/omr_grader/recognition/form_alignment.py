@@ -106,14 +106,14 @@ def profile_nodes(profile: Profile) -> tuple[NDArray[np.float64], tuple[ProfileR
     for region in profile.regions:
         box = region.bbox_ratio
         x, y, w, h = float(box.x), float(box.y), float(box.w), float(box.h)
-        for row in range(region.grid.rows):
-            for col in range(region.grid.cols):
-                centers.append(
-                    (
-                        (x + w * (col + 0.5) / region.grid.cols) * width,
-                        (y + h * (row + 0.5) / region.grid.rows) * height,
-                    )
-                )
+        centers.extend(
+            (
+                (x + w * (col + 0.5) / region.grid.cols) * width,
+                (y + h * (row + 0.5) / region.grid.rows) * height,
+            )
+            for row in range(region.grid.rows)
+            for col in range(region.grid.cols)
+        )
     return np.asarray(centers, dtype=np.float64), profile.regions
 
 
@@ -372,8 +372,8 @@ def _jacobian(matrix: NDArray[np.float64], frame_point: NDArray[np.float64]) -> 
     page_point = _apply(_inverse(matrix), frame_point[None, :])[0]
     step = 1.0
     base = _apply(matrix, page_point[None, :])[0]
-    dx = _apply(matrix, (page_point + [step, 0.0])[None, :])[0] - base
-    dy = _apply(matrix, (page_point + [0.0, step])[None, :])[0] - base
+    dx = _apply(matrix, (page_point + np.array([step, 0.0]))[None, :])[0] - base
+    dy = _apply(matrix, (page_point + np.array([0.0, step]))[None, :])[0] - base
     return np.column_stack([dx, dy]) / step
 
 

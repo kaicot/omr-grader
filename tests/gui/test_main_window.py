@@ -5,7 +5,7 @@ from weakref import ref
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QMargins, QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QScrollArea
 
 from omr_grader.ui.dashboard_page import DashboardPage
@@ -234,14 +234,7 @@ def test_fit_clamps_the_shown_decorated_frame_inside_available_geometry(
     QApplication.processEvents()
     # Reuse the shown window across virtual-screen transitions. A QWidget's
     # cached frame can look correct before queued native move events arrive.
-    for available in (
-        QRect(0, 0, 960, 520),
-        QRect(-960, 0, 960, 520),
-        QRect(0, -520, 960, 520),
-        QRect(-960, -520, 960, 520),
-        QRect(1200, 80, 960, 520),
-        QRect(0, 0, 960, 520),
-    ):
+    for available in _available_probe_rects():
         window.resize(1400, 900)
         window.move(1500, 900)
         window._fit_to_available_geometry(available)
@@ -252,6 +245,22 @@ def test_fit_clamps_the_shown_decorated_frame_inside_available_geometry(
                 available.getRect(), window.frameGeometry().getRect()
             )
             assert available.contains(window.windowHandle().frameGeometry())
+
+
+def _available_probe_rects() -> list[QRect]:
+    # Build the probe areas from the real screens so they exist on this machine (offscreen,
+    # a single laptop panel, or a multi-monitor desktop with negative origins).
+    rects: list[QRect] = []
+    for screen in QGuiApplication.screens():
+        area = screen.availableGeometry()
+        width = min(960, area.width())
+        height = min(520, area.height())
+        rects.append(QRect(area.left(), area.top(), width, height))
+        rects.append(QRect(area.right() - width + 1, area.top(), width, height))
+        rects.append(QRect(area.left(), area.bottom() - height + 1, width, height))
+        rects.append(QRect(area.right() - width + 1, area.bottom() - height + 1, width, height))
+    assert rects, "no screens available for the fit probe"
+    return rects + rects[:1]
 
 
 def test_queued_focus_visibility_does_not_restore_stale_focus(qtbot) -> None:

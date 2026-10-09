@@ -104,12 +104,12 @@ class _LiveFileToken:
 
     __slots__ = (
         "_canonical_path",
-        "_handle",
-        "_identity",
-        "_sha256",
         "_closed",
         "_consumed",
+        "_handle",
+        "_identity",
         "_lock",
+        "_sha256",
     )
 
     def __init__(self, canonical_path: Path, handle: BinaryIO) -> None:
@@ -215,7 +215,7 @@ class ResponseValidationToken(_LiveFileToken):
 class BorrowedInspectionHandle:
     """A callback-scoped, read-only view that cannot close its token's source."""
 
-    __slots__ = ("_handle", "_active", "_closed")
+    __slots__ = ("_active", "_closed", "_handle")
 
     def __init__(self, handle: BinaryIO) -> None:
         self._handle = handle

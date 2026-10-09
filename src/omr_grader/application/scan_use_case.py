@@ -123,7 +123,7 @@ class ScanUseCase:
             return coordinator.commit_scan(command, ordered)
         except _PreparationCancelled:
             return _error("OPERATION_CANCELLED", "operation_id")
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001  worker failure is reported to the caller
             return _error(f"WORKER_{type(error).__name__.upper()}", "source")
         finally:
             with self._lock:

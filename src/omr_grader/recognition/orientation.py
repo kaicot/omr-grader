@@ -36,7 +36,7 @@ def _uint8_raster(value: object) -> Raster:
     if (
         raster.dtype != np.uint8
         or raster.ndim not in (2, 3)
-        or raster.ndim == 3
+        or raster.ndim == 3  # noqa: RUF021  precedence is intended; keep as written
         and raster.shape[2] not in (3, 4)
     ):
         raise ValueError("image must be an 8-bit grayscale or BGR(A) raster")

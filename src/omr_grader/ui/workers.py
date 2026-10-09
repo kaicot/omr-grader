@@ -138,7 +138,7 @@ class ScanWorker:
                         result = future.result()
                     except BrokenProcessPool:
                         result = run_pipeline_task(task)
-                    except BaseException as error:
+                    except BaseException as error:  # noqa: BLE001  worker boundary must report every failure to the UI
                         result = _task_failure(task, "WORKER_TASK_FAILED", type(error).__name__)
                     if self._cancelled.is_set():
                         cancelled = True

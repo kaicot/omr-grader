@@ -8,6 +8,7 @@ or missing circles are recovered from their neighbours.
 
 from __future__ import annotations
 
+import itertools
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -213,8 +214,8 @@ def _numbers_on_left(layout: FormLayout, gray: NDArray[np.uint8]) -> float:
                 x, y = float(anchor[index, 0]), float(anchor[index, 1])
                 dx, dy = float(step[index, 0]), float(step[index, 1])
                 for fraction in (0.75, 1.0, 1.25):
-                    sx = int(round(x + direction * fraction * dx))
-                    sy = int(round(y + direction * fraction * dy))
+                    sx = round(x + direction * fraction * dx)
+                    sy = round(y + direction * fraction * dy)
                     if 0 <= sx < width and 0 <= sy < height:
                         samples.append(255.0 - float(gray[sy, sx]))
             sides.append(float(np.mean(samples)) if samples else 0.0)
@@ -521,7 +522,7 @@ def _bubble_ink(
     """Mean darkness inside 0.6 of the bubble radius, or ``None`` at the page edge."""
     reach = max(2, int(radius))
     height, width = gray.shape
-    x, y = int(round(block.nodes[row, column, 0])), int(round(block.nodes[row, column, 1]))
+    x, y = round(block.nodes[row, column, 0]), round(block.nodes[row, column, 1])
     if not (reach <= x < width - reach and reach <= y < height - reach):
         return None
     yy, xx = np.mgrid[-reach : reach + 1, -reach : reach + 1]
@@ -631,7 +632,7 @@ def _clusters(
 ) -> list[tuple[float, NDArray[np.intp]]]:
     order = np.argsort(values)
     groups: list[list[int]] = [[int(order[0])]]
-    for previous, current in zip(order[:-1], order[1:], strict=True):
+    for previous, current in itertools.pairwise(order):
         if values[current] - values[previous] <= tolerance:
             groups[-1].append(int(current))
         else:
@@ -650,7 +651,7 @@ def _lattice_runs(centers: Sequence[float], pitch: float, max_bridged: int) -> l
     runs: list[list[float]] = [[centers[0]]]
     for value in centers[1:]:
         gap = value - runs[-1][-1]
-        steps = int(round(gap / pitch))
+        steps = round(gap / pitch)
         if steps <= 0:
             continue
         if steps - 1 <= max_bridged and abs(gap - steps * pitch) < 0.35 * pitch:
@@ -663,13 +664,13 @@ def _lattice_runs(centers: Sequence[float], pitch: float, max_bridged: int) -> l
 
 
 __all__ = [
-    "RIGHT_ANGLES",
-    "rotate_points",
     "ANSWER_CHOICES",
     "ID_DIGITS",
+    "RIGHT_ANGLES",
     "FormLayout",
     "LatticeBlock",
     "detect_layout",
     "drop_unmarked_header_rows",
     "layout_from_bubbles",
+    "rotate_points",
 ]

@@ -77,7 +77,7 @@ class FormConfirmDialog(QDialog):
         self.accept_button.clicked.connect(self.accept)
         self.cancel_button.clicked.connect(self.reject)
 
-    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+    def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         # set_image fitted the page before the dialog had its final size.
         self.preview_view.fit_image()

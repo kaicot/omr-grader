@@ -465,12 +465,7 @@ def decode_image(scan_input: ScanInput) -> Result[DecodedImage]:
 
 
 __all__ = [
-    "DecodeFailure",
-    "DecodedImage",
     "IMAGE_EXTENSIONS",
-    "ImageDecodeBatch",
-    "ImageInputBatch",
-    "InputFailure",
     "MAX_BATCH_ENCODED_BYTES",
     "MAX_BATCH_FILES",
     "MAX_DECODED_BYTES",
@@ -480,6 +475,11 @@ __all__ = [
     "MAX_SOURCE_BYTES",
     "MAX_TIFF_FRAMES",
     "POLICY_VERSION",
+    "DecodeFailure",
+    "DecodedImage",
+    "ImageDecodeBatch",
+    "ImageInputBatch",
+    "InputFailure",
     "ScanInput",
     "TiffPreflight",
     "decode_image",

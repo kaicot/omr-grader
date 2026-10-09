@@ -622,7 +622,7 @@ def tree_manifest(root: str | Path, root_name: str | None = None) -> dict[str, A
                     directories.append(
                         (
                             _open_tree_directory(child.name, directory_fd),
-                            relative + (child.name,),
+                            (*relative, child.name),
                             info,
                         )
                     )
@@ -650,7 +650,7 @@ def tree_manifest(root: str | Path, root_name: str | None = None) -> dict[str, A
                     raise AccuracyError("unreadable fixture/evaluator file") from exc
                 entries.append(
                     {
-                        "path": "/".join(relative + (child.name,)),
+                        "path": "/".join((*relative, child.name)),
                         "size": info.st_size,
                         "sha256": digest,
                     }

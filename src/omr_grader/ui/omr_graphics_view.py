@@ -67,7 +67,7 @@ class OmrGraphicsView(QGraphicsView):
         self.scale(target / self._zoom, target / self._zoom)
         self._zoom = target
 
-    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+    def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.zoom_in() if event.angleDelta().y() > 0 else self.zoom_out()
             event.accept()
@@ -90,7 +90,7 @@ class OmrGraphicsView(QGraphicsView):
             None,
         )
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             self.zoom_in()
         elif event.key() == Qt.Key.Key_Minus:

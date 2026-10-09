@@ -133,17 +133,17 @@ class DashboardTableModel(QAbstractTableModel):
         self._sort_column = COLUMN_GRADED_AT
         self._sort_order = Qt.SortOrder.DescendingOrder
 
-    def rowCount(  # noqa: N802
+    def rowCount(
         self, parent: QModelIndex | QPersistentModelIndex = _INVALID_INDEX
     ) -> int:
         return 0 if parent.isValid() else len(self._visible)
 
-    def columnCount(  # noqa: N802
+    def columnCount(
         self, parent: QModelIndex | QPersistentModelIndex = _INVALID_INDEX
     ) -> int:
         return 0 if parent.isValid() else len(HEADERS)
 
-    def headerData(  # noqa: N802
+    def headerData(
         self,
         section: int,
         orientation: Qt.Orientation,
@@ -153,7 +153,7 @@ class DashboardTableModel(QAbstractTableModel):
             return HEADERS[section] if 0 <= section < len(HEADERS) else None
         return None
 
-    def data(  # noqa: N802
+    def data(
         self,
         index: QModelIndex | QPersistentModelIndex,
         role: int = Qt.ItemDataRole.DisplayRole,
@@ -202,7 +202,7 @@ class DashboardTableModel(QAbstractTableModel):
             return entry
         return None
 
-    def flags(self, index: QModelIndex | QPersistentModelIndex) -> Qt.ItemFlag:  # noqa: N802
+    def flags(self, index: QModelIndex | QPersistentModelIndex) -> Qt.ItemFlag:
         if not index.isValid():
             return Qt.ItemFlag.NoItemFlags
         flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -210,7 +210,7 @@ class DashboardTableModel(QAbstractTableModel):
             flags |= Qt.ItemFlag.ItemIsUserCheckable
         return flags
 
-    def setData(  # noqa: N802
+    def setData(
         self,
         index: QModelIndex | QPersistentModelIndex,
         value: object,
@@ -312,4 +312,4 @@ class DashboardTableModel(QAbstractTableModel):
         return item.session_id
 
 
-__all__ = ["DashboardSelection", "DashboardTableModel", "HEADERS", "korean_search_key"]
+__all__ = ["HEADERS", "DashboardSelection", "DashboardTableModel", "korean_search_key"]

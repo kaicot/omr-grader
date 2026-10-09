@@ -182,7 +182,7 @@ class _TokenProxyStyle(QProxyStyle):
         )
         if not enabled:
             border = self._tokens.text_disabled
-        rect = getattr(option, "rect").adjusted(1, 1, -1, -1)
+        rect = option.rect.adjusted(1, 1, -1, -1)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(QPen(QColor(border), 2))
