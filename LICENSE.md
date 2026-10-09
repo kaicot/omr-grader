@@ -1,4 +1,4 @@
-Required Notice: Copyright 2026 조승현 (kaic21@gmail.com)
+Required Notice: Copyright (c) 2026 조승현 (Cho, Seung-Hyun) <kaic21@gmail.com>
 
 # PolyForm Noncommercial License 1.0.0
 
