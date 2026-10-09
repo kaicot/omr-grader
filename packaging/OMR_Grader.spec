@@ -42,6 +42,10 @@ analysis = Analysis(
     excludes=["tests", "pytest", "pytestqt", "hypothesis", "mypy", "ruff", "pip", "setuptools"],
     noarchive=False,
 )
+# OpenCV's wheel carries an FFmpeg plugin for video; the application reads still images only.
+analysis.binaries = [
+    entry for entry in analysis.binaries if "opencv_videoio_ffmpeg" not in entry[0].lower()
+]
 pyz = PYZ(analysis.pure)
 
 icon_application = QGuiApplication.instance() or QGuiApplication([])

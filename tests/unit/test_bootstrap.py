@@ -194,6 +194,23 @@ def test_startup_splash_identifies_product_and_developer(qapp) -> None:
     splash.close()
 
 
+def test_startup_splash_is_a_plain_window_that_closes_after_the_main_window(qapp, qtbot) -> None:
+    from PySide6.QtWidgets import QSplashScreen, QWidget
+
+    splash = bootstrap_module._create_startup_splash()
+    # QSplashScreen.show() waits about a second on Windows; the plain window does not.
+    assert not isinstance(splash, QSplashScreen)
+    assert splash.size().width() == 640 and splash.size().height() == 340
+    splash.show()
+    window = QWidget()
+    window.show()
+
+    splash.finish(window)
+
+    qtbot.waitUntil(lambda: not splash.isVisible(), timeout=1000)
+    window.close()
+
+
 def test_application_branding_loads_dedicated_window_icon(qapp) -> None:
     bootstrap_module._configure_application_branding(qapp)
 

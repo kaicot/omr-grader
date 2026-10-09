@@ -5,9 +5,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QSplashScreen
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 
 def configure_application_branding(application: QApplication) -> None:
@@ -25,7 +25,34 @@ def configure_application_branding(application: QApplication) -> None:
             pass
 
 
-def create_splash() -> QSplashScreen:
+class StartupSplash(QLabel):
+    """A frameless picture window shown while the application loads.
+
+    Qt's ``QSplashScreen`` holds ``show()`` for about a second on Windows while it waits for
+    the window to be exposed, which delayed every start; a plain window appears at once.
+    """
+
+    def __init__(self, pixmap: QPixmap) -> None:
+        super().__init__()
+        self.setWindowFlags(
+            Qt.WindowType.SplashScreen
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setPixmap(pixmap)
+        self.setFixedSize(pixmap.size())
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(area.center() - self.rect().center())
+
+    def finish(self, window: QWidget) -> None:
+        """Close once the event loop runs, after the shown main window has painted."""
+        del window
+        QTimer.singleShot(0, self.close)
+
+
+def create_splash() -> StartupSplash:
     pixmap = QPixmap(640, 340)
     pixmap.fill(QColor("#102A43"))
     painter = QPainter(pixmap)
@@ -39,23 +66,24 @@ def create_splash() -> QSplashScreen:
     painter.setPen(QColor("#D9EAF7"))
     painter.setFont(QFont("Malgun Gothic", 11))
     painter.drawText(48, 235, "프로그램개발: 조승현(kaic21@gmail.com)")
+    painter.setPen(QColor("#FFFFFF"))
+    painter.drawText(
+        QRect(0, 290, 640, 40),
+        int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
+        "프로그램을 준비하고 있습니다...",
+    )
     painter.end()
 
-    splash = QSplashScreen(pixmap, Qt.WindowType.WindowStaysOnTopHint)
+    splash = StartupSplash(pixmap)
     splash.setObjectName("startupSplash")
     splash.setAccessibleName("OMR Grader 시작 화면")
     splash.setAccessibleDescription(
         "OMR Grader 로딩 중. 프로그램개발: 조승현(kaic21@gmail.com)"
     )
-    splash.showMessage(
-        "프로그램을 준비하고 있습니다...",
-        Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
-        QColor("#FFFFFF"),
-    )
     return splash
 
 
-def create_startup() -> tuple[QApplication, QSplashScreen]:
+def create_startup() -> tuple[QApplication, StartupSplash]:
     application = QApplication.instance()
     app = application if isinstance(application, QApplication) else QApplication(sys.argv)
     QApplication.setApplicationName("OMR Grader")

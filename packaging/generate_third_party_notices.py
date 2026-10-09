@@ -12,7 +12,6 @@ from importlib.metadata import Distribution, PackageNotFoundError, distribution
 from pathlib import Path, PurePosixPath
 from shutil import copyfile
 
-
 BUNDLED_DISTRIBUTIONS = (
     "PySide6",
     "PySide6_Essentials",
@@ -65,6 +64,26 @@ def _copy_distribution_sources(distribution_info: Distribution, destination: Pat
     return copied
 
 
+def _qt_source_offer() -> list[str]:
+    """Where the LGPL-3.0 Qt and Qt for Python sources of this build can be obtained."""
+    version = distribution("PySide6").version
+    major_minor = ".".join(version.split(".")[:2])
+    return [
+        "Qt and Qt for Python (PySide6, PySide6_Essentials, PySide6_Addons, shiboken6)",
+        "  are used under the GNU Lesser General Public License v3.0. They are shipped as",
+        "  separate libraries under _internal/PySide6 and _internal/shiboken6 and may be",
+        "  replaced with compatible builds of the same version.",
+        f"  Qt {version} source: https://download.qt.io/official_releases/qt/"
+        f"{major_minor}/{version}/single/",
+        f"  Qt for Python {version} source: https://download.qt.io/official_releases/"
+        f"QtForPython/pyside6/PySide6-{version}-src/",
+        "",
+        "OpenCV's optional FFmpeg video plugin (opencv_videoio_ffmpeg) is not shipped;",
+        "  the application reads still images only.",
+        "",
+    ]
+
+
 def materialize_notices(output_directory: Path) -> Path:
     """Write an index plus the package-supplied metadata and notice sources."""
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -110,6 +129,7 @@ def materialize_notices(output_directory: Path) -> Path:
                 "",
             )
         )
+    index_lines.extend(_qt_source_offer())
     index_path = output_directory / "THIRD_PARTY_NOTICES.txt"
     index_path.write_text("\n".join(index_lines), encoding="utf-8")
     return index_path

@@ -39,7 +39,9 @@ from omr_grader.resources.messages import get_message
 from omr_grader.workbooks.schemas import RESPONSE_SHEET_NAME
 
 if TYPE_CHECKING:
-    from PySide6.QtWidgets import QApplication, QSplashScreen
+    from PySide6.QtWidgets import QApplication
+
+    from omr_grader.startup import StartupSplash
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,7 +316,7 @@ class _GradingPhases:
             self.show(f"점수를 계산하는 중 ({completed} / {total}명)", completed, total)
 
 
-def _create_startup_splash() -> QSplashScreen:
+def _create_startup_splash() -> StartupSplash:
     """Create the native startup surface before bootstrap and heavy imports."""
     from omr_grader.startup import create_splash
 
@@ -330,7 +332,7 @@ def _configure_application_branding(application: QApplication) -> None:
 def run(
     *,
     application: QApplication | None = None,
-    startup_splash: QSplashScreen | None = None,
+    startup_splash: StartupSplash | None = None,
 ) -> int:
     """Launch the Qt shell after the portable bootstrap has completed."""
     global _RUNTIME_REFERENCES
