@@ -177,7 +177,8 @@ def test_compact_result_view_exposes_retained_source_scans_without_copying(
     assert (session / workbook_names[0]).stat().st_ino == (
         generation / workbook_names[0]
     ).stat().st_ino
-    assert not (session / score_book).exists()
+    # The folder's score book became the only copy, so it is left alone, never deleted.
+    assert (session / score_book).read_bytes() == score_book.encode()
 
 
 def test_grading_review_images_are_jpeg_quality_75_and_bounded_to_1600px_and_500kb(
