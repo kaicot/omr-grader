@@ -172,16 +172,19 @@ def import_answer_key_bytes(
         sheet = workbook[sheet_name]
         if sheet.max_row > MAX_ROWS or not 3 <= sheet.max_column <= MAX_COLUMNS:
             return Err((_error("XLSX_DIMENSION_QUOTA", "sheet_name"),))
-        header = next(sheet.iter_rows(min_row=1, max_row=1, max_col=3))
-        if (
-            any(cell.data_type == "f" or type(cell.value) is not str for cell in header)
+        # Formulas are refused in every used column (a note column too), not only A-C; the
+        # package check already rejects any <f> element, this keeps the cell reader consistent.
+        full_header = next(sheet.iter_rows(min_row=1, max_row=1))
+        header = full_header[:3]
+        if any(cell.data_type == "f" for cell in full_header) or (
+            any(type(cell.value) is not str for cell in header)
             or tuple(cell.value for cell in header) != ANSWER_KEY_HEADERS
         ):
             return Err((_error("XLSX_HEADERS_INVALID", "header"),))
         parsed: dict[int, AnswerKeyEntry] = {}
-        for row_number, row in enumerate(sheet.iter_rows(min_row=2, max_col=3), 2):
-            question_cell, answer_cell, points_cell = row
-            if any(cell.data_type == "f" for cell in row):
+        for row_number, full_row in enumerate(sheet.iter_rows(min_row=2), 2):
+            question_cell, answer_cell, points_cell = row = full_row[:3]
+            if any(cell.data_type == "f" for cell in full_row):
                 return Err((_error("XLSX_FORMULA_FORBIDDEN", f"row[{row_number}]"),))
             if all(cell.value is None for cell in row):
                 continue

@@ -26,7 +26,7 @@ from omr_grader.application.validation_token import (
     ValidatedBackup,
 )
 from omr_grader.domain.enums import ArchiveLineageMode
-from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.errors import Err, ErrorContextValue, ErrorInfo, Ok, Result
 from omr_grader.domain.models import (
     ArchiveEntry,
     ArchiveManifest,
@@ -46,8 +46,11 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
-def _error(code: str, path: str = "") -> Err:
-    return Err((ErrorInfo(code, f"error.{code.lower()}", field_path=path or None),))
+def _error(code: str, path: str = "", reason: str | None = None) -> Err:
+    context: dict[str, ErrorContextValue] = {} if reason is None else {"reason": reason}
+    return Err(
+        (ErrorInfo(code, f"error.{code.lower()}", field_path=path or None, context=context),)
+    )
 
 
 def _portable_path(path: str) -> bool:
@@ -226,7 +229,11 @@ class BackupArchive:
                 try:
                     os.link(temporary, target)
                 except FileExistsError:
-                    return _error("BACKUP_DESTINATION_EXISTS", destination)
+                    return _error(
+                        "BACKUP_DESTINATION_EXISTS",
+                        destination,
+                        "같은 이름의 백업 파일이 이미 있습니다.",
+                    )
             return Ok(archive_sha256)
         except (
             OSError,

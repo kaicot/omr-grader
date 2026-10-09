@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import urllib.error
@@ -111,6 +112,42 @@ def test_offline_and_slow_networks_fail_quietly(failure):
     result = fetch_latest_release("4.2.0", opener)
 
     assert isinstance(result, Err) and result.errors[0].code == "UPDATE_CHECK_FAILED"
+
+
+class _BrokenBody(_Response):
+    def __init__(self, failure: Exception) -> None:
+        super().__init__(b"")
+        self._failure = failure
+
+    def read(self, size=-1):
+        raise self._failure
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        http.client.IncompleteRead(b"{", 10),
+        http.client.BadStatusLine("<html>"),
+        http.client.RemoteDisconnected("closed"),
+        http.client.HTTPException("odd"),
+    ],
+)
+def test_http_protocol_errors_from_a_captive_portal_fail_quietly(failure):
+    def raising_opener(request, timeout):
+        raise failure
+
+    def raising_body(request, timeout):
+        return _BrokenBody(failure)
+
+    for opener in (raising_opener, raising_body):
+        result = fetch_latest_release("4.2.0", opener)
+        assert isinstance(result, Err) and result.errors[0].code == "UPDATE_CHECK_FAILED"
+
+
+def test_a_deeply_nested_answer_is_refused_not_raised():
+    nested = b"[" * 100_000 + b"]" * 100_000
+
+    assert isinstance(fetch_latest_release("4.2.0", lambda r, t: _Response(nested)), Err)
 
 
 def test_garbage_and_huge_answers_are_refused():

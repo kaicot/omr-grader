@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
 import fitz
 import openpyxl
+import pytest
 
 from omr_grader.application.answer_key_use_case import AnswerKeyWorkbookUseCase
 from omr_grader.application.dto import (
@@ -19,7 +22,7 @@ from omr_grader.application.dto import (
 from omr_grader.application.grading_use_case import GradingUseCase
 from omr_grader.bootstrap import bootstrap
 from omr_grader.domain.enums import ExamTerm
-from omr_grader.domain.errors import Err, Ok
+from omr_grader.domain.errors import Err, ErrorInfo, Ok
 from omr_grader.infrastructure.config_store import AppConfig, save_config
 from omr_grader.infrastructure.data_import import import_previous_install, install_root
 from omr_grader.infrastructure.form_detection import FormDetector
@@ -35,8 +38,11 @@ from tests.helpers.synthetic_omr import encode_png, render_sheet
 class _Install:
     """A bootstrapped portable folder with its stores."""
 
-    def __init__(self, root: Path) -> None:
-        root.mkdir(parents=True)
+    def __init__(self, root: Path, copy_from: Path | None = None) -> None:
+        if copy_from is None:
+            root.mkdir(parents=True)
+        else:
+            shutil.copytree(copy_from, root)
         outcome = bootstrap(ManagedPaths.from_root(root))
         assert not isinstance(outcome, Err) and outcome.value.write_enabled
         self.paths = outcome.value.paths
@@ -99,6 +105,34 @@ class _Install:
             for path in self.paths.data_dir.iterdir()
             if path.is_dir() and (path / "IDENTITY.json").exists()
         )
+
+
+@pytest.fixture(scope="module")
+def old_template(tmp_path_factory):
+    """An old install with one active exam, one trashed exam, a form and settings."""
+    base = tmp_path_factory.mktemp("old-template")
+    old = _Install(base / "OMR Grader")
+    old.graded_exam(base / "work1", "생리학 중간고사")
+    trashed = old.graded_exam(base / "work2", "해부학 기말고사")
+    assert isinstance(
+        old.coordinator.soft_delete(SessionMutationRequest(*trashed, uuid4().hex)), Ok
+    )
+    form = sorted(path.name for path in old.paths.profiles_dir.glob("*.omrtemplate"))[0]
+    assert isinstance(save_config(old.paths, AppConfig(form, 8, True), old.token), Ok)
+    return old.paths.root, trashed, form
+
+
+def _failure() -> Err:
+    return Err((ErrorInfo("TEST_FAILED", "error.test_failed", None, context={"reason": "x"}),))
+
+
+def _everything(root: Path) -> dict[str, bytes | None]:
+    """Every file and folder under ``root`` (folders map to None), locks included."""
+    return {
+        str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
+        for path in root.rglob("*")
+        if path.suffix != ".log"
+    }
 
 
 def _tree(root: Path) -> dict[str, bytes]:
@@ -201,3 +235,187 @@ def test_data_from_a_newer_format_is_not_imported(tmp_path):
 
     assert isinstance(refused, Err) and refused.errors[0].code == "IMPORT_SOURCE_NEWER"
     assert new.exam_folders() == []
+
+
+def test_the_old_folder_gets_no_new_files_or_folders_even_without_its_bookkeeping(
+    tmp_path, old_template
+):
+    old = _Install(tmp_path / "old", copy_from=old_template[0])
+    for name in (".reservations", ".deleting", ".locks"):
+        shutil.rmtree(old.paths.data_dir / name, ignore_errors=True)
+    before = _everything(old.paths.root)
+    new = _Install(tmp_path / "new")
+
+    imported = import_previous_install(str(old.paths.root), new.paths, new.store)
+
+    assert isinstance(imported, Ok)
+    assert (imported.value.exams, imported.value.trash, imported.value.failed) == (1, 1, ())
+    assert _everything(old.paths.root) == before
+
+
+def test_a_read_only_old_folder_is_read_without_any_write(tmp_path, old_template, monkeypatch):
+    old = _Install(tmp_path / "old", copy_from=old_template[0])
+    new = _Install(tmp_path / "new")
+    old_root = str(old.paths.root.resolve()).lower()
+    before = _everything(old.paths.root)
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+    real_open, real_mkdir, real_touch = os.open, Path.mkdir, Path.touch
+
+    def inside_old(path: object) -> bool:
+        return str(Path(str(path)).resolve()).lower().startswith(old_root)
+
+    def guarded_open(path, flags, *args, **kwargs):
+        if flags & write_flags and inside_old(path):
+            raise PermissionError(13, "read-only", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    def guarded_mkdir(self, *args, **kwargs):
+        if inside_old(self):
+            raise PermissionError(13, "read-only", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    def guarded_touch(self, *args, **kwargs):
+        if inside_old(self):
+            raise PermissionError(13, "read-only", str(self))
+        return real_touch(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+    monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
+    monkeypatch.setattr(Path, "touch", guarded_touch)
+
+    imported = import_previous_install(str(old.paths.root), new.paths, new.store)
+
+    monkeypatch.undo()
+    assert isinstance(imported, Ok)
+    assert (imported.value.exams, imported.value.trash, imported.value.failed) == (1, 1, ())
+    assert _everything(old.paths.root) == before
+
+
+def test_one_unreadable_exam_is_skipped_with_a_reason_and_the_rest_come_over(
+    tmp_path, old_template
+):
+    old = _Install(tmp_path / "old", copy_from=old_template[0])
+    (old.paths.data_dir / "새 폴더").mkdir()
+    broken = old.paths.data_dir / "260101_090000_깨진 시험"
+    broken.mkdir()
+    (broken / "IDENTITY.json").write_text(json.dumps({"session_id": uuid4().hex}), encoding="utf-8")
+    (broken / "CURRENT.json").write_text("{not json", encoding="utf-8")
+    nameless = old.paths.data_dir / "260101_090001_정보 없음"
+    nameless.mkdir()
+    (nameless / "IDENTITY.json").write_text("[]", encoding="utf-8")
+    new = _Install(tmp_path / "new")
+
+    imported = import_previous_install(str(old.paths.root), new.paths, new.store)
+
+    assert isinstance(imported, Ok)
+    summary = imported.value
+    assert (summary.exams, summary.trash) == (1, 1)
+    assert len(summary.failed) == 2
+    assert any(item.startswith("260101_090000_깨진 시험 (") for item in summary.failed)
+    assert any(item.startswith("260101_090001_정보 없음 (") for item in summary.failed)
+    assert not any("새 폴더" in item for item in summary.failed)
+    assert len(new.exam_folders()) == 1
+
+
+def test_a_trash_exam_that_cannot_be_moved_is_reported_not_silently_kept(
+    tmp_path, old_template, monkeypatch
+):
+    old = _Install(tmp_path / "old", copy_from=old_template[0])
+    new = _Install(tmp_path / "new")
+    real = SessionCommitCoordinator.soft_delete
+    calls = []
+
+    def failing(self, request):
+        calls.append(request)
+        return _failure()
+
+    monkeypatch.setattr(SessionCommitCoordinator, "soft_delete", failing)
+
+    first = import_previous_install(str(old.paths.root), new.paths, new.store)
+
+    assert isinstance(first, Ok) and calls
+    assert (first.value.exams, first.value.trash) == (1, 0)
+    assert len(first.value.failed) == 1 and "휴지통으로 옮기지 못해" in first.value.failed[0]
+    monkeypatch.setattr(SessionCommitCoordinator, "soft_delete", real)
+
+    again = import_previous_install(str(old.paths.root), new.paths, new.store)
+
+    # The exam is here (and may have been restored on purpose), so it is never moved again.
+    assert isinstance(again, Ok)
+    assert (again.value.exams, again.value.already_present, again.value.trash) == (0, 2, 0)
+    assert len(new.exam_folders()) == 2
+
+
+def test_forms_with_the_same_content_are_not_copied_again_and_the_default_follows(
+    tmp_path, old_template
+):
+    old = _Install(tmp_path / "old", copy_from=old_template[0])
+    form = old_template[2]
+    new = _Install(tmp_path / "new")
+    other_name = "내가_바꾼_이름.omrtemplate"
+    shutil.copyfile(old.paths.profiles_dir / form, new.paths.profiles_dir / other_name)
+    saved: list[AppConfig] = []
+
+    def save_settings(config):
+        saved.append(config)
+        return Ok(config)
+
+    for _ in range(2):
+        imported = import_previous_install(
+            str(old.paths.root),
+            new.paths,
+            new.store,
+            new.profiles.save_generated,
+            save_settings=save_settings,
+        )
+        assert isinstance(imported, Ok)
+        assert imported.value.profiles == 0
+        assert imported.value.settings == AppConfig(other_name, 8, True)
+
+    assert sorted(path.name for path in new.paths.profiles_dir.iterdir()) == [other_name]
+    assert saved == [AppConfig(other_name, 8, True)] * 2
+
+
+def test_a_form_is_copied_once_and_a_failed_settings_save_is_not_reported_as_imported(
+    tmp_path, old_template
+):
+    old = _Install(tmp_path / "old", copy_from=old_template[0])
+    new = _Install(tmp_path / "new")
+
+    def failing_save(config):
+        return _failure()
+
+    results = [
+        import_previous_install(
+            str(old.paths.root),
+            new.paths,
+            new.store,
+            new.profiles.save_generated,
+            save_settings=failing_save,
+        )
+        for _ in range(3)
+    ]
+
+    summaries = [item.value for item in results if isinstance(item, Ok)]
+    assert len(summaries) == 3
+    assert [item.profiles for item in summaries] == [1, 0, 0]
+    assert all(item.settings is None and item.settings_failed for item in summaries)
+    assert len(list(new.paths.profiles_dir.glob("*.omrtemplate"))) == 1
+
+
+def test_settings_are_saved_through_the_given_saver(tmp_path, old_template):
+    old = _Install(tmp_path / "old", copy_from=old_template[0])
+    new = _Install(tmp_path / "new")
+    seen = []
+
+    imported = import_previous_install(
+        str(old.paths.root),
+        new.paths,
+        new.store,
+        new.profiles.save_generated,
+        save_settings=lambda config: seen.append(config) or Ok(config),
+    )
+
+    assert isinstance(imported, Ok)
+    assert imported.value.settings == seen[0] == AppConfig(old_template[2], 8, True)
+    assert imported.value.settings_failed is False

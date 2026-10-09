@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_CEILING, Decimal
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -25,6 +27,8 @@ from omr_grader.workbooks.subject_config import Subject, SubjectConfig
 QUESTION_COUNT = 100
 RESULT_SHEET_NAME = "합산결과"
 UNREADABLE_SHEET_NAME = "학번 확인 필요"
+# Stored times are UTC; the screens and this report show Korean time.
+_LOCAL_ZONE = ZoneInfo("Asia/Seoul")
 PARTS_SHEET_NAME = "파트"
 SUBJECT_SHEET_NAME = "과목구성"
 SUBJECT_PASS_SHEET_NAME = "과목별 합격"
@@ -564,6 +568,19 @@ def _write_unreadable(
     style_header_row(sheet, "A2")
 
 
+def _local_time_text(value: str | None) -> str:
+    """A stored UTC ISO time as Korean local ``YYYY-MM-DD HH:MM``; unparseable text stays as is."""
+    if not value:
+        return ""
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        return value
+    return moment.astimezone(_LOCAL_ZONE).strftime("%Y-%m-%d %H:%M")
+
+
 def _write_parts(workbook: Workbook, parts: Sequence[PartScores], generated_at: str) -> None:
     sheet = workbook.create_sheet(PARTS_SHEET_NAME)
     _append(sheet, ["파트", "시험명", "폴더", "채점 시각", "학생 수", "만점"])
@@ -574,14 +591,14 @@ def _write_parts(workbook: Workbook, parts: Sequence[PartScores], generated_at: 
                 part.label,
                 part.exam_name,
                 part.folder_name,
-                part.graded_at or "",
+                _local_time_text(part.graded_at),
                 len(part.rows),
                 part.maximum,
             ],
         )
     style_header_row(sheet, "A2")
     sheet.append([])
-    _append(sheet, ["작성 시각", generated_at])
+    _append(sheet, ["작성 시각", _local_time_text(generated_at)])
 
 
 def _write_subjects(
