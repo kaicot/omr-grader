@@ -12,7 +12,7 @@
   [4.1.2](../releases/4.1.2.md)(빌드 34, `v4.1.2`)는 휴지통 작동 오류를 고치고 도움말을 새로 만들었다.
   [4.2.0](../releases/4.2.0.md)(빌드 35, `v4.2.0`)은 새 버전 안내, 이전 버전 자료 가져오기, 자료 형식 표시를 더했다.
   [4.2.1](../releases/4.2.1.md)(빌드 36, `v4.2.1`)은 저장 · 화면 · 가져오기의 문제를 점검해 고쳤다.
-  [4.2.2](../releases/4.2.2.md)(빌드 37 후보)는 PDF 엔진을 PyMuPDF(AGPL)에서 pypdfium2로 바꾸고 PolyForm Noncommercial 라이선스를 붙였다.
+  [4.2.2](../releases/4.2.2.md)(빌드 37, `v4.2.2`)는 PDF 엔진을 PyMuPDF(AGPL)에서 pypdfium2로 바꾸고 PolyForm Noncommercial 라이선스를 붙였다.
 - 기준 코드: `fix/live-grading-20261006` 브랜치의 2.1.3 (`b6a0b06`), 작업 브랜치 `feat/v4`
 - 제품 버전: 4.2.2
 
