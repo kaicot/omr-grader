@@ -7,6 +7,7 @@ per-exam score book gets them.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -243,10 +244,8 @@ def export_combined_report(
         return _fail("합산 성적표를 저장할 수 없습니다. 저장 위치를 확인해 주세요.", "destination")
     finally:
         if temporary_name is not None:
-            try:
+            with contextlib.suppress(OSError):
                 Path(temporary_name).unlink(missing_ok=True)
-            except OSError:
-                pass
     return Ok(
         CombinedReportSummary(
             str(target), counts.students, counts.complete, counts.needs_review, counts.unreadable
@@ -273,10 +272,8 @@ def write_subject_config_sample(path: str) -> Result[None]:
         return _fail("예시 파일을 저장할 수 없습니다. 저장 위치를 확인해 주세요.", "path")
     finally:
         if temporary_name is not None:
-            try:
+            with contextlib.suppress(OSError):
                 Path(temporary_name).unlink(missing_ok=True)
-            except OSError:
-                pass
     return Ok(None)
 
 

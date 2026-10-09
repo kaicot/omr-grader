@@ -44,6 +44,7 @@ from .models import (
 )
 
 __all__ = [
+    "SCHEMA_VERSION",
     "AnswerKeyEntry",
     "AnswerKeySnapshot",
     "AnswerRecognition",
@@ -76,7 +77,6 @@ __all__ = [
     "Result",
     "RosterEntry",
     "RosterSnapshot",
-    "SCHEMA_VERSION",
     "SessionManifest",
     "SessionRecord",
     "SessionState",

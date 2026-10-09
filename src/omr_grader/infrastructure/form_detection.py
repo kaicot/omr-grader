@@ -7,6 +7,7 @@ otherwise a new exact profile is generated for one confirmation by the user.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -267,8 +268,9 @@ def _page_loaders(
             batch = enumerate_pdf(path, _DETECTION_SESSION, input_ordinal=0, duplicate_ordinal=0)
             if isinstance(batch, Err):
                 continue
-            for item in batch.value.inputs[: limit - len(loaders)]:
-                loaders.append(partial(_rendered_page, item))
+            loaders.extend(
+                partial(_rendered_page, item) for item in batch.value.inputs[: limit - len(loaders)]
+            )
             continue
         images = (
             enumerate_image_folder(path, _DETECTION_SESSION)
@@ -277,8 +279,10 @@ def _page_loaders(
         )
         if isinstance(images, Err):
             continue
-        for image_input in images.value.inputs[: limit - len(loaders)]:
-            loaders.append(partial(_image_page, image_input.source_path))
+        loaders.extend(
+            partial(_image_page, image_input.source_path)
+            for image_input in images.value.inputs[: limit - len(loaders)]
+        )
     return loaders
 
 
@@ -302,10 +306,9 @@ def _report(progress: Callable[[int, int], None] | None, done: int, total: int) 
     """Progress is advisory: a failing listener never stops detection."""
     if progress is None:
         return
-    try:
+    # Progress is advisory, so a listener failure is swallowed on purpose.
+    with contextlib.suppress(Exception):
         progress(done, total)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _gray(pixels: NDArray[np.uint8]) -> NDArray[np.uint8]:

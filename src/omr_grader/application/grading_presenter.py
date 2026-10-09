@@ -110,7 +110,7 @@ class GradingProgressDisplay:
             raise TypeError("eta_seconds must be int or None")
         if self.completed < 0 or self.total < 0 or self.completed > self.total:
             raise ValueError("invalid grading progress")
-        if self.elapsed_seconds < 0 or self.eta_seconds is not None and self.eta_seconds < 0:
+        if self.elapsed_seconds < 0 or self.eta_seconds is not None and self.eta_seconds < 0:  # noqa: RUF021  precedence is intended; keep as written
             raise ValueError("progress times must be nonnegative")
         if not isinstance(self.status, str):
             raise TypeError("status must be str")

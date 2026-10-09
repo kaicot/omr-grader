@@ -6,10 +6,10 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from functools import cache
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from functools import cache
 from types import UnionType
 from typing import Any, ClassVar, Self, TypeVar, cast, get_args, get_origin, get_type_hints
 
@@ -80,7 +80,7 @@ def _timestamp(value: object) -> None:
     if not isinstance(value, str) or not _TIMESTAMP.fullmatch(value):
         raise ValueError("timestamp must be UTC RFC3339 with six fractional digits")
     try:
-        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")  # noqa: DTZ007  literal Z suffix only, no conversion
     except ValueError as error:
         raise ValueError("invalid timestamp") from error
 
@@ -283,9 +283,8 @@ def _decode(value: object, hint: object) -> object:
     elif hint is str:
         if not isinstance(value, str):
             raise ValueError("string required")
-    elif hint is type(None):
-        if value is not None:
-            raise ValueError("null required")
+    elif hint is type(None) and value is not None:
+        raise ValueError("null required")
     return value
 
 
@@ -349,9 +348,10 @@ class CellEvidence(_Wire):
             raise ValueError("invalid question")
         if self.choice is not None and (type(self.choice) is not int or not 1 <= self.choice <= 5):
             raise ValueError("invalid choice")
-        if self.fill_score is not None:
-            if not Decimal("0") <= Decimal(_decimal(self.fill_score)) <= Decimal("1"):
-                raise ValueError("fill score must be between zero and one")
+        if self.fill_score is not None and not (
+            Decimal("0") <= Decimal(_decimal(self.fill_score)) <= Decimal("1")
+        ):
+            raise ValueError("fill score must be between zero and one")
 
 
 @dataclass(frozen=True, slots=True)

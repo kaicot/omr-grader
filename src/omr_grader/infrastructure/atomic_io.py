@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import math
@@ -93,10 +94,8 @@ def atomic_write_bytes(destination: Path, payload: bytes) -> Result[None]:
             raise OSError("refusing to replace a link or reparse point")
         retry_io(lambda: _replace_durably(temporary, target))
     except OSError as exc:
-        try:
+        with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
         return _error("ATOMIC_WRITE_FAILED", "설정 파일을 원자적으로 저장할 수 없습니다.", exc)
     return Ok(None)
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-from ctypes import wintypes
 import hashlib
 import json
 import os
@@ -18,10 +17,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 
 READY_SCHEMA = 1
 WRITE_AFFORDANCES = {"config_persistence", "session_persistence"}
@@ -33,7 +32,7 @@ class SmokeError(RuntimeError):
 
 
 class _ThreadEntry32(ctypes.Structure):
-    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]  # noqa: RUF012  ctypes _fields_ layout, never shared
 
 
 class _Job:
@@ -56,11 +55,11 @@ class _Job:
         if not self.handle:
             raise SmokeError(f"CreateJobObjectW failed: {ctypes.get_last_error()}")
         class Basic(ctypes.Structure):
-            _fields_ = [("a", ctypes.c_longlong), ("b", ctypes.c_longlong), ("flags", wintypes.DWORD), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t), ("e", wintypes.DWORD), ("f", ctypes.c_size_t), ("g", wintypes.DWORD), ("h", wintypes.DWORD)]
+            _fields_ = [("a", ctypes.c_longlong), ("b", ctypes.c_longlong), ("flags", wintypes.DWORD), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t), ("e", wintypes.DWORD), ("f", ctypes.c_size_t), ("g", wintypes.DWORD), ("h", wintypes.DWORD)]  # noqa: RUF012  ctypes _fields_ layout, never shared
         class Io(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_ulonglong) for name in "abcdef"]
+            _fields_ = [(name, ctypes.c_ulonglong) for name in "abcdef"]  # noqa: RUF012  ctypes _fields_ layout, never shared
         class Extended(ctypes.Structure):
-            _fields_ = [("basic", Basic), ("io", Io), ("a", ctypes.c_size_t), ("b", ctypes.c_size_t), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t)]
+            _fields_ = [("basic", Basic), ("io", Io), ("a", ctypes.c_size_t), ("b", ctypes.c_size_t), ("c", ctypes.c_size_t), ("d", ctypes.c_size_t)]  # noqa: RUF012  ctypes _fields_ layout, never shared
         limits = Extended()
         limits.basic.flags = 0x2000
         if not kernel.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)) or not kernel.AssignProcessToJobObject(self.handle, process._handle):
@@ -253,7 +252,7 @@ def _close_windows(process_id: int) -> None:
                 if not user32.SendMessageTimeoutW(window, 0x0112, 0xF060, 0, 0x0002, 5000, ctypes.byref(result)):
                     raise SmokeError(f"could not close main window: {ctypes.get_last_error()}")
                 closed += 1
-        except BaseException as error:  # ctypes callbacks otherwise swallow errors.
+        except BaseException as error:  # ctypes callbacks otherwise swallow errors.  # noqa: BLE001  smoke harness records every failure instead of crashing
             callback_errors.append(error)
             return False
         return True
@@ -350,11 +349,11 @@ def _graceful_close(process: subprocess.Popen[str], *, required: bool, job: _Job
     _close_windows(process.pid)
     try:
         process.wait(timeout=30)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as timeout:
         _force_tree_cleanup(process, job)
         job.close()
         if required:
-            raise SmokeError("graceful close timed out")
+            raise SmokeError("graceful close timed out") from timeout
         return False
     if process.returncode != 0:
         raise SmokeError(f"graceful close exit {process.returncode}")
@@ -451,7 +450,7 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
             if before != after:
                 raise SmokeError("read-only portable tree bytes changed")
             report.passed("read_only_tree_unchanged")
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001  smoke harness records every failure instead of crashing
         report.failed("execution", error)
     finally:
         try:
@@ -462,13 +461,13 @@ def run_smoke(source: Path, *, mode: str, require_graceful_close: bool) -> Smoke
                         report.passed("process_tree_cleanup")
                 finally:
                     job.close()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001  smoke harness records every failure instead of crashing
             report.failed("process_tree_cleanup", error)
         try:
             if deny_applied and sid is not None:
                 remove_write_deny(root, sid)
                 report.passed("acl_restored", {"sid": sid})
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001  smoke harness records every failure instead of crashing
             report.failed("acl_restored", error)
         temporary.cleanup()
     return report
@@ -486,7 +485,7 @@ def main() -> int:
             mode=arguments.mode,
             require_graceful_close=arguments.require_graceful_close,
         )
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001  smoke harness records every failure instead of crashing
         report = SmokeReport(arguments.mode)
         report.failed("preflight", error)
     print(json.dumps(report.output(), sort_keys=True))

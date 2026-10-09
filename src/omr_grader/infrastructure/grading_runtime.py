@@ -32,7 +32,6 @@ from omr_grader.domain.enums import (
     SnapshotPurpose,
 )
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
-from omr_grader.infrastructure.result_layout import result_base_name
 from omr_grader.domain.models import (
     AnswerKeyEntry,
     AnswerKeySnapshot,
@@ -48,6 +47,7 @@ from omr_grader.domain.models import (
     SessionRecord,
 )
 from omr_grader.domain.score_average import round_average
+from omr_grader.infrastructure.result_layout import result_base_name
 from omr_grader.infrastructure.session_store import SessionCommitCoordinator, SessionStore
 
 _APP_VERSION = "omr-grader"

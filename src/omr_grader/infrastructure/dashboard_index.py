@@ -92,7 +92,7 @@ def _manifest_digest(lease: CommittedSnapshotLease) -> str:
 def _close_lease(lease: CommittedSnapshotLease) -> ErrorInfo | None:
     try:
         closed = lease.close()
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001  lease close failure is reported as an issue
         return _issue(
             "DASHBOARD_LEASE_CLOSE_FAILED",
             "대시보드 인덱스 스냅샷 잠금을 해제하지 못했습니다.",

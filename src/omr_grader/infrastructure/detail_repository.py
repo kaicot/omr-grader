@@ -336,7 +336,7 @@ def _error(code: str, reason: str) -> Err:
 def _close_error(lease: CommittedSnapshotLease) -> ErrorInfo | None:
     try:
         closed = lease.close()
-    except BaseException as error:
+    except BaseException as error:  # noqa: BLE001  lease close failure is reported as ErrorInfo
         return ErrorInfo(
             "DETAIL_LEASE_CLOSE_FAILED",
             "error.detail_lease_close_failed",

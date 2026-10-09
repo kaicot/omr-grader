@@ -25,17 +25,17 @@ class DetailTableModel(QAbstractTableModel):
         self._students, self._question_numbers = students, numbers
         self.endResetModel()
 
-    def rowCount(  # noqa: N802
+    def rowCount(
         self, parent: QModelIndex | QPersistentModelIndex = _INVALID_INDEX
     ) -> int:
         return 0 if parent.isValid() else len(self._students)
 
-    def columnCount(  # noqa: N802
+    def columnCount(
         self, parent: QModelIndex | QPersistentModelIndex = _INVALID_INDEX
     ) -> int:
         return 0 if parent.isValid() else len(self._fixed_headers) + len(self._question_numbers)
 
-    def headerData(  # noqa: N802
+    def headerData(
         self,
         section: int,
         orientation: Qt.Orientation,
@@ -49,7 +49,7 @@ class DetailTableModel(QAbstractTableModel):
             )
         return None
 
-    def data(  # noqa: N802
+    def data(
         self,
         index: QModelIndex | QPersistentModelIndex,
         role: int = Qt.ItemDataRole.DisplayRole,

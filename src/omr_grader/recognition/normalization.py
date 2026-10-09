@@ -38,7 +38,7 @@ class NormalizedRaster:
         if (
             self.pixels.dtype != np.uint8
             or self.pixels.ndim not in (2, 3)
-            or self.pixels.ndim == 3
+            or self.pixels.ndim == 3  # noqa: RUF021  precedence is intended; keep as written
             and self.pixels.shape[2] not in (3, 4)
         ):
             raise ValueError("normalized raster must be uint8 gray or color")

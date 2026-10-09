@@ -49,7 +49,7 @@ class ImportDropWidget(QFrame):
     browse_requested = Signal(object)
     rejected = Signal(str)
 
-    _TEXT = {
+    _TEXT = {  # noqa: RUF012  class-level text table, never mutated
         ImportKind.SOURCE: (
             "이미지(JPG, PNG) 폴더나 PDF 파일을 이곳에 끌어놓거나 위 버튼으로 선택해주세요."
         ),

@@ -24,9 +24,14 @@ from omr_grader.application.dto import (
     ScoreInput,
     ScoreSet,
 )
+from omr_grader.domain.corrections import (
+    CorrectionState,
+    project_correction_state,
+    project_effective_responses,
+    validate_correction_event_history,
+)
 from omr_grader.domain.enums import AnswerStatus, CellStatus, OperationKind
 from omr_grader.domain.errors import Err
-from omr_grader.domain.corrections import CorrectionState, project_correction_state, project_effective_responses, validate_correction_event_history
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import (
     AnswerKeySnapshot,

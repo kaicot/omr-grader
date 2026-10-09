@@ -262,9 +262,11 @@ def _answer_centers(
 ) -> NDArray[np.float64]:
     centers: list[tuple[float, float]] = []
     for region, _ in answer_regions:
-        for row in range(region.grid.rows):
-            for column in range(region.grid.cols):
-                centers.append(_cell(region, column, row, width, height)[2])
+        centers.extend(
+            _cell(region, column, row, width, height)[2]
+            for row in range(region.grid.rows)
+            for column in range(region.grid.cols)
+        )
     return np.asarray(centers, dtype=np.float64)
 
 

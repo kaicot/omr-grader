@@ -143,7 +143,7 @@ class CorrectionApplicationService:
     def _close_error(snapshot: CommittedCorrectionSnapshot) -> ErrorInfo | None:
         try:
             closed = snapshot.lease.close()
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001  lease close failure is reported as ErrorInfo
             return ErrorInfo(
                 "CORRECTION_LEASE_CLOSE_FAILED",
                 "error.correction_lease_close_failed",

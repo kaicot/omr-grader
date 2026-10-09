@@ -202,7 +202,7 @@ def render_scored_overlay(
         or image.ndim not in (2, 3)
         or image.shape[0] * image.shape[1] > MAX_OVERLAY_IMAGE_PIXELS
         or not np.issubdtype(image.dtype, np.number)
-        or image.ndim == 3
+        or image.ndim == 3  # noqa: RUF021  precedence is intended; keep as written
         and image.shape[2] not in (3, 4)
     ):
         return _error("INVALID_OVERLAY_IMAGE", "image")

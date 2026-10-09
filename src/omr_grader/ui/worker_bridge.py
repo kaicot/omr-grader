@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, fields, is_dataclass
@@ -132,7 +133,7 @@ class _OperationWorker(QObject):
                 self._emit_success(value.value)
             else:
                 self._emit_success(value)
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001  worker boundary must report every failure to the UI
             self._emit_terminal(self.failed, _worker_error(error))
         finally:
             self.finished.emit()
@@ -254,7 +255,7 @@ class WorkerBridge(QObject):
         if hook is not None:
             try:
                 result = hook()
-            except BaseException as error:
+            except BaseException as error:  # noqa: BLE001  worker boundary must report every failure to the UI
                 self._emit_terminal(self.failed, _worker_error(error))
                 return
             if isinstance(result, Err):
@@ -351,11 +352,9 @@ class WorkerBridge(QObject):
             return
 
     def _emit_terminal(self, signal: _TerminalEmitter, value: object | None = None) -> None:
-        try:
+        # The bridge may outlive its native QObject briefly during Qt teardown.
+        with contextlib.suppress(RuntimeError):
             self._progress_timer.stop()
-        except RuntimeError:
-            # The bridge may outlive its native QObject briefly during Qt teardown.
-            pass
         self._flush_pending_progress()
         with self._lock:
             if self._terminal_emitted:

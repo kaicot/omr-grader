@@ -329,7 +329,7 @@ def runner_metadata() -> dict[str, Any]:
         raise RuntimeError("RC27 runner metadata requires Windows")
 
     class MEMORYSTATUSEX(ctypes.Structure):
-        _fields_ = [
+        _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
             ("dwLength", wintypes.DWORD),
             ("dwMemoryLoad", wintypes.DWORD),
             ("ullTotalPhys", ctypes.c_ulonglong),
@@ -342,7 +342,7 @@ def runner_metadata() -> dict[str, Any]:
         ]
 
     class POWER_STATUS(ctypes.Structure):
-        _fields_ = [
+        _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
             ("ACLineStatus", ctypes.c_ubyte),
             ("BatteryFlag", ctypes.c_ubyte),
             ("BatteryLifePercent", ctypes.c_ubyte),
@@ -409,7 +409,7 @@ def _windows_process_rss(pid: int) -> int:
         raise OSError(ctypes.get_last_error(), f"OpenProcess failed for PID {pid}")
 
     class COUNTERS(ctypes.Structure):
-        _fields_ = [
+        _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
             ("cb", wintypes.DWORD),
             ("PageFaultCount", wintypes.DWORD),
             ("PeakWorkingSetSize", ctypes.c_size_t),
@@ -446,7 +446,7 @@ def descendant_pids(root_pid: int) -> set[int]:
     TH32CS_SNAPPROCESS, ERROR_NO_MORE_FILES = 0x00000002, 18
 
     class ENTRY(ctypes.Structure):
-        _fields_ = [
+        _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
             ("dwSize", wintypes.DWORD),
             ("cntUsage", wintypes.DWORD),
             ("th32ProcessID", wintypes.DWORD),
@@ -548,7 +548,7 @@ class _JobObject:
             raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
 
         class BASIC(ctypes.Structure):
-            _fields_ = [
+            _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
                 ("PerProcessUserTimeLimit", ctypes.c_longlong),
                 ("PerJobUserTimeLimit", ctypes.c_longlong),
                 ("LimitFlags", wintypes.DWORD),
@@ -561,7 +561,7 @@ class _JobObject:
             ]
 
         class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [
+            _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
                 ("ReadOperationCount", ctypes.c_ulonglong),
                 ("WriteOperationCount", ctypes.c_ulonglong),
                 ("OtherOperationCount", ctypes.c_ulonglong),
@@ -571,7 +571,7 @@ class _JobObject:
             ]
 
         class EXTENDED(ctypes.Structure):
-            _fields_ = [
+            _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
                 ("BasicLimitInformation", BASIC),
                 ("IoInfo", IO_COUNTERS),
                 ("ProcessMemoryLimit", ctypes.c_size_t),
@@ -667,7 +667,7 @@ class _JobObject:
 
 
 class _ThreadEntry32(ctypes.Structure):
-    _fields_ = [
+    _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
         ("dwSize", wintypes.DWORD),
         ("cntUsage", wintypes.DWORD),
         ("th32ThreadID", wintypes.DWORD),
@@ -762,7 +762,7 @@ def run_process(
             if members:
                 error.member_pids = sorted(members)
                 job.terminate_and_wait_empty()
-        except BaseException as cleanup_error:
+        except BaseException as cleanup_error:  # noqa: BLE001  cleanup error is attached to the original failure
             error.cleanup_error = cleanup_error
         finally:
             job.close()

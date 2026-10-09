@@ -36,7 +36,11 @@ from omr_grader.recognition.form_layout import (  # noqa: E402
     drop_unmarked_header_rows,
 )
 from omr_grader.recognition.form_profile import build_profile  # noqa: E402
-from omr_grader.recognition.pipeline import PipelineInput, PipelineSuccess, recognize_page  # noqa: E402
+from omr_grader.recognition.pipeline import (  # noqa: E402
+    PipelineInput,
+    PipelineSuccess,
+    recognize_page,
+)
 from omr_grader.recognition.thresholds import (  # noqa: E402
     CALIBRATION_PROVENANCE,
     thresholds_for_sensitivity,
@@ -149,7 +153,7 @@ def perturb(encoded: bytes, kind: str) -> bytes:
 
 def make_variant(encoded: bytes, profile: Profile, keep: int) -> bytes:
     """G3: erase every answer row after ``keep``; whole erased blocks become a short-answer box."""
-    from omr_grader.recognition.form_alignment import align_page  # noqa: PLC0415
+    from omr_grader.recognition.form_alignment import align_page
 
     image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -347,17 +351,17 @@ def run(baseline: Path, sensitivity: int, cross: bool) -> list[PartResult]:
     results: list[PartResult] = []
     for part, pages in rendered.items():
         sources = list(profiles) if cross else [part]
-        for source in sources:
-            results.append(
-                evaluate(
-                    part,
-                    pages,
-                    truth["parts"][part],
-                    profiles[source],
-                    f"profile from part {source}",
-                    sensitivity,
-                )
+        results.extend(
+            evaluate(
+                part,
+                pages,
+                truth["parts"][part],
+                profiles[source],
+                f"profile from part {source}",
+                sensitivity,
             )
+            for source in sources
+        )
     return results
 
 

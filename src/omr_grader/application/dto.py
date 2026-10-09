@@ -852,13 +852,12 @@ class ScoreSet:
         if self.statistics.participant_count != len(scored_rows):
             raise ValueError("participant_count must match scored rows")
         scores = tuple(cast(Decimal, row.score) for row in scored_rows)
-        if scores:
-            if (
-                round_average(cast(Decimal, self.statistics.average_score)) != score_average(scores)
-                or self.statistics.highest_score != max(scores)
-                or self.statistics.lowest_score != min(scores)
-            ):
-                raise ValueError("statistics must match scored rows")
+        if scores and (
+            round_average(cast(Decimal, self.statistics.average_score)) != score_average(scores)
+            or self.statistics.highest_score != max(scores)
+            or self.statistics.lowest_score != min(scores)
+        ):
+            raise ValueError("statistics must match scored rows")
         expected_ranks: dict[Decimal, int] = {}
         for score in sorted(set(scores), reverse=True):
             expected_ranks[score] = 1 + sum(item > score for item in scores)

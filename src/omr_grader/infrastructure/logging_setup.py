@@ -34,7 +34,7 @@ def redact_log_text(value: object) -> str:
 
 def daily_log_path(data_dir: Path, when: datetime | None = None) -> Path:
     """Return the local daily application log under the portable data directory."""
-    timestamp = datetime.now() if when is None else when
+    timestamp = datetime.now() if when is None else when  # noqa: DTZ005  daily log name uses local wall-clock time
     return data_dir / "logs" / f"app_{timestamp:%Y%m%d}.log"
 
 

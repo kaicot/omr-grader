@@ -243,11 +243,11 @@ def _has_valid_frozen_profile(profile: object) -> bool:
             and page.aspect_ratio.is_finite()
             and page.aspect_ratio > 0
             and (
-                page.orientation == "landscape"
+                page.orientation == "landscape"  # noqa: RUF021  precedence is intended; keep as written
                 and page.aspect_ratio > 1
-                or page.orientation == "portrait"
+                or page.orientation == "portrait"  # noqa: RUF021  precedence is intended; keep as written
                 and page.aspect_ratio < 1
-                or page.orientation == "square"
+                or page.orientation == "square"  # noqa: RUF021  precedence is intended; keep as written
                 and page.aspect_ratio == 1
             )
             and type(page.source_width) is int

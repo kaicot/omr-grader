@@ -88,7 +88,7 @@ class _FileGate:
 
 
 class _OVERLAPPED(ctypes.Structure):
-    _fields_ = [
+    _fields_ = [  # noqa: RUF012  ctypes _fields_ layout, never shared
         ("Internal", ctypes.c_size_t),
         ("InternalHigh", ctypes.c_size_t),
         ("Offset", ctypes.c_uint32),
