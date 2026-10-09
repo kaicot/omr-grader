@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
-import fitz
 import numpy as np
 
 SOURCE = Path(__file__).resolve().parents[1] / "src"
@@ -31,6 +30,7 @@ from omr_grader.domain.enums import AnswerStatus, ProcessingStatus, SourceKind  
 from omr_grader.domain.errors import Err  # noqa: E402
 from omr_grader.domain.models import PageRef  # noqa: E402
 from omr_grader.domain.profile import Profile  # noqa: E402
+from omr_grader.ingestion.pdf import enumerate_pdf, render_pdf_pages  # noqa: E402
 from omr_grader.recognition.form_layout import (  # noqa: E402
     detect_layout,
     drop_unmarked_header_rows,
@@ -68,20 +68,18 @@ class PartResult:
 
 
 def render(pdf: Path) -> list[bytes]:
+    """Render through the product's PDF path, so the gate covers the shipped renderer."""
+    batch = enumerate_pdf(pdf, "v4-baseline")
+    if isinstance(batch, Err):
+        raise RuntimeError(f"cannot open {pdf.name}: {batch.errors[0].code}")
     pages: list[bytes] = []
-    with fitz.open(str(pdf)) as document:
-        for page in document:
-            scale = RENDER_DPI / 72
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False
-            )
-            rgb = np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(
-                pixmap.height, pixmap.width, 3
-            )
-            ok, encoded = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            if not ok:
-                raise RuntimeError(f"cannot encode page of {pdf.name}")
-            pages.append(encoded.tobytes())
+    for rendered in render_pdf_pages(batch.value.inputs):
+        if isinstance(rendered, Err):
+            raise RuntimeError(f"cannot render a page of {pdf.name}: {rendered.errors[0].code}")
+        ok, encoded = cv2.imencode(".png", rendered.value.pixels)
+        if not ok:
+            raise RuntimeError(f"cannot encode page of {pdf.name}")
+        pages.append(encoded.tobytes())
     return pages
 
 

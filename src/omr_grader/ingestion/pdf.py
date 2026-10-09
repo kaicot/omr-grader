@@ -20,48 +20,44 @@ from omr_grader.domain.models import PageRef
 from omr_grader.domain.session import build_page_ref
 
 
-class _FitzRect(Protocol):
-    width: float
-    height: float
-
-
-class _FitzPixmap(Protocol):
+class _PdfiumBitmap(Protocol):
     width: int
     height: int
-    n: int
-    stride: int
-    samples: bytes
+    mode: str
 
-
-class _FitzPage(Protocol):
-    rect: _FitzRect
-
-    def get_pixmap(self, *, matrix: object, colorspace: object, alpha: bool) -> _FitzPixmap: ...
-
-
-class _FitzDocument(Protocol):
-    needs_pass: bool
-    page_count: int
+    def to_numpy(self) -> NDArray[np.uint8]: ...
 
     def close(self) -> None: ...
 
-    def load_page(self, page_id: int) -> _FitzPage: ...
+
+class _PdfiumPage(Protocol):
+    def get_size(self) -> tuple[float, float]: ...
+
+    def render(self, *, scale: float, fill_color: tuple[int, int, int, int]) -> _PdfiumBitmap: ...
+
+    def close(self) -> None: ...
 
 
-class _FitzApi(Protocol):
-    FileDataError: type[Exception]
-    EmptyFileError: type[Exception]
-    csRGB: object
+class _PdfiumDocument(Protocol):
+    def __len__(self) -> int: ...
 
-    def open(self, *, stream: bytes, filetype: str) -> _FitzDocument: ...
+    def __getitem__(self, index: int) -> _PdfiumPage: ...
 
-    def Matrix(self, a: float, d: float) -> object: ...
+    def close(self) -> None: ...
 
 
-_fitz = cast(_FitzApi, import_module("fitz"))
+class _PdfiumApi(Protocol):
+    PdfiumError: type[Exception]
+
+    def PdfDocument(self, payload: bytes) -> _PdfiumDocument: ...
+
+
+# PDFium (BSD-3/Apache-2.0) renders the pages; it is the engine Chrome uses.
+_pdfium = cast(_PdfiumApi, import_module("pypdfium2"))
+# PDFium's FPDF_ERR_PASSWORD: the document needs a password to open.
+_PDFIUM_PASSWORD_ERROR: Final = 4
 _PDF_RENDERER_FAILURES = (
-    _fitz.FileDataError,
-    _fitz.EmptyFileError,
+    _pdfium.PdfiumError,
     RuntimeError,
     OSError,
     MemoryError,
@@ -144,7 +140,7 @@ class _PdfSourceCache:
         self._sources.clear()
 
 
-def _close_document(document: _FitzDocument) -> Exception | None:
+def _close_document(document: _PdfiumDocument) -> Exception | None:
     try:
         document.close()
     except _PDF_RENDERER_FAILURES as exc:
@@ -152,21 +148,17 @@ def _close_document(document: _FitzDocument) -> Exception | None:
     return None
 
 
-def _open_pdf(payload: bytes) -> Result[_FitzDocument]:
-    document: _FitzDocument | None = None
+def _open_pdf(payload: bytes) -> Result[_PdfiumDocument]:
+    document: _PdfiumDocument | None = None
     try:
-        document = _fitz.open(stream=payload, filetype="pdf")
-        encrypted = document.needs_pass
-        page_count = document.page_count
+        document = _pdfium.PdfDocument(payload)
+        page_count = len(document)
     except _PDF_RENDERER_FAILURES as exc:
         if document is not None:
             _close_document(document)
+        if getattr(exc, "err_code", None) == _PDFIUM_PASSWORD_ERROR:
+            return _error("PDF_ENCRYPTED", "encrypted PDFs are not accepted")
         return _error("PDF_MALFORMED", str(exc))
-    if encrypted:
-        close_error = _close_document(document)
-        if close_error is not None:
-            return _error("PDF_MALFORMED", str(close_error))
-        return _error("PDF_ENCRYPTED", "encrypted PDFs are not accepted")
     if not 1 <= page_count <= MAX_PDF_PAGES:
         close_error = _close_document(document)
         if close_error is not None:
@@ -195,7 +187,7 @@ def enumerate_pdf(
     digest = sha256(source.value).hexdigest()
     try:
         inputs: list[PdfInput] = []
-        for zero_based_page in range(document.page_count):
+        for zero_based_page in range(len(document)):
             reference = build_page_ref(
                 session_id=session_id,
                 source_kind=SourceKind.PDF,
@@ -226,6 +218,39 @@ def _dimension_error(width: int, height: int) -> str | None:
     return None
 
 
+def _render_page(pdf_input: PdfInput, page: _PdfiumPage) -> Result[RenderedPdfPage]:
+    """Render one open page at 300 DPI on white into a BGR array the caller owns."""
+    try:
+        scale = PDF_RENDER_DPI / 72
+        page_width, page_height = page.get_size()
+        if not isfinite(page_width) or not isfinite(page_height):
+            return _error("PDF_PAGE_RENDER_FAILED", "PDF page has non-finite dimensions")
+        reason = _dimension_error(ceil(page_width * scale), ceil(page_height * scale))
+        if reason is not None:
+            return _error("PDF_PAGE_RENDER_QUOTA", reason)
+        bitmap = page.render(scale=scale, fill_color=(255, 255, 255, 255))
+        try:
+            reason = _dimension_error(bitmap.width, bitmap.height)
+            if reason is not None:
+                return _error("PDF_PAGE_RENDER_QUOTA", reason)
+            if bitmap.mode != "BGR":
+                return _error("PDF_PAGE_RENDER_FAILED", "unexpected PDF renderer pixel layout")
+            view = bitmap.to_numpy()
+            if view.shape != (bitmap.height, bitmap.width, 3) or view.nbytes > (
+                MAX_PDF_RENDERED_BYTES
+            ):
+                return _error("PDF_PAGE_RENDER_FAILED", "unexpected PDF renderer pixel layout")
+            # The view points into PDFium's buffer, which closing the bitmap frees.
+            pixels: NDArray[np.uint8] = np.ascontiguousarray(view).copy()
+        finally:
+            bitmap.close()
+        return Ok(RenderedPdfPage(pdf_input, pixels, pixels.shape[1], pixels.shape[0]))
+    except (ValueError, MemoryError) as exc:
+        return _error("PDF_PAGE_RENDER_FAILED", str(exc))
+    finally:
+        page.close()
+
+
 def _render_pdf_page_from_source(pdf_input: PdfInput, payload: bytes) -> Result[RenderedPdfPage]:
     document_result = _open_pdf(payload)
     if isinstance(document_result, Err):
@@ -234,59 +259,11 @@ def _render_pdf_page_from_source(pdf_input: PdfInput, payload: bytes) -> Result[
     outcome: Result[RenderedPdfPage] | None = None
     close_error: Exception | None = None
     try:
-        if not 1 <= pdf_input.page_number <= document.page_count:
+        if not 1 <= pdf_input.page_number <= len(document):
             outcome = _error("PDF_PAGE_INVALID", "page number is outside the source PDF")
         else:
             try:
-                page = document.load_page(pdf_input.page_number - 1)
-                scale = PDF_RENDER_DPI / 72
-                rect = page.rect
-                if not isfinite(rect.width) or not isfinite(rect.height):
-                    outcome = _error("PDF_PAGE_RENDER_FAILED", "PDF page has non-finite dimensions")
-                else:
-                    width = ceil(rect.width * scale)
-                    height = ceil(rect.height * scale)
-                    reason = _dimension_error(width, height)
-                    if reason is not None:
-                        outcome = _error("PDF_PAGE_RENDER_QUOTA", reason)
-                    else:
-                        pixmap = page.get_pixmap(
-                            matrix=_fitz.Matrix(scale, scale), colorspace=_fitz.csRGB, alpha=False
-                        )
-                        reason = _dimension_error(pixmap.width, pixmap.height)
-                        if reason is not None:
-                            outcome = _error("PDF_PAGE_RENDER_QUOTA", reason)
-                        elif pixmap.n != 3 or pixmap.stride != pixmap.width * 3:
-                            outcome = _error(
-                                "PDF_PAGE_RENDER_FAILED", "unexpected PDF renderer pixel layout"
-                            )
-                        else:
-                            samples = pixmap.samples
-                            if len(samples) > MAX_PDF_RENDERED_BYTES:
-                                outcome = _error(
-                                    "PDF_PAGE_RENDER_QUOTA", "rendered image byte quota exceeded"
-                                )
-                            else:
-                                try:
-                                    rgb: NDArray[np.uint8] = np.frombuffer(
-                                        samples, dtype=np.uint8
-                                    ).reshape((pixmap.height, pixmap.width, 3))
-                                except (ValueError, MemoryError) as exc:
-                                    outcome = _error("PDF_PAGE_RENDER_FAILED", str(exc))
-                                else:
-                                    try:
-                                        pixels = cast(
-                                            NDArray[np.uint8],
-                                            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
-                                        )
-                                    except (cv2.error, MemoryError) as exc:
-                                        outcome = _error("PDF_PAGE_RENDER_FAILED", str(exc))
-                                    else:
-                                        outcome = Ok(
-                                            RenderedPdfPage(
-                                                pdf_input, pixels, pixmap.width, pixmap.height
-                                            )
-                                        )
+                outcome = _render_page(pdf_input, document[pdf_input.page_number - 1])
             except _PDF_RENDERER_FAILURES as exc:
                 outcome = _error("PDF_PAGE_RENDER_FAILED", str(exc))
     finally:

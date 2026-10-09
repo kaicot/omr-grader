@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from omr_grader.ui.theme import Theme, tokens_for
 
 GITHUB_URL = "https://github.com/kaicot/omr-grader"
+LICENSE_URL = "https://polyformproject.org/licenses/noncommercial/1.0.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -640,6 +641,12 @@ def _about(version: str, author: str) -> str:
                 ("프로그램 제작", author),
                 ("문의와 오류 제보", f"<a href='{GITHUB_URL}'>{GITHUB_URL}</a>"),
                 ("새 버전 확인", "켜져 있으면 하루 한 번 GitHub에 최신 버전 번호만 묻습니다."),
+                (
+                    "라이선스",
+                    "PolyForm Noncommercial 1.0.0. 교육 · 연구 · 개인 등 비영리 목적이면 무료로"
+                    " 쓰고 나눌 수 있습니다. 영리 목적 사용은 제작자에게 문의하세요."
+                    f" <a href='{LICENSE_URL}'>{LICENSE_URL}</a>",
+                ),
             ),
         )
         + f"<p>프로그램 제작: {author} · v{version}</p>"

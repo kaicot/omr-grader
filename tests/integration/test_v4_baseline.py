@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-import fitz
 import pytest
 
+from tests.helpers.pdf_writer import write_pdf
 from tests.helpers.synthetic_omr import encode_png, render_sheet
 
 HARNESS = Path(__file__).parents[2] / "tools" / "v4_baseline.py"
@@ -61,12 +61,7 @@ def test_the_harness_runs_on_a_fake_one_page_baseline(
     answers = {question: (question % 5) + 1 if question % 9 else None for question in range(1, 101)}
     page = render_sheet(answers, "20250001", seed=2)
     pdf = tmp_path / "fake.pdf"
-    document = fitz.open()
-    document.new_page(width=842, height=595).insert_image(
-        fitz.Rect(0, 0, 842, 595), stream=encode_png(page)
-    )
-    document.save(str(pdf))
-    document.close()
+    write_pdf(pdf, [encode_png(page)])
     truth = {
         "parts": {
             "1": [{"student_id": "20250001", "answers": {str(q): a for q, a in answers.items()}}]

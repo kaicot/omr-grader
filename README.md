@@ -1,4 +1,4 @@
-# OMR Grader 4.2.1
+# OMR Grader 4.2.2
 
 Windows에서 스캔한 OMR 답안지를 인식하고 검토·채점·보관하는 포터블 데스크톱
 애플리케이션입니다.
@@ -207,3 +207,19 @@ receipt 형식 2는 현재 Git HEAD, 빌드 입력, 제품 버전, 도구 버전
 - `main.py`: 소스 실행 진입점
 - `pyproject.toml`: 런타임 의존성과 설치 메타데이터
 - `AGENTS.md`: LLM용 설치·운영 지침
+- `LICENSE.md`: 라이선스(PolyForm Noncommercial 1.0.0)
+
+## 라이선스
+
+OMR Grader는 [PolyForm Noncommercial License 1.0.0](LICENSE.md)을 따릅니다.
+소스를 공개하지만 오픈소스(OSI) 라이선스는 아닙니다.
+
+- 개인 학습 · 연구 · 취미 등 비영리 목적이라면 누구나 무료로 쓰고 고치고 나눌 수 있습니다.
+- 학교 · 대학 · 공공 연구기관 · 정부기관 · 비영리 단체의 사용은 비용의 출처와 관계없이
+  허용됩니다.
+- 학원 · 업체의 영리 목적 사용, 판매나 유료 서비스에 넣는 것은 허용되지 않습니다. 이런 경우
+  kaic21@gmail.com으로 문의하세요.
+- 나눌 때는 `LICENSE.md`(또는 위 라이선스 주소)와 `Required Notice:` 줄을 함께 전해야 합니다.
+
+4.2.2 이전에 배포한 버전에도 같은 조건이 적용됩니다. 함께 배포하는 다른 프로그램의 라이선스는
+배포 폴더의 `_internal\THIRD_PARTY_NOTICES.txt`에 있습니다.

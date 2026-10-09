@@ -18,7 +18,7 @@ BUNDLED_DISTRIBUTIONS = (
     "PySide6_Essentials",
     "PySide6_Addons",
     "shiboken6",
-    "PyMuPDF",
+    "pypdfium2",
     "opencv-python",
     "numpy",
     "openpyxl",

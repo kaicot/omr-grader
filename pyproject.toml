@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omr-grader"
-version = "4.2.1"
+version = "4.2.2"
 description = "OMR Grader 데스크톱 애플리케이션"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
     "shiboken6==6.11.2",
     "opencv-python==4.11.0.86",
     "numpy==2.2.6",
-    "PyMuPDF==1.26.1",
+    "pypdfium2==5.14.0",
     "openpyxl==3.1.5",
     "tzdata==2026.3",
 ]

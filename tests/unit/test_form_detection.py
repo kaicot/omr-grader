@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
-import fitz
 import numpy as np
 import pytest
 
@@ -20,6 +19,7 @@ from omr_grader.infrastructure.profile_store import ProfileStore
 from omr_grader.recognition.form_alignment import align_page
 from omr_grader.recognition.form_profile import FRAME_BUBBLE_RADIUS
 from tests.helpers.omr_engine import reference_sheet
+from tests.helpers.pdf_writer import write_pdf
 from tests.helpers.synthetic_omr import (
     encode_png,
     render_sheet_with_geometry,
@@ -70,12 +70,7 @@ def scans(tmp_path_factory: pytest.TempPathFactory) -> Scans:
     )
     sideways, _ = render_sheet_with_geometry(sample_answers(), "20250003", rotation=90, seed=4)
     pdf = folder / "scan.pdf"
-    document = fitz.open()
-    document.new_page(width=842, height=595).insert_image(
-        fitz.Rect(0, 0, 842, 595), stream=encode_png(sheet.image)
-    )
-    document.save(str(pdf))
-    document.close()
+    write_pdf(pdf, [encode_png(sheet.image)])
     return Scans(
         folder,
         write_png(folder / "first.png", sheet.gray),

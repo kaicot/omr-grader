@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-import fitz
 import openpyxl
 
 from omr_grader.application.answer_key_use_case import AnswerKeyWorkbookUseCase
@@ -22,6 +21,7 @@ from omr_grader.infrastructure.profile_store import ProfileStore
 from omr_grader.infrastructure.scan_runtime import ScanRuntime, bind_scan_runtime
 from omr_grader.infrastructure.session_store import SessionCommitCoordinator, SessionStore
 from omr_grader.workbooks.answer_key import ANSWER_KEY_HEADERS
+from tests.helpers.pdf_writer import write_pdf
 from tests.helpers.synthetic_omr import encode_png, render_sheet
 
 
@@ -59,13 +59,8 @@ def graded_exam(tmp_path: Path, exam_name: str = "생리학 중간고사") -> Gr
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     pdf = inputs / "scans.pdf"
-    document = fitz.open()
     answers = {question: (question * 7) % 5 + 1 for question in range(1, 101)}
-    document.new_page(width=842, height=595).insert_image(
-        fitz.Rect(0, 0, 842, 595), stream=encode_png(render_sheet(answers, "20260001", seed=1))
-    )
-    document.save(str(pdf))
-    document.close()
+    write_pdf(pdf, [encode_png(render_sheet(answers, "20260001", seed=1))])
     key = inputs / "key.xlsx"
     book = openpyxl.Workbook()
     sheet = book.active

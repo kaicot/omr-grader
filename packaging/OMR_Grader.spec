@@ -22,12 +22,13 @@ notice_directory = Path(workpath) / "third-party-notices"
 notice_index = notice_helper.materialize_notices(notice_directory)
 datas.extend(
     (
+        (str(PROJECT_ROOT / "LICENSE.md"), "."),
         (str(notice_index), "."),
         (str(notice_directory / "THIRD_PARTY_NOTICES_SOURCES"), "THIRD_PARTY_NOTICES_SOURCES"),
     )
 )
 
-hiddenimports = ["fitz", "omr_grader.bootstrap"]
+hiddenimports = ["pypdfium2", "omr_grader.bootstrap"]
 hiddenimports.extend(collect_submodules("tzdata"))
 
 analysis = Analysis(
