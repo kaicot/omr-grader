@@ -158,6 +158,7 @@ def test_validation_errors_are_visible_and_block_grading(qtbot) -> None:
 
 def test_progress_cancel_cleanup_and_state_preservation(qtbot, clock) -> None:
     page = _ready_page(qtbot)
+    page.set_cancel_available(True)
     page.set_busy(True)
     assert page.progress_frame.isVisible()
     assert page.progress_bar.minimum() == 0

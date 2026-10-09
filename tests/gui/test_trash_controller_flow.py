@@ -117,9 +117,10 @@ def test_each_trash_button_reaches_the_service_and_reloads_the_dashboard(
     QTimer.singleShot(0, press)
     window.dashboard_page.trash_button.click()
 
-    qtbot.waitUntil(lambda: len(calls) == 1, timeout=5000)
+    # Chosen exams reach the service one by one, so one failure cannot stop the others.
+    qtbot.waitUntil(lambda: len(calls) == len(session_ids), timeout=5000)
     assert seen == {"enabled_before": True, "enabled": True}
-    assert calls == [(action, session_ids)]
+    assert calls == [(action, (session_id,)) for session_id in session_ids]
     # The finished action reloads the exam list.
     qtbot.waitUntil(lambda: loads == [1] and controller._active_bridge is None, timeout=5000)
     # The status bar says what happened instead of staying on "처리 중".

@@ -701,7 +701,7 @@ class MainWindow(QMainWindow):
             return
         self.update_label.setText(
             f"새 버전 v{version}이 있습니다.\n다운로드 페이지에서 받아 새 폴더에 풀고,"
-            " 처음 실행할 때 지금 자료를 가져오세요."
+            " 환경 설정에서 이전 버전 자료를 가져오세요."
         )
         self.update_banner.show()
 

@@ -73,8 +73,8 @@ def test_dashboard_startup_and_refresh_keep_entries_and_warning_context(
     monkeypatch.setattr(window, "show_diagnostic", show)
     entry = _entry()
     warning = ErrorInfo(
-        "DASHBOARD_INDEX_STALE",
-        "warning.dashboard_index_stale",
+        "DASHBOARD_SESSION_QUARANTINED",
+        "warning.dashboard_session_quarantined",
         "dashboard_index.json",
         {"reason": "실제 재구축 경고", "revision": 3, "retry": True, "extra": None},
         True,
@@ -113,8 +113,8 @@ def test_dashboard_startup_and_refresh_keep_entries_and_warning_context(
 
     entry = replace(entry, exam_name="새로 고침된 시험", revision=4)
     warning = ErrorInfo(
-        "DASHBOARD_INDEX_STALE",
-        "warning.dashboard_index_stale",
+        "DASHBOARD_SESSION_QUARANTINED",
+        "warning.dashboard_session_quarantined",
         context={"reason": "새로 고침 경고"},
     )
     controller._reload_dashboard()
@@ -305,8 +305,8 @@ def test_results_navigation_accepts_warning_transport_and_displays_entries(qtbot
     window = MainWindow()
     qtbot.addWidget(window)
     warning = ErrorInfo(
-        "DASHBOARD_INDEX_STALE",
-        "warning.dashboard_index_stale",
+        "DASHBOARD_SESSION_QUARANTINED",
+        "warning.dashboard_session_quarantined",
         context={"reason": "결과 보기 경고"},
     )
     listing = DashboardListing((_entry(),), (warning,))
