@@ -48,6 +48,7 @@ class GradingPage(QWidget):
         self._result_identity: tuple[str, int] | None = None
         self._write_enabled = True
         self._busy = False
+        self._cancel_available = False
         # The running grading's own clock: started by the first progress after idle and
         # redrawn every second so the status line keeps moving between worker events.
         self._progress: GradingProgressDisplay | None = None
@@ -109,6 +110,9 @@ class GradingPage(QWidget):
         self.cancel_button.setAccessibleName("채점 중단")
         self.cancel_button.clicked.connect(self._request_cancel)
         progress_layout.addWidget(self.cancel_button, 0, Qt.AlignmentFlag.AlignRight)
+        # Grading cannot be stopped once started, so the button stays hidden until the
+        # controller says a stop is really honoured; a button that does nothing misleads.
+        self.cancel_button.setVisible(False)
         root.addWidget(self.progress_frame)
         self.progress_frame.setVisible(False)
         actions = QHBoxLayout()
@@ -378,6 +382,13 @@ class GradingPage(QWidget):
         self._write_enabled = enabled
         self._refresh_state()
 
+    def set_cancel_available(self, available: bool) -> None:
+        """Show the stop button only when the running grading really stops on request."""
+        if type(available) is not bool:
+            raise TypeError("available must be bool")
+        self._cancel_available = available
+        self._refresh_state()
+
     def set_result_available(self, session_id: str, revision: int) -> None:
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be a nonempty str")
@@ -423,7 +434,7 @@ class GradingPage(QWidget):
         self.error_label.clear()
 
     def _request_cancel(self) -> None:
-        if self._busy:
+        if self._busy and self._cancel_available:
             request = self._request("cancel")
             if request is not None:
                 self.cancel_requested.emit(request)
@@ -505,8 +516,12 @@ class GradingPage(QWidget):
             if can_grade
             else "채점 실행 (채점이 완료되면 채점 결과보기가 활성화 됩니다)"
         )
+        self.cancel_button.setVisible(self._cancel_available)
         self.cancel_button.setEnabled(
-            self._busy and self._session is not None and self._operation_id is not None
+            self._cancel_available
+            and self._busy
+            and self._session is not None
+            and self._operation_id is not None
         )
         self.reset_button.setEnabled(not self._busy and self._session is not None)
         self.result_button.setVisible(result_available)

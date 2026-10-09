@@ -82,6 +82,8 @@ class SettingsPage(QWidget):
         self._write_revoked = False
         self._settings_ready = False
         self._busy = False
+        self._busy_text: str | None = None
+        self._idle_text = ""
         self._build_ui()
         self._refresh_gating()
 
@@ -345,12 +347,24 @@ class SettingsPage(QWidget):
         if message is not None:
             self.update_status_label.setText(message)
 
-    def set_busy(self, busy: bool) -> None:
+    def set_busy(self, busy: bool, message: str | None = None) -> None:
+        """Mark a running action; its text goes away again unless a result replaced it."""
         if type(busy) is not bool:
             raise TypeError("busy must be bool")
-        self._busy = busy
+        if message is not None and (not isinstance(message, str) or not message):
+            raise ValueError("message must be a non-empty string or None")
         if busy:
-            self.status_label.setText("설정을 저장하고 있습니다.")
+            if not self._busy:
+                self._idle_text = self.status_label.text()
+            self._busy_text = message or "설정을 저장하고 있습니다."
+            self.status_label.setText(self._busy_text)
+        elif self._busy_text is not None:
+            # A saved or failed result already replaced the busy text; only a left-over
+            # "…하고 있습니다" is put back to what was shown before.
+            if self.status_label.text() == self._busy_text:
+                self.status_label.setText(self._idle_text)
+            self._busy_text = None
+        self._busy = busy
         self._refresh_gating()
 
     def set_saved(self, result: SettingsSaveResult) -> None:

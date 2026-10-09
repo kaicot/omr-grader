@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QModelIndex, Qt, Signal
@@ -56,9 +57,13 @@ _DASHBOARD_ACTIONS = frozenset(
         "open_folder",
         "refresh",
         "combine",
+        "import_previous",
     }
 )
-_GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash", "refresh"})
+_GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash", "refresh", "import_previous"})
+# Actions that first ask the user for a file or a confirmation, so a running job is
+# reported before that question instead of after it.
+_ASKING_ACTIONS = frozenset({"delete", "backup", "restore"})
 # Actions on the one exam of the current row.
 _ROW_DASHBOARD_ACTIONS = frozenset({"detail", "grade", "open_book", "open_folder"})
 _LOGGER = logging.getLogger("omr_grader.ui.dashboard")
@@ -129,12 +134,19 @@ class DashboardPage(QWidget):
     """Exam-management dashboard with controller-bound value-only signals."""
 
     request_emitted = Signal(object)
+    # An action that asks first was refused because the controller has another job running.
+    busy_blocked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("dashboardPage")
         self._write_enabled = True
         self._busy = False
+        # The controller's own view of "a job runs"; the page is only marked busy while shown.
+        self._busy_probe: Callable[[], bool] | None = None
+        self._loaded = False
+        self._entry_count = 0
+        self._import_available = False
         self._file_dialog: QFileDialog | None = None
         self._collision_dialog: QMessageBox | None = None
         self._error_dialog: QMessageBox | None = None
@@ -195,6 +207,22 @@ class DashboardPage(QWidget):
         actions.addStretch()
         actions.addWidget(self.refresh_button)
         root.addLayout(actions)
+        # Only for a folder with no exams at all: an older install may hold the exams.
+        self.empty_state = QFrame()
+        self.empty_state.setObjectName("dashboardEmptyState")
+        empty_layout = QHBoxLayout(self.empty_state)
+        empty_layout.setContentsMargins(0, 0, 0, 0)
+        empty_text = QLabel(
+            "저장된 시험이 없습니다. 예전 버전을 쓰던 폴더가 있으면 시험을 가져올 수 있습니다."
+        )
+        empty_text.setObjectName("dashboardEmptyText")
+        empty_text.setWordWrap(True)
+        empty_layout.addWidget(empty_text, 1)
+        self.import_previous_button = self._button(
+            "이전 버전 자료 가져오기", "dashboardImportPreviousButton", "import_previous"
+        )
+        empty_layout.addWidget(self.import_previous_button)
+        root.addWidget(self.empty_state)
         table_frame = QFrame()
         table_frame.setObjectName("dashboardTableCard")
         table_layout = QVBoxLayout(table_frame)
@@ -323,6 +351,8 @@ class DashboardPage(QWidget):
         current_entry = self._current_entry()
         selected_id = current_entry.session_id if current_entry is not None else None
         self.model.set_entries(entries)
+        self._loaded = True
+        self._entry_count = len(entries)
         years = sorted(
             {year for entry in entries if (year := graded_year(entry)) is not None},
             reverse=True,
@@ -350,6 +380,17 @@ class DashboardPage(QWidget):
         if type(busy) is not bool:
             raise TypeError("busy must be bool")
         self._busy = busy
+        self._refresh_state()
+
+    def set_busy_probe(self, probe: Callable[[], bool] | None) -> None:
+        """Let the controller say whether a job runs, for questions asked before an action."""
+        self._busy_probe = probe
+
+    def set_import_available(self, available: bool) -> None:
+        """Offer importing an older install while the list is empty."""
+        if type(available) is not bool:
+            raise TypeError("available must be bool")
+        self._import_available = available
         self._refresh_state()
 
     def _apply_filters(self) -> None:
@@ -381,8 +422,11 @@ class DashboardPage(QWidget):
         if action not in _DASHBOARD_ACTIONS:
             raise ValueError("unsupported dashboard action")
         if self._busy or (
-            action in {"delete", "backup", "restore"} and not self._write_enabled
+            action in _ASKING_ACTIONS | {"import_previous"} and not self._write_enabled
         ):
+            return
+        if action in _ASKING_ACTIONS and self._busy_probe is not None and self._busy_probe():
+            self.busy_blocked.emit()
             return
         if action == "restore":
             self._open_file_dialog(action, None)
@@ -623,6 +667,11 @@ class DashboardPage(QWidget):
         self.backup_button.setEnabled(writable and selected_count == 1)
         self.restore_button.setEnabled(writable)
         self.trash_button.setEnabled(available)
+        # Empty means no exam at all: a search or year filter that hides every row is not.
+        self.empty_state.setVisible(
+            self._loaded and self._entry_count == 0 and self._import_available
+        )
+        self.import_previous_button.setEnabled(writable)
 
     def create_trash_dialog(self, entries: tuple[DashboardIndexEntry, ...]) -> TrashDialog:
         dialog = TrashDialog(self)

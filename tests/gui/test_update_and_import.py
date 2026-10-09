@@ -129,11 +129,18 @@ def test_turning_checks_off_is_saved_and_no_check_runs_without_a_fetcher(qtbot):
     plain.close()
 
 
-def test_a_fresh_folder_offers_the_import_and_reports_what_came_over(qtbot, monkeypatch):
+def test_an_empty_dashboard_offers_the_import_and_reports_what_came_over(qtbot, monkeypatch):
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    asked: list[int] = []
+
+    def question(*args, **kwargs):
+        asked.append(1)
+        return QMessageBox.StandardButton.Yes
+
+    # 4.2.1 no longer asks on first start; the button on the empty dashboard replaces it.
+    monkeypatch.setattr(QMessageBox, "question", question)
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: "D:/old/OMR Grader")
     calls: list[str] = []
     loads: list[int] = []
@@ -157,6 +164,13 @@ def test_a_fresh_folder_offers_the_import_and_reports_what_came_over(qtbot, monk
         dashboard_load=load,
     )
 
+    qtbot.waitUntil(lambda: controller._active_bridge is None, timeout=6000)
+    page = window.dashboard_page
+    assert page.empty_state.isVisibleTo(page)
+    assert calls == []
+    before = len(loads)
+    page.import_previous_button.click()
+
     qtbot.waitUntil(lambda: calls == ["D:/old/OMR Grader"], timeout=6000)
     qtbot.waitUntil(
         lambda: "시험 2개를 가져왔습니다" in window.settings_page.update_status_label.text(),
@@ -167,6 +181,8 @@ def test_a_fresh_folder_offers_the_import_and_reports_what_came_over(qtbot, monk
     assert "예전 휴지통의 시험 1개는 휴지통으로" in text
     assert "예전 폴더는 그대로" in text
     # The exam list is read again after the import.
-    count = len(loads)
-    qtbot.waitUntil(lambda: len(loads) > count, timeout=6000)
+    qtbot.waitUntil(lambda: len(loads) > before, timeout=6000)
+    assert asked == []
+    # The busy text is gone once the import has ended.
+    assert window.settings_page.status_label.text() != "이전 버전 자료를 가져오고 있습니다."
     controller.close()

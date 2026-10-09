@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
 
 from omr_grader import __version__
 
@@ -198,7 +198,8 @@ class ServicePorts:
     update_prefs_save: Callable[[UpdatePreferences], None] | None = None
     # Copy exams, forms and settings from an older install folder.
     data_import: Callable[[str, Callable[[object], None]], Result[ImportSummary]] | None = None
-    # A fresh folder: offer to import an older install once the window is up.
+    # A fresh folder. The controller no longer asks about importing on first start; the
+    # dashboard offers it while it is empty. Kept so existing callers still construct this.
     first_run: bool = False
 
 
@@ -214,6 +215,46 @@ class _DashboardWorkerValue:
 
     entries: tuple[DashboardIndexEntry, ...]
     warnings: tuple[WorkerError, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TrashBatchResult:
+    """What a trash action did to the chosen exams; one failure does not stop the others."""
+
+    action: str
+    succeeded: int
+    failed: int
+    reason: str
+
+
+def _run_trash_batch(
+    handler: Callable[[DashboardRequest], object], request: DashboardRequest
+) -> _TrashBatchResult:
+    """Run a restore or permanent delete exam by exam and count both outcomes."""
+    succeeded = 0
+    failed = 0
+    reason = ""
+    for session_id, revision in zip(
+        request.selection.session_ids, request.selection.revisions, strict=True
+    ):
+        single = DashboardRequest(request.action, DashboardSelection((session_id,), (revision,)))
+        error: object | None = None
+        try:
+            outcome = handler(single)
+            if isinstance(outcome, Err):
+                error = outcome.errors[0]
+        except Exception as raised:  # noqa: BLE001 - the remaining exams must still be tried
+            error = raised
+        if error is None:
+            succeeded += 1
+            continue
+        failed += 1
+        _LOGGER.error(
+            f"trash_action_failed action={request.action} code={_error_code(error)} "
+            f"context={_error_context(error)}"
+        )
+        reason = reason or _error_text(error)
+    return _TrashBatchResult(request.action, succeeded, failed, reason)
 
 
 def _dashboard_worker_value(result: object) -> object:
@@ -324,6 +365,18 @@ def _error_context(error: object) -> dict[str, object]:
     return {"reason": str(error) or type(error).__name__}
 
 
+# Said when an action is asked for while another one still runs.
+_BUSY_TITLE = "작업 중"
+_BUSY_TEXT = "다른 작업이 끝난 뒤 다시 시도하세요."
+# Diagnostics that only mean the list was rebuilt; the exam list is right, so they are logged
+# but never shown over a finished action's message.
+_HIDDEN_WARNING_CODES = frozenset({"DASHBOARD_INDEX_STALE"})
+# What a desktop action shows on the settings page while it runs.
+_SETTINGS_BUSY_TEXT = {
+    "profile-import": "OMR 프로필을 가져오고 있습니다.",
+    "data-import": "이전 버전 자료를 가져오고 있습니다.",
+}
+
 # What the status bar says once a dashboard action has gone through.
 _DASHBOARD_DONE: dict[type[object], str] = {
     SoftDeleteResult: "시험을 휴지통으로 옮겼습니다.",
@@ -382,6 +435,11 @@ class AppController(QObject):
         # the page is no longer busy and the dialog's request can start a new worker.
         self._trash_entries_pending: tuple[DashboardIndexEntry, ...] | None = None
         self._status_after_work: str | None = None
+        # An action asked for while the previous worker's thread was only ending; it starts
+        # once that thread is gone.
+        self._deferred_start: Callable[[], bool] | None = None
+        # Reload the exam list even if the running dashboard action fails half way.
+        self._refresh_after_action = False
         self._update_relay = _UpdateRelay(self)
         self._update_relay.finished.connect(self._finish_update_check)
         self._update_running = False
@@ -412,8 +470,12 @@ class AppController(QObject):
         self.grading_page.sample_download_requested.connect(self._sample_answer_key)
         self.grading_page.grade_requested.connect(self.start_grading)
         self.grading_page.cancel_requested.connect(self.cancel_active)
+        # Grading has no stop that works; the button shows only if a service provides one.
+        self.grading_page.set_cancel_available(self.services.cancel_operation is not None)
         self.grading_page.result_navigation_requested.connect(self._navigate_results)
         self.dashboard_page.request_emitted.connect(self._handle_dashboard_request)
+        self.dashboard_page.set_busy_probe(self._worker_active)
+        self.dashboard_page.busy_blocked.connect(self._refuse_busy)
         self.detail_page.back_requested.connect(self._detail_back)
         self.detail_page.save_requested.connect(self._save_detail)
         self.detail_page.discard_requested.connect(self._discard_detail)
@@ -443,6 +505,9 @@ class AppController(QObject):
         self.grading_page.set_write_enabled(self.write_enabled)
         self.detail_page.set_write_enabled(self.write_enabled)
         self.settings_page.set_write_enabled(self.write_enabled, diagnostic)
+        self.dashboard_page.set_import_available(
+            self.write_enabled and self.services.data_import is not None
+        )
         if not self.write_enabled:
             self.main_window.set_status(get_message("status.read_only"))
             self.main_window.show_diagnostic(diagnostic or get_message("bootstrap.read_only_body"))
@@ -493,6 +558,9 @@ class AppController(QObject):
         if request.action == "refresh":
             self._reload_dashboard()
             return
+        if request.action == "import_previous":
+            self._import_previous()
+            return
         if isinstance(request, DashboardRequest) and request.action in {
             "grade",
             "open_book",
@@ -542,18 +610,32 @@ class AppController(QObject):
             return
         action_handler, expected_type, refresh_dashboard = item
         operation: Callable[[], object] | None
+        if request.action.startswith("trash_"):
+            # Chosen exams are tried one by one so a failure leaves the others alone.
+            if not isinstance(request, DashboardRequest):
+                self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+                return
+            started = self._start_desktop_action(
+                self.dashboard_page,
+                None
+                if action_handler is None
+                else partial(_run_trash_batch, action_handler, request),
+                self._finish_trash_batch,
+                self.dashboard_page.set_busy,
+                kind="dashboard-action",
+            )
+            self._refresh_after_action = started
+            return
         if action_handler is None:
             operation = None
         elif request.action in {"backup", "restore"}:
-            operation = partial(action_handler, request)
-        elif request.action.startswith("trash_"):
             operation = partial(action_handler, request)
         else:
             if not isinstance(request, DashboardRequest):
                 self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
                 return
             operation = partial(action_handler, request.selection)
-        self._start_desktop_action(
+        started = self._start_desktop_action(
             self.dashboard_page,
             operation,
             lambda result: self._finish_dashboard_action(
@@ -562,9 +644,13 @@ class AppController(QObject):
             self.dashboard_page.set_busy,
             kind="dashboard-action",
         )
+        self._refresh_after_action = started and refresh_dashboard
 
     def _combine_from_dashboard(self, selection: DashboardSelection) -> None:
         """Ask for part order, subjects and destination, then build the combined report."""
+        if self._worker_active():
+            self._refuse_busy()
+            return
         entries = tuple(
             entry
             for session_id in selection.session_ids
@@ -627,8 +713,6 @@ class AppController(QObject):
         elif prefs.due(datetime.now(UTC)):
             # Let the window settle first; the check never blocks it.
             QTimer.singleShot(2000, self.main_window, lambda: self._check_for_update(False))
-        if self.services.first_run and self.write_enabled and self.services.data_import:
-            QTimer.singleShot(600, self.main_window, self._offer_import)
 
     def _check_for_update(self, manual: bool) -> None:
         fetch = self.services.update_fetch
@@ -710,41 +794,31 @@ class AppController(QObject):
             )
         self.main_window.show_update(None)
 
-    def _offer_import(self) -> None:
-        if self._closing or not self.write_enabled:
-            return
-        answer = QMessageBox.question(
-            self.main_window,
-            "이전 버전 자료 가져오기",
-            "새로 설치한 폴더입니다.\n예전 OMR Grader 폴더가 있으면 시험·답안지 양식·설정을"
-            " 가져올 수 있습니다. 예전 폴더는 그대로 남습니다.\n\n지금 가져올까요?"
-            " (나중에 환경 설정에서도 할 수 있습니다.)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._import_previous()
-
     def _import_previous(self) -> None:
         importer = self.services.data_import
         if importer is None or not self.write_enabled:
             self.main_window.show_error_dialog("가져오기", _error_text(self._unavailable()))
+            return
+        if self._worker_active():
+            self._refuse_busy()
             return
         folder = QFileDialog.getExistingDirectory(
             self.main_window, "예전 OMR Grader 폴더 선택 (OMR Grader.exe가 있는 폴더)"
         )
         if not folder:
             return
-        self.settings_page.set_update_state(
-            self._update_prefs().enabled, "이전 버전 자료를 가져오는 중입니다. 시험이 많으면 몇 분 걸립니다."
-        )
-        self._start_reporting_action(
+        started = self._start_reporting_action(
             self.settings_page,
             partial(importer, folder),
             self._finish_import,
             self.settings_page.set_busy,
-            kind="dashboard-action",
+            kind="data-import",
         )
+        if started:
+            self.settings_page.set_update_state(
+                self._update_prefs().enabled,
+                "이전 버전 자료를 가져오는 중입니다. 시험이 많으면 몇 분 걸립니다.",
+            )
 
     def _finish_import(self, result: object) -> None:
         if not isinstance(result, ImportSummary):
@@ -788,6 +862,10 @@ class AppController(QObject):
 
     def _grade_from_dashboard(self, entry: DashboardIndexEntry) -> None:
         """Connect a saved exam to the grading page, as a finished scan does."""
+        if self._worker_active():
+            # A job that ends later would reconnect the grading page to its own exam.
+            self._refuse_busy()
+            return
         session = ConnectedSessionDisplay(
             entry.session_id,
             entry.revision,
@@ -842,7 +920,7 @@ class AppController(QObject):
         self._trash_entries_pending = None
         if entries is None or self._closing:
             return
-        if self._active_bridge is not None and self._active_bridge.active:
+        if self._worker_active():
             # Another action started first; open when it ends.
             self._trash_entries_pending = entries
             return
@@ -859,8 +937,8 @@ class AppController(QObject):
         *,
         operation_id: str | None = None,
         kind: str = "desktop-service",
-    ) -> None:
-        self._start_reporting_action(
+    ) -> bool:
+        return self._start_reporting_action(
             page,
             None if operation is None else lambda _report: operation(),
             completed,
@@ -878,17 +956,22 @@ class AppController(QObject):
         *,
         operation_id: str | None = None,
         kind: str = "desktop-service",
-    ) -> None:
-        """Run a desktop action whose operation may report progress values."""
-        if self._closing or self._active_bridge is not None and self._active_bridge.active:
-            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
-            return
+    ) -> bool:
+        """Run a desktop action whose operation may report progress values.
+
+        Returns whether the action started; a refused one has already told the user why.
+        """
+        if self._closing:
+            return False
+        if self._worker_active():
+            self._refuse_busy()
+            return False
         if operation is None:
             self.main_window.show_diagnostic(_error_text(self._unavailable()))
-            return
+            return False
         self._desktop_success = completed
         self._desktop_busy = busy
-        self._start(
+        return self._start(
             page,
             operation_id or uuid4().hex,
             lambda _cancelled, report: _dashboard_worker_value(operation(report)),
@@ -908,11 +991,36 @@ class AppController(QObject):
             # This action's worker is still winding down; reload once it has finished.
             self._dashboard_reload_pending = True
 
+    def _finish_trash_batch(self, result: object) -> None:
+        if not isinstance(result, _TrashBatchResult):
+            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+            return
+        # Whatever happened, the list on screen is out of date once this action has ended.
+        self._dashboard_reload_pending = True
+        if result.failed == 0:
+            done = _DASHBOARD_DONE[
+                TrashRestoreResult if result.action == "trash_restore" else PermanentDeleteResult
+            ]
+            self.main_window.set_status(done)
+            return
+        verb = "복원" if result.action == "trash_restore" else "영구 삭제"
+        total = result.succeeded + result.failed
+        if result.succeeded == 0:
+            summary = f"시험 {result.failed}개를 {verb}하지 못했습니다."
+        else:
+            summary = (
+                f"시험 {total}개 중 {result.succeeded}개를 {verb}했고 "
+                f"{result.failed}개는 하지 못했습니다."
+            )
+        self.main_window.show_diagnostic(summary)
+        detail = f"\n{result.reason}" if result.reason else ""
+        self.main_window.show_error_dialog("작업을 완료하지 못했습니다", summary + detail)
+
     def _reload_dashboard(self) -> None:
         loader = self.services.dashboard_load
         if loader is None or self._closing:
             return
-        if self._active_bridge is not None and self._active_bridge.active:
+        if self._worker_active():
             self._dashboard_reload_pending = True
             return
         shown = self.main_window.status_label.text()
@@ -1149,6 +1257,9 @@ class AppController(QObject):
                 self.scan_page, ErrorInfo("ROOT_WRITE_DENIED", "error.root_write_denied")
             )
             return
+        if self._worker_active():
+            self._refuse_busy()
+            return
         settings = self._settings_snapshot
         if settings is None:
             self._present_error(
@@ -1181,6 +1292,9 @@ class AppController(QObject):
         )
 
     def start_import(self, command: ImportResponseCommand) -> None:
+        if self._worker_active():
+            self._refuse_busy()
+            return
         self.grading_page.clear_result_available()
         service = self.services.response_import
         self._start_write(
@@ -1194,7 +1308,8 @@ class AppController(QObject):
                 self.scan_page, ErrorInfo("ROOT_WRITE_DENIED", "error.root_write_denied")
             )
             return
-        if self._active_bridge is not None and self._active_bridge.active:
+        if self._worker_active():
+            self._refuse_busy()
             return
         picker = self.services.fresh_response_picker
         importer = self.services.import_fresh_response_selection
@@ -1295,14 +1410,25 @@ class AppController(QObject):
         *,
         kind: str = "write",
         session_identity: tuple[str, int] | None = None,
-    ) -> None:
-        if self._closing or self._active_bridge is not None and self._active_bridge.active:
-            error = ErrorInfo("UI_OPERATION_FAILED", "error.ui_operation_failed")
-            if isinstance(page, ScanPage | GradingPage):
-                self._present_error(page, error)
-            else:
-                self.main_window.show_diagnostic(_error_text(error))
-            return
+    ) -> bool:
+        if self._closing:
+            return False
+        if self._worker_active():
+            self._refuse_busy()
+            return False
+        if self._active_bridge is not None:
+            # The previous operation has returned and only its thread is ending (see
+            # _worker_active): start as soon as that thread is gone, never in parallel.
+            self._deferred_start = partial(
+                self._start,
+                page,
+                operation_id,
+                operation,
+                cancel_hook,
+                kind=kind,
+                session_identity=session_identity,
+            )
+            return True
         bridge = WorkerBridge(parent=self)
         self._active_page, self._active_operation_id, self._active_bridge = (
             page,
@@ -1323,6 +1449,26 @@ class AppController(QObject):
         self._set_busy(page, True, operation_id)
         self.main_window.set_status(get_message("status.processing"))
         bridge.start(operation, cancel_hook=cancel_hook)
+        return True
+
+    def _worker_active(self) -> bool:
+        """Whether work is still in progress, so a new action has to be refused.
+
+        A worker whose operation has returned counts as finished even while its thread is
+        still ending: the pages already look idle then (``_terminal``), and refusing the
+        next action in those few milliseconds was wrong.
+        """
+        if self._deferred_start is not None:
+            return True
+        bridge = self._active_bridge
+        return bridge is not None and bridge.active and not bridge.operation_returned
+
+    def _refuse_busy(self) -> None:
+        """Tell the user an action must wait for the running one."""
+        if self._closing:
+            return
+        _LOGGER.info(f"action_refused_busy kind={self._active_kind or 'unknown'}")
+        self.main_window.show_error_dialog(_BUSY_TITLE, _BUSY_TEXT)
 
     def cancel_active(self, operation_id: object = None) -> None:
         if (
@@ -1345,6 +1491,7 @@ class AppController(QObject):
 
     def _shutdown_for_close(self) -> None:
         self._closing = True
+        self._deferred_start = None
         self._desktop_success = None
         self._desktop_busy = None
         bridge = self._active_bridge
@@ -1375,6 +1522,9 @@ class AppController(QObject):
             current = self.scan_page.current_source()
             if current is not None:
                 QTimer.singleShot(0, partial(self._detect_form, current))
+        deferred, self._deferred_start = self._deferred_start, None
+        if deferred is not None and not self._closing:
+            deferred()
 
     def _close_finished(self) -> None:
         if not self._closing or self._close_finished_handled:
@@ -1426,6 +1576,7 @@ class AppController(QObject):
         if self._active_kind in {
             "desktop-service",
             "profile-import",
+            "data-import",
             "form-detection",
             "dashboard-action",
         }:
@@ -1491,7 +1642,10 @@ class AppController(QObject):
                 return
             self.grading_page.set_validation_result(result)
         elif isinstance(page, ScanPage):
-            page.set_result(result)
+            if self._active_kind == "fresh-response-import":
+                page.set_result(result, "응답 엑셀을 불러왔습니다.")
+            else:
+                page.set_result(result)
         elif self._active_kind == "grading":
             identity = self._active_session_identity
             if (
@@ -1528,7 +1682,11 @@ class AppController(QObject):
                 page.set_session(None, connected_session.exam_name)
                 self.main_window.set_next_step(self.main_window.GRADING_PAGE)
         if isinstance(page, ScanPage):
-            self.main_window.set_session_progress("OMR 인식 완료")
+            self.main_window.set_session_progress(
+                "응답 엑셀을 불러왔습니다."
+                if self._active_kind == "fresh-response-import"
+                else "OMR 인식 완료"
+            )
         self.main_window.set_status(get_message("status.completed"))
 
     def _failed(self, error: object) -> None:
@@ -1557,13 +1715,28 @@ class AppController(QObject):
                 return
             self._fail_form_detection(_error_text(error))
             return
-        if self._active_kind in {"desktop-service", "profile-import", "dashboard-action"}:
+        if self._active_kind in {
+            "desktop-service",
+            "profile-import",
+            "data-import",
+            "dashboard-action",
+        }:
             text = _error_text(error)
             self.main_window.show_diagnostic(text)
             if self._active_kind == "dashboard-action":
                 self.main_window.show_error_dialog("작업을 완료하지 못했습니다", text)
+                if self._refresh_after_action:
+                    # The action may have changed some exams before it failed.
+                    self._dashboard_reload_pending = True
             if self._active_kind == "profile-import":
                 self.scan_page.set_profile_import_error(text)
+                self.settings_page.set_save_error(message=text)
+            if self._active_kind == "data-import":
+                message = f"가져오지 못했습니다. {text}"
+                self.settings_page.set_update_state(self._update_prefs().enabled, message)
+                self.main_window.show_error_dialog("이전 버전 자료 가져오기", message)
+                # Exams copied before the failure are listed once the dashboard is read again.
+                self._dashboard_reload_pending = True
             return
         if not self._closing and self._active_page is not None:
             message = f"{_error_text(error)}\n오류 코드: {code}"
@@ -1580,7 +1753,7 @@ class AppController(QObject):
     def _cancelled(self) -> None:
         if self._closing:
             return
-        if self._active_kind in {"desktop-service", "dashboard-action"}:
+        if self._active_kind in {"desktop-service", "dashboard-action", "data-import"}:
             self.main_window.set_status("작업이 취소되었습니다")
             return
         if self._closing or self._active_page is None:
@@ -1606,6 +1779,7 @@ class AppController(QObject):
         self._active_kind = ""
         self._active_session_identity = None
         self._active_cancellable = False
+        self._refresh_after_action = False
         self._desktop_success = None
         self._desktop_busy = None
 
@@ -1626,6 +1800,8 @@ class AppController(QObject):
             page.set_busy(busy)
             if busy and not self._active_cancellable:
                 page.cancel_button.setEnabled(False)
+        elif isinstance(page, SettingsPage):
+            page.set_busy(busy, _SETTINGS_BUSY_TEXT.get(self._active_kind) if busy else None)
         else:
             page.set_busy(busy)
 
@@ -1766,13 +1942,12 @@ class AppController(QObject):
             return
         if (
             self._active_kind == "form-detection"
-            and self._active_bridge is not None
-            and self._active_bridge.active
+            and self._worker_active()
             and tuple(selection.paths) == self._form_detection_paths
         ):
             self._form_detection_stale = False
             return  # the same scans are already being detected
-        if self._active_bridge is not None and self._active_bridge.active:
+        if self._worker_active():
             # Detection only helps; the profile can still be chosen by hand meanwhile. It
             # runs for the current scans once the other action ends, and no result for
             # earlier scans stays on screen until then.
@@ -1931,6 +2106,9 @@ class AppController(QObject):
         self.services.sample_roster()
 
     def _pick_answer_key(self, request: GradingPageRequest) -> None:
+        if self._worker_active():
+            self._refuse_busy()
+            return
         picker = self.services.answer_key_picker
         if picker is None:
             self._present_error(self.grading_page, self._unavailable())
@@ -1973,6 +2151,9 @@ class AppController(QObject):
         )
 
     def _pick_other_response(self, request: GradingPageRequest) -> None:
+        if self._worker_active():
+            self._refuse_busy()
+            return
         picker = self.services.other_response_picker
         importer = self.services.import_response_selection
         if picker is None or importer is None:
@@ -2042,6 +2223,8 @@ class AppController(QObject):
                 f"code={warning.code} context={_error_context(warning)} "
                 f"cause={warning.cause_type}"
             )
+            if warning.code in _HIDDEN_WARNING_CODES:
+                continue
             self.main_window.show_diagnostic(_error_text(warning))
 
     @staticmethod
