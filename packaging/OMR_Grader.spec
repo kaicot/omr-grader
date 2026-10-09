@@ -69,6 +69,7 @@ _UNSHIPPED = (
     "pyside6/qt6network",
     "pyside6/plugins/tls/",
     "pyside6/plugins/networkinformation/",
+    "pyside6/plugins/generic/",  # TUIO touch input over the network
 )
 
 
