@@ -7,6 +7,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import uuid
@@ -78,6 +79,7 @@ from omr_grader.infrastructure.io_retry import (
 )
 from omr_grader.infrastructure.paths import ManagedPaths
 from omr_grader.infrastructure.result_layout import (
+    ANSWER_KEY_KIND,
     ANSWER_KEY_SOURCE_DIR,
     COORDINATE_DIR,
     FINAL_KIND,
@@ -111,8 +113,11 @@ def _error(code: str, reason: str, *, retryable: bool = False) -> Err:
     )
 
 
-def _warning(code: str, reason: str) -> ErrorInfo:
-    return ErrorInfo(code, f"warning.{code.lower()}", context={"reason": reason})
+def _warning(code: str, reason: str, *, detail: str | None = None) -> ErrorInfo:
+    context: dict[str, str | int | bool | None] = {"reason": reason}
+    if detail is not None:
+        context["detail"] = detail
+    return ErrorInfo(code, f"warning.{code.lower()}", context=context)
 
 
 def _wire_value(value: object) -> object:
@@ -653,15 +658,119 @@ def _is_control_file(path: str) -> bool:
     return path in _CONTROL_FILES
 
 
+_USER_EDITED_SUFFIX = "_사용자수정본"
+_USER_EDITED_BOOK = re.compile(rf"{_USER_EDITED_SUFFIX}(?:_\d+)?\.xlsx")
+# Names before 4.0.3; exams made then still carry these books in their generations.
+_LEGACY_BOOKS = (
+    (re.compile(r"01_ocr_.+_\d{6}_\d{6}_응답결과\.xlsx"), RESPONSE_KIND),
+    (re.compile(r"02_score_.+_\d{6}_\d{6}_채점결과\.xlsx"), SCORE_KIND),
+    (re.compile(r"03_final_.+_\d{6}_\d{6}_최종성적표\.xlsx"), FINAL_KIND),
+    (re.compile(r"정답표_.+_\d{6}_\d{6}\.xlsx"), ANSWER_KEY_KIND),
+)
+_EXTERNALIZED_DIRS = ("images", "sources", SCORE_IMAGE_DIR)
+
+
+def _view_book_kind(name: str) -> str | None:
+    """The kind of a result book the exam folder shows; None for anything else."""
+    if _USER_EDITED_BOOK.search(name):
+        return None
+    kind = result_workbook_kind(name)
+    if kind is not None:
+        return kind
+    return next((kind for pattern, kind in _LEGACY_BOOKS if pattern.fullmatch(name)), None)
+
+
+def _generation_books(directory: Path) -> tuple[Path, ...]:
+    try:
+        children = tuple(directory.iterdir())
+    except OSError:
+        return ()
+    return tuple(
+        child for child in children if child.is_file() and _view_book_kind(child.name) is not None
+    )
+
+
+def _shown_books(generation: Path) -> dict[str, Path]:
+    """The books a folder shows: the graded book alone once there is one."""
+    books = _generation_books(generation)
+    # A graded book carries the responses and the answer key as sheets of its own, so
+    # their separate books stay in the generation and the folder shows one workbook.
+    graded = any(_view_book_kind(child.name) in _GRADED_BOOK_KINDS for child in books)
+    return {
+        child.name: child
+        for child in books
+        if not graded or _view_book_kind(child.name) in _GRADED_BOOK_KINDS
+    }
+
+
+def _user_edited_path(book: Path) -> Path:
+    candidate = book.with_name(f"{book.stem}{_USER_EDITED_SUFFIX}.xlsx")
+    number = 1
+    while candidate.exists():
+        number += 1
+        candidate = book.with_name(f"{book.stem}{_USER_EDITED_SUFFIX}_{number}.xlsx")
+    return candidate
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
+def _publish_result_books(
+    session: Path, generation: Path, *, keep_user_edits: bool = False
+) -> None:
+    """Show the generation's result books in the exam folder.
+
+    Books of earlier generations go first, so a book held open in Excel stops the refresh
+    before anything else in the folder changes. A book the user saved over (Excel writes a
+    new file, which ends the hard link) is kept as ``…_사용자수정본.xlsx``, or left in place
+    when ``keep_user_edits`` is set.
+    """
+    shown = _shown_books(generation)
+    generations = session / "generations"
+    ours = {
+        book.name: book
+        for directory in (generations.iterdir() if generations.is_dir() else ())
+        for book in _generation_books(directory)
+    }
+    known: set[str] | None = None
+    for child in tuple(session.iterdir()):
+        if not child.is_file() or _view_book_kind(child.name) is None:
+            continue
+        source = shown.get(child.name)
+        if source is not None and _same_file(child, source):
+            continue
+        links = child.stat().st_nlink
+        if links < 2 and child.name not in ours:
+            continue
+        if links < 2:
+            if known is None:
+                known = {_sha(book) for book in ours.values()}
+            if _sha(child) not in known:
+                if keep_user_edits:
+                    continue
+                retry_replace(child, _user_edited_path(child))
+                continue
+        retry_unlink(child)
+    for name, source in shown.items():
+        if not (session / name).exists():
+            retry_io(partial(os.link, source, session / name))
+
+
 def _refresh_result_view(session: Path, generation: Path) -> None:
-    """Publish browse-friendly hard links for the immutable current generation."""
+    """Publish browse-friendly hard links for the immutable current generation.
+
+    The generation must still hold its own copies of the heavy files, as it does right
+    after a commit: the folder's copies are replaced here.
+    """
+    _publish_result_books(session, generation)
     for _, target_name in _RESULT_VIEW_DIRS:
         target = session / target_name
         if target.exists():
             retry_io(partial(shutil.rmtree, target))
-    for child in tuple(session.iterdir()):
-        if child.is_file() and result_workbook_kind(child.name) is not None:
-            retry_unlink(child)
     for source_name, target_name in _RESULT_VIEW_DIRS:
         source = generation / source_name
         if source.is_dir():
@@ -677,17 +786,6 @@ def _refresh_result_view(session: Path, generation: Path) -> None:
                 elif child.is_file():
                     retry_mkdir(destination.parent, parents=True, exist_ok=True)
                     retry_io(partial(os.link, child, destination))
-    books = tuple(
-        child
-        for child in generation.iterdir()
-        if child.is_file() and result_workbook_kind(child.name) is not None
-    )
-    # A graded book carries the responses and the answer key as sheets of its own, so
-    # their separate books stay in the generation and the folder shows one workbook.
-    graded = any(result_workbook_kind(child.name) in _GRADED_BOOK_KINDS for child in books)
-    for child in books:
-        if not graded or result_workbook_kind(child.name) in _GRADED_BOOK_KINDS:
-            retry_io(partial(os.link, child, session / child.name))
     _hide_internal_directories(session)
 
 
@@ -765,7 +863,7 @@ def _artifact_path(session: Path, generation: Path, relative: str) -> Path:
 
 def _externalize_generation_artifacts(session: Path, generation: Path) -> None:
     """Remove heavy generation entries after verifying their root hard links."""
-    for directory_name in ("images", "sources", SCORE_IMAGE_DIR):
+    for directory_name in _EXTERNALIZED_DIRS:
         directory = generation / directory_name
         if not directory.is_dir():
             continue
@@ -785,6 +883,55 @@ def _externalize_generation_artifacts(session: Path, generation: Path) -> None:
             ):
                 raise OSError(f"external artifact verification failed: {relative}")
         retry_io(partial(shutil.rmtree, directory))
+
+
+def _remove_tree(path: Path) -> None:
+    """Delete a folder, clearing the read-only mark some copied files carry."""
+
+    def clear_read_only(function: Callable[[str], object], target: str, _error: object) -> None:
+        os.chmod(target, stat.S_IWRITE)
+        function(target)
+
+    shutil.rmtree(path, onexc=clear_read_only)
+
+
+def _duplicate_reason(folders: list[Path]) -> str:
+    names = ", ".join(f"‘{folder.name}’" for folder in sorted(folders))
+    return (
+        f"{names} 폴더가 같은 시험이라 어느 쪽인지 정할 수 없습니다. "
+        "프로그램을 끈 뒤 한 폴더를 프로그램 폴더 밖으로 옮기세요."
+    )
+
+
+_BUSY_CODES = frozenset(
+    ("SESSION_DISCOVERY_IN_PROGRESS", "SNAPSHOT_MUTATION_IN_PROGRESS", "SESSION_WRITE_LOCKED")
+)
+
+
+def _skipped_warning(session: Path, failure: Err) -> ErrorInfo:
+    """Why one exam is missing from a list, naming its folder."""
+    error = failure.errors[0]
+    detail = str(error.context.get("reason", error.code))
+    if error.code == "SESSION_LOCATION_AMBIGUOUS":
+        reason = detail
+    elif error.code in _BUSY_CODES:
+        reason = (
+            f"‘{session.name}’ 시험은 다른 작업이 쓰고 있어 이번 목록에서 빠졌습니다. "
+            "잠시 뒤 새로 고치세요."
+        )
+    else:
+        reason = (
+            f"‘{session.name}’ 시험의 자료가 손상되었거나 일부 파일이 없어 목록에서 뺐습니다. "
+            "시험 폴더 안의 파일을 옮기거나 고쳤다면 되돌리고, 백업이 있으면 백업에서 복구하세요."
+        )
+    return _warning("SESSION_FOLDER_SKIPPED", reason, detail=f"{error.code}: {detail}")
+
+
+class _NoGate:
+    """Stands in for a lock file a read-only store may not create."""
+
+    def close(self) -> None:
+        return None
 
 
 def _preserved_artifact(path: str, operation: OperationKind) -> bool:
@@ -811,11 +958,17 @@ class SessionStore:
         gate_backend: GateBackend | None = None,
         fault_barrier: FaultBarrier | None = None,
         materializer: GenerationMaterializer | None = None,
+        read_only: bool = False,
     ) -> None:
+        """``read_only`` reads exams without writing anything under the data folder.
+
+        It serves an install without write permission and an older install being imported.
+        """
         self._root = paths.data_dir if isinstance(paths, ManagedPaths) else Path(paths)
         self._gates = gate_backend or FileGateBackend()
         self._barrier = fault_barrier or (lambda _name: None)
         self._materializer = materializer or GenerationMaterializer()
+        self._read_only = read_only
 
     @property
     def root(self) -> Path:
@@ -908,6 +1061,8 @@ class SessionStore:
         return self._locks() / "session" / f"{session_id}.lock"
 
     def _mkdirs(self) -> None:
+        if self._read_only:
+            return
         for directory in (
             self._root,
             self._trash(),
@@ -919,15 +1074,32 @@ class SessionStore:
             retry_mkdir(directory, parents=True, exist_ok=True)
         retry_touch(self._root_lock())
 
+    def _read_only_error(self) -> Err:
+        return _error("ROOT_WRITE_DENIED", "읽기 전용으로 실행 중이라 시험 기록을 바꿀 수 없습니다.")
+
     def _lock(self, path: Path, *, exclusive: bool, busy: str) -> Result[GateHandle]:
-        retry_mkdir(path.parent, parents=True, exist_ok=True)
-        retry_touch(path)
+        if self._read_only:
+            if exclusive:
+                return self._read_only_error()
+            if not path.is_file():
+                return Ok(_NoGate())
+        else:
+            try:
+                retry_mkdir(path.parent, parents=True, exist_ok=True)
+                if not path.is_file():
+                    retry_touch(path)
+            except PermissionError as exc:
+                return _error("ROOT_WRITE_DENIED", str(exc))
         handle = self._gates.acquire(path, exclusive=exclusive, blocking=False)
         if handle is None:
             return _error(busy, "다른 작업이 같은 세션을 사용 중입니다.", retryable=True)
         return Ok(handle)
 
     def _existing_lock(self, path: Path, *, exclusive: bool, busy: str) -> Result[GateHandle]:
+        if self._read_only and not exclusive and not path.exists():
+            # Nothing can hold a gate that is not there, and a read-only store may not
+            # recreate it; the snapshot's hashes still guard what is read.
+            return Ok(_NoGate())
         if not path.is_file() or path.is_symlink():
             return _error("GENERATION_GATE_MISSING", "generation gate가 없습니다.")
         handle = self._gates.acquire(path, exclusive=exclusive, blocking=False)
@@ -961,8 +1133,25 @@ class SessionStore:
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
         if len(found) > 1:
-            raise ValueError("session exists in active and trash locations")
+            chosen = self._recorded_folder(found, session_id)
+            if chosen is None:
+                raise ValueError(_duplicate_reason(found))
+            return chosen
         return found[0] if found else None
+
+    def _recorded_folder(self, folders: list[Path], session_id: str) -> Path | None:
+        """The one folder of an exam that kept its recorded name, e.g. beside an Explorer copy."""
+        recorded: list[Path] = []
+        for folder in folders:
+            if folder.parent == self._trash() and folder.name == session_id:
+                recorded.append(folder)
+                continue
+            try:
+                if self._display_name(folder, session_id) == folder.name:
+                    recorded.append(folder)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+        return recorded[0] if len(recorded) == 1 else None
 
     def _manifest(self, generation: Path) -> tuple[SessionManifest, str]:
         manifest_path = generation / "manifest.json"
@@ -1240,55 +1429,49 @@ class SessionStore:
     def _discover_committed_leases(
         self, *, trash: bool
     ) -> Result[tuple[CommittedSnapshotLeasePort, ...]]:
+        """One lease per readable exam; an exam that cannot be read is left out with a warning.
+
+        A writable store first finishes what an open file or a partial copy left undone:
+        interrupted permanent deletes, the exam folder's result view, lost gate files, and
+        the recorded name of a folder renamed in Explorer.
+        """
         self._mkdirs()
         root = self._lock(self._root_lock(), exclusive=False, busy="SESSION_DISCOVERY_IN_PROGRESS")
         if isinstance(root, Err):
             return root
         leases: list[CommittedSnapshotLeasePort] = []
+        warnings: list[ErrorInfo] = []
         completed = False
         try:
-            folders = (
-                (self._trash().iterdir() if self._trash().is_dir() else ())
-                if trash
-                else self._active().iterdir()
-            )
-            candidates = sorted(
-                (
-                    path
-                    for path in folders
-                    if path.is_dir()
-                    and not path.is_symlink()
-                    and not path.name.startswith(".")
-                    and path.name != "_휴지통"
-                ),
-                key=lambda path: path.name.encode("utf-8"),
-            )
-            for session in candidates:
-                try:
-                    identity = IdentityRecord.from_dict(
-                        _read_json_object(session / "IDENTITY.json")
-                    )
-                except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                    return _error("SESSION_DISCOVERY_INVALID", str(exc))
+            if not self._read_only and not trash:
+                self._finish_pending_deletes()
+            sessions, skipped = self._session_folders(trash=trash)
+            warnings.extend(skipped)
+            for session, session_id in sessions:
+                repaired = self._repair_session(session, session_id, trash=trash)
+                if repaired is not None:
+                    warnings.append(repaired)
                 reader = self._lock(
-                    self._writer_lock(identity.session_id),
+                    self._writer_lock(session_id),
                     exclusive=False,
                     busy="SESSION_DISCOVERY_IN_PROGRESS",
                 )
                 if isinstance(reader, Err):
-                    return reader
+                    warnings.append(_skipped_warning(session, reader))
+                    continue
                 try:
                     opened = self._open_committed_snapshot(
-                        SnapshotRequest(identity.session_id, None, SnapshotPurpose.COMBINED),
+                        SnapshotRequest(session_id, None, SnapshotPurpose.COMBINED),
                         trash=trash,
                     )
                     if isinstance(opened, Err):
-                        return opened
+                        warnings.append(_skipped_warning(session, opened))
+                        continue
                     leases.append(opened.value)
                 finally:
                     reader.value.close()
             completed = True
-            return Ok(tuple(leases))
+            return Ok(tuple(leases), tuple(warnings))
         except OSError as exc:
             return _error("SESSION_DISCOVERY_FAILED", str(exc))
         finally:
@@ -1296,6 +1479,200 @@ class SessionStore:
             if not completed:
                 for lease in reversed(leases):
                     lease.close()
+
+    def _session_folders(
+        self, *, trash: bool
+    ) -> tuple[list[tuple[Path, str]], list[ErrorInfo]]:
+        """Exam folders by name, one per exam; folders without ``IDENTITY.json`` are not exams."""
+        parent = self._trash() if trash else self._active()
+        folders = sorted(
+            (
+                path
+                for path in (parent.iterdir() if parent.is_dir() else ())
+                if path.is_dir()
+                and not path.is_symlink()
+                and not path.name.startswith(".")
+                and path.name != "_휴지통"
+                and (path / "IDENTITY.json").exists()
+            ),
+            key=lambda path: path.name.encode("utf-8"),
+        )
+        warnings: list[ErrorInfo] = []
+        by_id: dict[str, list[Path]] = {}
+        for folder in folders:
+            try:
+                identity = IdentityRecord.from_dict(_read_json_object(folder / "IDENTITY.json"))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                warnings.append(
+                    _warning(
+                        "SESSION_FOLDER_SKIPPED",
+                        f"‘{folder.name}’ 폴더의 시험 정보를 읽을 수 없어 목록에서 뺐습니다.",
+                        detail=str(exc),
+                    )
+                )
+                continue
+            by_id.setdefault(identity.session_id, []).append(folder)
+        sessions: list[tuple[Path, str]] = []
+        for session_id, found in by_id.items():
+            if len(found) == 1:
+                sessions.append((found[0], session_id))
+                continue
+            chosen = self._recorded_folder(found, session_id)
+            if chosen is None:
+                warnings.append(_warning("SESSION_FOLDER_SKIPPED", _duplicate_reason(found)))
+                continue
+            sessions.append((chosen, session_id))
+            warnings.extend(
+                _warning(
+                    "SESSION_FOLDER_DUPLICATE",
+                    f"‘{folder.name}’ 폴더는 ‘{chosen.name}’ 시험과 같은 시험이라 "
+                    "목록에는 하나만 보입니다.",
+                )
+                for folder in found
+                if folder != chosen
+            )
+        sessions.sort(key=lambda item: item[0].name.encode("utf-8"))
+        return sessions, warnings
+
+    def _finish_pending_deletes(self) -> None:
+        """Remove what an open file kept a permanent delete from removing.
+
+        Runs under the shared root lock, which no permanent delete holds while running.
+        """
+        try:
+            tombs = tuple(self._deleting().iterdir())
+        except OSError:
+            return
+        for tomb in tombs:
+            try:
+                tombstone = DeleteTombstone.from_dict(_read_json_object(tomb / "DELETE.json"))
+                _remove_tree(tomb)
+                for generation_id in tombstone.generation_ids:
+                    retry_unlink(
+                        self._gate_path(tombstone.session_id, generation_id), missing_ok=True
+                    )
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                continue
+
+    def _needs_repair(self, session: Path, session_id: str, *, trash: bool) -> bool:
+        """Cheap checks for post-commit work left undone; full validation follows a hit."""
+        try:
+            pointer = self._pointer(session)
+            generation = session.joinpath(*pointer.generation_relpath.split("/"))
+            for folder in (session / "generations").iterdir():
+                generation_id = folder.name.partition("_")[2]
+                if generation_id and not self._gate_path(session_id, generation_id).is_file():
+                    return True
+            if not (trash and session.name == session_id):
+                try:
+                    if self._display_name(session, session_id) != session.name:
+                        return True
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    return True
+            if any((generation / name).is_dir() for name in _EXTERNALIZED_DIRS):
+                return True
+            shown = _shown_books(generation)
+            for name, source in shown.items():
+                target = session / name
+                if not target.exists() or (
+                    not _same_file(target, source) and target.stat().st_nlink >= 2
+                ):
+                    return True
+            return any(
+                child.is_file()
+                and child.name not in shown
+                and _view_book_kind(child.name) is not None
+                and child.stat().st_nlink >= 2
+                for child in session.iterdir()
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+
+    def _repair_session(self, session: Path, session_id: str, *, trash: bool) -> ErrorInfo | None:
+        if self._read_only or not self._needs_repair(session, session_id, trash=trash):
+            return None
+        writer = self._lock(
+            self._writer_lock(session_id), exclusive=True, busy="SESSION_WRITE_LOCKED"
+        )
+        if isinstance(writer, Err):
+            return None
+        try:
+            self._restore_gates(session, session_id)
+            self._record_folder_name(session, session_id, trash=trash)
+            _, manifest, generation = self._validate_current(session)
+            heavy = [
+                entry.path
+                for entry in manifest.files
+                if external_artifact_relpath(entry.path) is not None
+            ]
+            internal = [path for path in heavy if generation.joinpath(*path.split("/")).is_file()]
+            if heavy and len(internal) == len(heavy):
+                # The commit stopped before the folder showed it; finish that refresh.
+                _refresh_result_view(session, generation)
+            else:
+                _publish_result_books(session, generation, keep_user_edits=True)
+            if internal:
+                _externalize_generation_artifacts(session, generation)
+            return None
+        except OSError as exc:
+            return _warning(
+                "SESSION_VIEW_REPAIR_PENDING",
+                f"‘{session.name}’ 시험의 결과 Excel이나 폴더 안의 파일이 다른 프로그램에서 "
+                "열려 있어 시험 폴더를 최신 결과로 바꾸지 못했습니다. 닫은 뒤 목록을 새로 "
+                "고치세요.",
+                detail=str(exc),
+            )
+        except (ValueError, TypeError, json.JSONDecodeError):
+            # Opening the snapshot reports a damaged exam with its folder name.
+            return None
+        finally:
+            writer.value.close()
+
+    def _restore_gates(self, session: Path, session_id: str) -> None:
+        """Recreate gate files lost with a partly copied ``.locks`` folder.
+
+        Only for published generation folders whose manifest matches their name; the caller
+        holds the exam's writer lock. Nothing can hold a gate that does not exist.
+        """
+        if self._read_only:
+            return
+        for generation in (session / "generations").iterdir():
+            if not generation.is_dir() or generation.is_symlink():
+                continue
+            try:
+                manifest, _ = self._manifest(generation)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if (
+                manifest.session_id != session_id
+                or generation.name != f"g{manifest.revision:08d}_{manifest.generation_id}"
+            ):
+                continue
+            gate = self._gate_path(session_id, manifest.generation_id)
+            if gate.exists():
+                continue
+            retry_mkdir(gate.parent, parents=True, exist_ok=True)
+            try:
+                gate.touch(exist_ok=False)
+            except FileExistsError:
+                pass
+
+    def _record_folder_name(self, session: Path, session_id: str, *, trash: bool) -> None:
+        """Record the name of an exam folder renamed in Explorer; the caller holds its writer lock."""
+        if trash and session.name == session_id:
+            return
+        try:
+            if self._display_name(session, session_id) == session.name:
+                return
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        validate_portable_component(session.name)
+        written = atomic_write_json(
+            session / "LOCATION.json",
+            self._location_metadata(session_id, session.name, uuid.uuid4().hex),
+        )
+        if isinstance(written, Err):
+            raise OSError(written.errors[0].context.get("reason", "LOCATION.json write failed"))
 
     def _all_gates_exclusive(self, session: Path) -> Result[list[GateHandle]]:
         try:
@@ -1320,6 +1697,10 @@ class SessionStore:
                 raise ValueError("published generation IDs must be unique")
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             return _error("SESSION_POINTER_INVALID", str(exc))
+        try:
+            self._restore_gates(session, pointer.session_id)
+        except OSError as exc:
+            return _error("GENERATION_GATE_MISSING", str(exc))
         handles: list[GateHandle] = []
         for generation_id, _ in sorted(published):
             gate = self._existing_lock(
@@ -1907,12 +2288,16 @@ class SessionStore:
                 _refresh_result_view(session, final)
                 _externalize_generation_artifacts(session, final)
             except OSError as exc:
+                # Saved; the next listing finishes the folder once the file is closed.
                 return Ok(
                     result,
                     (
                         _warning(
                             "POSTCOMMIT_RECOVERY_REQUIRED",
-                            f"commit 결과 보기를 갱신하지 못했습니다: {exc}",
+                            "저장은 끝났지만 결과 Excel이나 시험 폴더 안의 파일이 다른 "
+                            "프로그램에서 열려 있어 폴더의 결과 파일을 아직 바꾸지 못했습니다. "
+                            "Excel을 닫고 시험 관리 목록을 새로 고치면 바뀝니다.",
+                            detail=str(exc),
                         ),
                     ),
                 )
@@ -2180,7 +2565,11 @@ class SessionStore:
             cleanup = CleanupState.COMPLETE
             try:
                 self._barrier("before_delete_cleanup")
-                shutil.rmtree(tomb)
+                _remove_tree(tomb)
+                # Windows refuses to delete a gate file this store still holds open.
+                for gate in reversed(gates):
+                    gate.close()
+                gates = []
                 for generation_id in generation_ids:
                     retry_unlink(
                         self._gate_path(request.session_id, generation_id),
@@ -2188,7 +2577,14 @@ class SessionStore:
                     )
             except OSError as exc:
                 cleanup = CleanupState.PENDING
-                warnings = (_warning("DELETE_CLEANUP_PENDING", str(exc)),)
+                warnings = (
+                    _warning(
+                        "DELETE_CLEANUP_PENDING",
+                        "시험은 지웠지만 열려 있는 파일이 있어 일부를 바로 정리하지 못했습니다. "
+                        "다음에 시험 목록을 열 때 마저 정리합니다.",
+                        detail=str(exc),
+                    ),
+                )
             return Ok(
                 PermanentDeleteResult(True, IndexState.STALE, cleanup, request.operation_id),
                 warnings,

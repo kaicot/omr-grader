@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -51,6 +53,28 @@ class BootstrapState:
     capability_token: CapabilityToken | None = None
     # No config.json existed: a fresh folder, where importing an older install makes sense.
     first_run: bool = False
+
+
+_STALE_WORK_SECONDS = 3600.0
+
+
+def _remove_stale_import_work(root: Path) -> None:
+    """Drop work folders an import left when the program was closed mid-way.
+
+    An hour old means no running import still owns it; a refusal is left for next time.
+    """
+    try:
+        folders = tuple(root.glob(".import-*"))
+    except OSError:
+        return
+    for folder in folders:
+        try:
+            if folder.is_dir() and not folder.is_symlink() and (
+                time.time() - folder.stat().st_mtime > _STALE_WORK_SECONDS
+            ):
+                shutil.rmtree(folder)
+        except OSError:
+            continue
 
 
 def _state(
@@ -240,6 +264,7 @@ def bootstrap(paths: ManagedPaths | None = None) -> Result[BootstrapState]:
             + tuple(_warning_copy(issue) for issue in data_format.errors)
             + _result_warnings(logging_result),
         )
+    _remove_stale_import_work(managed.value.root)
     return Ok(
         BootstrapState(
             managed.value, config.value, True, capability_token=token, first_run=first_run
@@ -520,7 +545,7 @@ def run(
     detail_answer_keys: dict[str, AnswerKeySnapshot | None] = {}
 
     if runtime_paths is not None:
-        store = SessionStore(runtime_paths)
+        store = SessionStore(runtime_paths, read_only=not write_enabled)
         coordinator = SessionCommitCoordinator(store)
         report_coordinator = coordinator
 
@@ -540,6 +565,7 @@ def run(
             runtime_paths.data_dir / "dashboard_index.json",
             store.discover_active_committed_leases,
             list_trash_entries=trash_lister(store.discover_trash_committed_leases),
+            index_writable=write_enabled,
         )
         dashboard_service = DashboardApplicationService(
             coordinator, repository, write_enabled=write_enabled

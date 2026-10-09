@@ -136,13 +136,16 @@ def _location(lease: CommittedSnapshotLease, *, trash: bool = False) -> str | No
             payload.get("schema_version") != 1
             or payload.get("session_id") != lease.snapshot_ref.session_id
             or not isinstance(display_name, str)
-            or isinstance(validate_portable_component(display_name), Err)
+            or not validate_portable_component(display_name)
         ):
             return None
         if session.name != display_name and not (
             trash and session.name == lease.snapshot_ref.session_id
         ):
-            return None
+            # Renamed in Explorer: a writable store records the new name as it lists, and a
+            # read-only one cannot, so the folder is listed under the name it has now.
+            validate_portable_component(session.name)
+            return session.name
         return display_name
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
@@ -166,7 +169,8 @@ def trash_lister(
         built = build_dashboard_index(discovered.value, project_trash_entry)
         if isinstance(built, Err):
             return built
-        return Ok(built.value.record.entries, built.value.quarantined)
+        warnings = (*discovered.warnings, *built.value.quarantined)
+        return Ok(built.value.record.entries, warnings)
 
     return list_entries
 
@@ -181,8 +185,10 @@ class DashboardRepository:
         *,
         projector: EntryProjector = project_dashboard_entry,
         list_trash_entries: Callable[[], Result[tuple[DashboardIndexEntry, ...]]] | None = None,
+        index_writable: bool = True,
     ) -> None:
         self._index_path = Path(index_path)
+        self._index_writable = index_writable
         self._discover = discover_active_leases
         self._projector = projector
         self._list_trash_entries = list_trash_entries
@@ -204,10 +210,12 @@ class DashboardRepository:
         rows = self._list_trash_entries()
         if isinstance(rows, Err):
             return rows
-        return Ok(DashboardListing(rows.value))
+        return Ok(DashboardListing(rows.value, rows.warnings), rows.warnings)
 
     def rebuild_index(self) -> Result[DashboardIndexBuild]:
-        return rebuild_dashboard_index(self._discover, self._projector, self._index_path)
+        return rebuild_dashboard_index(
+            self._discover, self._projector, self._index_path, writable=self._index_writable
+        )
 
 
 __all__ = [

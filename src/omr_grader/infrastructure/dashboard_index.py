@@ -207,16 +207,23 @@ def rebuild_dashboard_index(
     target: Path,
     *,
     built_at: datetime | None = None,
+    writable: bool = True,
 ) -> Result[DashboardIndexBuild]:
-    """Directly query active committed leases; the old index is deliberately ignored."""
-    previous = load_dashboard_index(target) if target.exists() else None
+    """Directly query active committed leases; the old index is deliberately ignored.
+
+    A read-only install builds the same projection without writing it.
+    """
+    previous = load_dashboard_index(target) if writable and target.exists() else None
     discovered = discover_active_leases()
     if isinstance(discovered, Err):
         return discovered
     built = build_dashboard_index(discovered.value, projector, built_at=built_at)
     if isinstance(built, Err):
         return built
-    warnings = built.value.quarantined
+    warnings = (*discovered.warnings, *built.value.quarantined)
+    if not writable:
+        result = DashboardIndexBuild(built.value.record, warnings)
+        return Ok(result, warnings)
     if isinstance(previous, Err) or (
         isinstance(previous, Ok)
         and previous.value.source_digest != built.value.record.source_digest

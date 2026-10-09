@@ -113,10 +113,15 @@ class FileGateBackend:
     """Shared reader/exclusive writer byte-range lock backend."""
 
     def acquire(self, path: Path, *, exclusive: bool, blocking: bool) -> GateHandle | None:
+        binary = getattr(os, "O_BINARY", 0)
         try:
-            descriptor = os.open(
-                path, os.O_RDWR | os.O_BINARY if hasattr(os, "O_BINARY") else os.O_RDWR
-            )
+            descriptor = os.open(path, os.O_RDWR | binary)
+        except PermissionError:
+            # A folder the user may only read still takes byte-range locks on a read handle.
+            try:
+                descriptor = os.open(path, os.O_RDONLY | binary)
+            except OSError:
+                return None
         except OSError:
             return None
         try:
