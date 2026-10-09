@@ -1297,12 +1297,16 @@ def run(
             def import_install(
                 folder: str, report: Callable[[object], None]
             ) -> Result[ImportSummary]:
-                imported = import_previous_install(
-                    folder, import_paths, import_store, form_store.save_generated, report
+                return import_previous_install(
+                    folder,
+                    import_paths,
+                    import_store,
+                    form_store.save_generated,
+                    report,
+                    save_settings=lambda settings: save_config(
+                        import_paths, settings, import_token
+                    ),
                 )
-                if isinstance(imported, Ok) and imported.value.settings is not None:
-                    save_config(import_paths, imported.value.settings, import_token)
-                return imported
 
             data_import = import_install
 

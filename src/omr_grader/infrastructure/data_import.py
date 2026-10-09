@@ -4,16 +4,14 @@ Updating means unpacking the new version into a new folder; this copies what the
 holds. Each exam goes through the same backup and restore path as '백업하기' and '백업
 복구하기', so it is validated end to end and laid out exactly like a freshly made one. The old
 folder is never changed, so the user can always go back to the old version: exams are read
-through a store whose lock files live in this install's temporary work folder instead of in the
-old one (which may even be read-only). The price is that no lock coordinates with an old program
-that is still running; a change made meanwhile shows up as a failed validation of that one exam,
-never as a damaged copy.
+through a read-only store, which takes the old folder's lock files only where they exist and
+creates nothing (the folder may even be read-only). A change an old program still running makes
+meanwhile shows up as a failed validation of that one exam, never as a damaged copy.
 """
 
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import shutil
 from collections.abc import Callable
@@ -34,9 +32,7 @@ from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.infrastructure.backup_archive import BackupArchive
 from omr_grader.infrastructure.config_store import AppConfig, load_config
 from omr_grader.infrastructure.data_format import DATA_FORMAT, read_data_format
-from omr_grader.infrastructure.io_retry import retry_mkdir, retry_touch
 from omr_grader.infrastructure.paths import ManagedPaths
-from omr_grader.infrastructure.session_lease import GateHandle
 from omr_grader.infrastructure.session_store import SessionCommitCoordinator, SessionStore
 
 PROFILE_SUFFIX = ".omrtemplate"
@@ -83,45 +79,6 @@ def _same_folder(left: Path, right: Path) -> bool:
         return left.resolve() == right.resolve()
     except OSError:
         return False
-
-
-class _SourceStore(SessionStore):
-    """Reads the old folder's exams without creating or touching anything inside it.
-
-    ``SessionStore`` makes its bookkeeping folders and lock files under the data folder it
-    reads. Here the lock files live under ``locks`` (in this install's work folder), so the old
-    folder is only ever read.
-    """
-
-    def __init__(self, paths: ManagedPaths, locks: Path) -> None:
-        super().__init__(paths)
-        self._shadow_locks = locks
-
-    def _locks(self) -> Path:
-        return self._shadow_locks
-
-    def _mkdirs(self) -> None:
-        retry_mkdir(self._locks() / "lifetime", parents=True, exist_ok=True)
-        retry_mkdir(self._locks() / "session", parents=True, exist_ok=True)
-        retry_touch(self._root_lock())
-
-    def _existing_lock(self, path: Path, *, exclusive: bool, busy: str) -> Result[GateHandle]:
-        # The old generation gates are not looked at; an empty gate stands in for the read lock.
-        retry_mkdir(path.parent, parents=True, exist_ok=True)
-        retry_touch(path)
-        return super()._existing_lock(path, exclusive=exclusive, busy=busy)
-
-
-def _open_source_store(paths: ManagedPaths, locks: Path) -> SessionStore:
-    """The store that reads the old folder: the store's own read-only mode when it has one.
-
-    ``SessionStore(paths, read_only=True)`` writes nothing and takes no exclusive lock. Builds
-    without that mode fall back to :class:`_SourceStore`.
-    """
-    if "read_only" in inspect.signature(SessionStore.__init__).parameters:
-        store_type: Any = SessionStore
-        return store_type(paths, read_only=True)
-    return _SourceStore(paths, locks)
 
 
 # (session id, or None when IDENTITY.json is unreadable; folder name; came from the old trash)
@@ -260,7 +217,7 @@ def import_previous_install(
     target = SessionCommitCoordinator(target_store)
     try:
         work.mkdir()
-        source_store = _open_source_store(source_paths, work / "locks")
+        source_store = SessionStore(source_paths, read_only=True)
         for index, (session_id, label, in_trash) in enumerate(exams):
             if report is not None:
                 report(ImportProgress(index, len(exams)))
