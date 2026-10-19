@@ -53,6 +53,10 @@ _DETECTION_SESSION: Final = "scan-" + "0" * 32
 _PREVIEW_LONG_SIDE: Final = 1600
 
 
+# The profile name of every form the scan page detects; the lists describe such a form by
+# its content (``ui.profile_labels``).
+AUTO_PROFILE_NAME: Final = "자동 인식 양식"
+
 @dataclass(frozen=True, slots=True)
 class FormDetection:
     """What was found on the scans and which profile to grade them with."""
@@ -176,7 +180,7 @@ class FormDetector:
     def _candidate(self, found: list[tuple[NDArray[np.uint8], FormLayout]]) -> Result[_Candidate]:
         """The profile these layouts make, checked on its own pages and matched to saved ones."""
         built = build_profile(
-            [(layout, (gray.shape[1], gray.shape[0])) for gray, layout in found], "자동 인식 양식"
+            [(layout, (gray.shape[1], gray.shape[0])) for gray, layout in found], AUTO_PROFILE_NAME
         )
         if isinstance(built, Err):
             return built

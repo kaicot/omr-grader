@@ -885,8 +885,7 @@ class ScanPage(QWidget):
                 else "검증되지 않음"
             )
             self.profile_summary.setText(
-                f"프로필명: {profile.name}  |  상태: {status}  |  "
-                f"정상유무: {'정상' if normal else '비정상'}"
+                f"양식: {profile.grid_summary}  |  파일: {profile.path}  |  상태: {status}"
             )
             errors = (
                 f" · 오류: {' / '.join(profile.validation_errors)}"

@@ -87,6 +87,7 @@ from omr_grader.ui.form_confirm_dialog import FormConfirmDialog
 from omr_grader.ui.grading_page import GradingPage
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
 from omr_grader.ui.main_window import MainWindow
+from omr_grader.ui.profile_labels import form_label, form_summary
 from omr_grader.ui.scan_page import ScanPage, ScanPageRequest, ValidatedProfileState
 from omr_grader.ui.settings_page import (
     SettingsPage,
@@ -1915,10 +1916,10 @@ class AppController(QObject):
                 )
                 profiles.append(
                     ValidatedProfileState(
-                        item.profile.profile_name,
+                        form_label(item.profile, item.filename),
                         item.filename,
                         dimensions,
-                        f"{len(item.profile.regions)}개 영역",
+                        form_summary(item.profile),
                         tuple(_error_text(error) for error in item.diagnostics),
                         validated=item.is_valid,
                     )
