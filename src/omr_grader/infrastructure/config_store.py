@@ -11,6 +11,7 @@ from omr_grader.infrastructure.atomic_io import atomic_write_json
 from omr_grader.infrastructure.capabilities import CapabilityToken
 from omr_grader.infrastructure.paths import ManagedPaths, validate_profile_filename
 from omr_grader.infrastructure.session_lease import FileGateBackend, GateHandle
+from omr_grader.recognition.thresholds import SELECTABLE_MAX_SENSITIVITY
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +99,9 @@ def validate_config(config: AppConfig) -> Result[AppConfig]:
         return Err((_issue("INVALID_CONFIG", "기본 민감도는 1에서 10 사이의 정수여야 합니다."),))
     if not isinstance(config.use_multiprocessing, bool):
         return Err((_issue("INVALID_CONFIG", "다중 처리 설정은 참 또는 거짓이어야 합니다."),))
-    return Ok(AppConfig(normalized_profile, config.default_sensitivity, config.use_multiprocessing))
+    # 4.3.0 offers 1-7; a saved 8-10 becomes 7 instead of making the folder read-only.
+    sensitivity = min(config.default_sensitivity, SELECTABLE_MAX_SENSITIVITY)
+    return Ok(AppConfig(normalized_profile, sensitivity, config.use_multiprocessing))
 
 
 def _parse_config(value: object) -> Result[AppConfig]:

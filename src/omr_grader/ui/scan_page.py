@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_grader.recognition.thresholds import MIN_SENSITIVITY, SELECTABLE_MAX_SENSITIVITY
+
 from .import_widgets import ImportDropWidget, ImportKind, ImportSelection
 
 _PROGRESS_PHASES = ("prepare", "recognize", "save")
@@ -342,12 +344,12 @@ class ScanPage(QWidget):
         self.sensitivity_slider = QSlider(Qt.Orientation.Horizontal, settings_card)
         self.sensitivity_slider.setObjectName("sensitivitySlider")
         self.sensitivity_slider.setAccessibleName("스캐너 명암 및 인식 감도")
-        self.sensitivity_slider.setRange(1, 10)
+        self.sensitivity_slider.setRange(MIN_SENSITIVITY, SELECTABLE_MAX_SENSITIVITY)
         self.sensitivity_slider.setValue(5)
         self.sensitivity_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.sensitivity_slider.setTickInterval(1)
         settings.addWidget(self.sensitivity_slider, 1)
-        self.sensitivity_label = QLabel("인식 수준 5 / 10", settings_card)
+        self.sensitivity_label = QLabel(f"인식 수준 5 / {SELECTABLE_MAX_SENSITIVITY}", settings_card)
         self.sensitivity_label.setObjectName("sensitivityValueLabel")
         self.sensitivity_help = QLabel("낮음  ←  스캐너 명암/인식 감도  →  높음", settings_card)
         self.sensitivity_help.setObjectName("sensitivityHelpLabel")
@@ -897,7 +899,7 @@ class ScanPage(QWidget):
         self._update_gating()
 
     def _set_sensitivity_label(self, value: int) -> None:
-        self.sensitivity_label.setText(f"인식 수준 {value} / 10")
+        self.sensitivity_label.setText(f"인식 수준 {value} / {SELECTABLE_MAX_SENSITIVITY}")
 
     def _reset_inputs(self) -> None:
         if self._busy or not self._write_enabled:

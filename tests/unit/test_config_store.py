@@ -130,3 +130,27 @@ def test_missing_config_is_created_only_under_injected_portable_root(
     assert paths.config_path.is_file()
     assert not (outside_root / "config.json").exists()
     assert json.loads(paths.config_path.read_text(encoding="utf-8")) == default_config().to_dict()
+
+
+@pytest.mark.parametrize("saved", (8, 9, 10))
+def test_a_sensitivity_above_the_new_maximum_opens_as_seven(saved: int) -> None:
+    result = validate_config(AppConfig("", saved, True))
+
+    assert isinstance(result, Ok)
+    assert result.value.default_sensitivity == 7
+
+
+def test_a_saved_sensitivity_of_nine_keeps_the_install_writable(tmp_path: Path) -> None:
+    from omr_grader.bootstrap import bootstrap
+
+    paths = ManagedPaths.from_root(tmp_path)
+    paths.config_path.write_text(
+        json.dumps({"default_profile": "", "default_sensitivity": 9, "use_multiprocessing": True}),
+        encoding="utf-8",
+    )
+
+    outcome = bootstrap(paths)
+
+    assert isinstance(outcome, Ok)
+    assert outcome.value.write_enabled
+    assert outcome.value.config.default_sensitivity == 7

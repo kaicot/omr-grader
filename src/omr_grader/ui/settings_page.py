@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_grader.application.dto import Settings, SettingsSaveResult
+from omr_grader.recognition.thresholds import MIN_SENSITIVITY, SELECTABLE_MAX_SENSITIVITY
 
 from .import_widgets import ImportKind, ImportSelection
 
@@ -172,10 +173,10 @@ class SettingsPage(QWidget):
         self.sensitivity_slider = QSlider(Qt.Orientation.Horizontal, self.recognition_card)
         self.sensitivity_slider.setObjectName("settingsSensitivitySlider")
         self.sensitivity_slider.setAccessibleName("기본 스캐너 인식 감도")
-        self.sensitivity_slider.setRange(1, 10)
+        self.sensitivity_slider.setRange(MIN_SENSITIVITY, SELECTABLE_MAX_SENSITIVITY)
         self.sensitivity_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.sensitivity_slider.setTickInterval(1)
-        self.sensitivity_label = QLabel("인식 수준 3 / 10", self.recognition_card)
+        self.sensitivity_label = QLabel(f"인식 수준 3 / {SELECTABLE_MAX_SENSITIVITY}", self.recognition_card)
         self.sensitivity_label.setObjectName("settingsSensitivityValue")
         sensitivity_row = QWidget(self.recognition_card)
         sensitivity_layout = QHBoxLayout(sensitivity_row)
@@ -451,7 +452,7 @@ class SettingsPage(QWidget):
         self._candidate_changed()
 
     def _sensitivity_changed(self, value: int) -> None:
-        self.sensitivity_label.setText(f"인식 수준 {value} / 10")
+        self.sensitivity_label.setText(f"인식 수준 {value} / {SELECTABLE_MAX_SENSITIVITY}")
         self._candidate_changed()
 
     def _candidate_changed(self, *_: object) -> None:

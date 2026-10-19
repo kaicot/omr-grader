@@ -28,7 +28,7 @@ def _ready_page(qtbot) -> SettingsPage:
 def test_save_emits_immutable_settings_candidate_and_expected_revision(qtbot) -> None:
     page = _ready_page(qtbot)
     page.profile_combo.setCurrentIndex(page.profile_combo.findData("다른.omrtemplate"))
-    page.sensitivity_slider.setValue(9)
+    page.sensitivity_slider.setValue(6)
     page.multiprocessing_checkbox.setChecked(False)
 
     with qtbot.waitSignal(page.save_requested) as signal:
@@ -37,7 +37,7 @@ def test_save_emits_immutable_settings_candidate_and_expected_revision(qtbot) ->
     request = signal.args[0]
     assert isinstance(request, SettingsPageRequest)
     assert request.expected_revision == 7
-    assert request.settings == Settings("다른.omrtemplate", 9, False)
+    assert request.settings == Settings("다른.omrtemplate", 6, False)
     with pytest.raises((AttributeError, TypeError)):
         request.expected_revision = 8
 
@@ -89,7 +89,7 @@ def test_keyboard_order_accessibility_and_range_validation(qtbot) -> None:
     assert page.accessibleName() == "환경 설정"
     assert page.profile_combo.accessibleName() == "기본 OMR 프로필"
     assert page.sensitivity_slider.minimum() == 1
-    assert page.sensitivity_slider.maximum() == 10
+    assert page.sensitivity_slider.maximum() == 7
     page.profile_combo.setFocus()
     QTest.keyClick(page.profile_combo, Qt.Key.Key_Tab)
     qtbot.waitUntil(page.profile_import_button.hasFocus)
@@ -110,3 +110,18 @@ def test_settings_uses_numbered_standard_cards(qtbot) -> None:
     assert page.path_heading.text().startswith("1.")
     assert page.profile_heading.text().startswith("2.")
     assert page.recognition_heading.text().startswith("3.")
+
+
+def test_both_sensitivity_sliders_stop_at_seven(qtbot) -> None:
+    from omr_grader.ui.scan_page import ScanPage
+    from omr_grader.ui.settings_page import SettingsPage
+
+    scan, settings = ScanPage(), SettingsPage()
+    qtbot.addWidget(scan)
+    qtbot.addWidget(settings)
+
+    for slider in (scan.sensitivity_slider, settings.sensitivity_slider):
+        assert (slider.minimum(), slider.maximum()) == (1, 7)
+        slider.setValue(10)
+        assert slider.value() == 7
+    assert scan.sensitivity_label.text().endswith("/ 7")

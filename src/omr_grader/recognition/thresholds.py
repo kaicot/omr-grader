@@ -13,6 +13,9 @@ CALIBRATION_PROVENANCE: Final = "bubble-disk-v5"
 MIN_SENSITIVITY: Final = 1
 MAX_SENSITIVITY: Final = 10
 DEFAULT_SENSITIVITY: Final = 5
+# The highest setting offered for new scans. Above it a lower mark threshold only turns
+# review cases (light residue) into answers; 8-10 stay valid for exams recorded earlier.
+SELECTABLE_MAX_SENSITIVITY: Final = 7
 
 # Calibrated on 24 real exam pages (two parts of 12): fitted on one part, checked on the
 # other. A mark is ink density above the unmarked level of the same printed digit, in a

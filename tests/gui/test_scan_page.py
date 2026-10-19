@@ -884,7 +884,7 @@ def test_default_sensitivity_is_five(qtbot):
     qtbot.addWidget(page)
 
     assert page.sensitivity_slider.value() == 5
-    assert page.sensitivity_label.text() == "인식 수준 5 / 10"
+    assert page.sensitivity_label.text() == "인식 수준 5 / 7"
 
 
 def test_picker_cancellation_preserves_prior_input_and_marks_state(qtbot):
@@ -913,8 +913,8 @@ def test_sensitivity_range_and_accessible_controls(qtbot):
     page.sensitivity_slider.setValue(10)
 
     assert page.sensitivity_slider.minimum() == 1
-    assert page.sensitivity_slider.maximum() == 10
-    assert page.sensitivity_label.text() == "인식 수준 10 / 10"
+    assert page.sensitivity_slider.maximum() == 7
+    assert page.sensitivity_label.text() == "인식 수준 7 / 7"
     assert page.run_button.accessibleName() == "OMR 시험지 인식 및 응답결과 생성"
 
 
