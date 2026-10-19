@@ -46,18 +46,10 @@ from .response_book import (
     style_header_row,
     write_effective_response_sheet,
 )
-from .schemas import RESPONSE_SHEET_NAME
+from .schemas import RESPONSE_SHEET_NAME, question_count, question_headers
 
-_SCORE_HEADERS = (
-    "순번",
-    "학번",
-    "이름",
-    "총점",
-    "석차",
-    *(f"Q{number}" for number in range(1, 101)),
-    "비고",
-)
-_FINAL_HEADERS = (*_SCORE_HEADERS, "수정여부", "수정문항", "확정일시")
+_SCORE_HEAD = ("순번", "학번", "이름", "총점", "석차")
+_FINAL_TAIL = ("수정여부", "수정문항", "확정일시")
 _OUTCOME_SHEET_NAME = "결과OX"
 _ITEM_SHEET_NAME = "문항 분석"
 _EVIDENCE_SHEET_NAME = "판독 근거"
@@ -75,7 +67,7 @@ _ITEM_HEADERS = (
     "확인 필요",
     "변별도",
 )
-_EVIDENCE_HEADERS = ("순번", "학번", "이름", *(f"Q{number}" for number in range(1, 101)))
+_EVIDENCE_HEAD = ("순번", "학번", "이름")
 _EVIDENCE_NOTE = "가장 진한 칸과 두 번째 칸의 차이, 작을수록 판독이 애매함"
 _FREEZE_PANES = "F2"
 _DANGEROUS_PREFIXES = ("=", "+", "-", "@")
@@ -131,7 +123,6 @@ def write_score_book(
         destination,
         filename=score_filename(exam_name, committed_at),
         sheet_name=SCORE_KIND,
-        headers=_SCORE_HEADERS,
         session_id=session_id,
         revision=revision,
         manifest_sha256=manifest_sha256,
@@ -167,7 +158,6 @@ def write_final_book(
         destination,
         filename=final_filename(exam_name, committed_at),
         sheet_name=FINAL_KIND,
-        headers=_FINAL_HEADERS,
         session_id=session_id,
         revision=revision,
         manifest_sha256=manifest_sha256,
@@ -185,7 +175,6 @@ def _write(
     *,
     filename: str,
     sheet_name: str,
-    headers: tuple[str, ...],
     session_id: str,
     revision: int,
     manifest_sha256: str,
@@ -216,14 +205,18 @@ def _write(
         and sum(item.student_id == response.student_id for item in responses) > 1
     }
     ordered = student_order(responses, names_by_student_id)
+    questions = book_question_count(responses, key)
+    headers = [*_SCORE_HEAD, *question_headers(questions), "비고"]
+    if finalized_at is not None:
+        headers.extend(_FINAL_TAIL)
     workbook = Workbook()
     chosen_sheet = workbook.active
     if chosen_sheet is None:
         raise RuntimeError("new workbook must have an active worksheet")
     chosen_sheet.title = sheet_name
     outcome_sheet = workbook.create_sheet(_OUTCOME_SHEET_NAME)
-    chosen_sheet.append(list(headers))
-    outcome_sheet.append(list(headers))
+    chosen_sheet.append(headers)
+    outcome_sheet.append(headers)
     outcomes_by_student: list[tuple[str, ...]] = []
     for serial, response in enumerate(ordered, 1):
         score = scores_by_work_item[response.work_item_id]
@@ -248,24 +241,25 @@ def _write(
             targets = ",".join(_correction_label(target) for target in response.corrected_targets)
             tail.extend((corrected, _display_text(targets), _display_text(finalized_at)))
         # 채점결과 shows what the student marked; 결과OX shows how each answer was scored.
-        chosen = [_answer_cell(answer.choices) for answer in response.answers]
+        chosen = [_answer_cell(answer.choices) for answer in response.answers[:questions]]
+        shown = outcomes[:questions]
         chosen_sheet.append([*head, *chosen, *tail])
-        outcome_sheet.append([*head, *(_display_text(value) for value in outcomes), *tail])
-        _mark_outcomes(chosen_sheet, serial + 1, outcomes)
-        _mark_outcomes(outcome_sheet, serial + 1, outcomes)
+        outcome_sheet.append([*head, *(_display_text(value) for value in shown), *tail])
+        _mark_outcomes(chosen_sheet, serial + 1, shown)
+        _mark_outcomes(outcome_sheet, serial + 1, shown)
     style_header_row(chosen_sheet, _FREEZE_PANES)
     style_header_row(outcome_sheet, _FREEZE_PANES)
     _write_item_analysis(workbook, ordered, outcomes_by_student, key, scores_by_work_item)
     # The raw responses in the importable 응답원본 layout, so this one book can also start a
     # new exam through '응답 엑셀로 시작'.
-    write_effective_response_sheet(
+    response_questions = write_effective_response_sheet(
         workbook.create_sheet(RESPONSE_SHEET_NAME),
         ordered,
         names_by_student_id,
         review_notes=True,
     )
-    _write_evidence(workbook, ordered, names_by_student_id, evidence_by_work_item)
-    _write_answer_key(workbook, key)
+    _write_evidence(workbook, ordered, names_by_student_id, evidence_by_work_item, questions)
+    _write_answer_key(workbook, key, questions)
     _write_legend(workbook)
     _set_provenance(workbook, session_id, revision, manifest_sha256)
     target = Path(destination) / filename
@@ -276,15 +270,31 @@ def _write(
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        save_workbook(workbook, temporary, _text_ranges(workbook, sheet_name))
+        save_workbook(
+            workbook,
+            temporary,
+            _text_ranges(workbook, sheet_name, questions, response_questions),
+        )
         os.link(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
     return target
 
 
-_TOTAL_COLUMN = _SCORE_HEADERS.index("총점") + 1
-_FIRST_QUESTION_COLUMN = _SCORE_HEADERS.index("Q1") + 1
+_TOTAL_COLUMN = _SCORE_HEAD.index("총점") + 1
+_FIRST_QUESTION_COLUMN = len(_SCORE_HEAD) + 1
+
+
+def book_question_count(responses: Sequence[EffectiveResponse], key: AnswerKeySnapshot) -> int:
+    """How many Q columns the score book shows.
+
+    Up to the last question an answer sheet prints, or the last one the key asks if that is
+    later, so no scored question is ever cut off.
+    """
+    asked = (
+        entry.question for entry in key.entries if entry.status is not KeyQuestionStatus.UNASKED
+    )
+    return max(question_count(response.answers for response in responses), *asked, 1)
 
 
 def student_order(
@@ -359,7 +369,9 @@ def _name_order(
     return (not name, name, not student_id, student_id, position)
 
 
-def _text_ranges(workbook: Workbook, score_sheet_name: str) -> dict[str, tuple[str, ...]]:
+def _text_ranges(
+    workbook: Workbook, score_sheet_name: str, questions: int, response_questions: int
+) -> dict[str, tuple[str, ...]]:
     """Ranges that hold text on purpose (IDs, answers), so Excel flags no 'number as text'."""
 
     def last_row(title: str) -> int:
@@ -368,7 +380,7 @@ def _text_ranges(workbook: Workbook, score_sheet_name: str) -> dict[str, tuple[s
     def column(letter: str, title: str) -> tuple[str, ...]:
         return (f"{letter}2:{letter}{last_row(title)}",) if last_row(title) >= 2 else ()
 
-    last_choice = get_column_letter(_FIRST_CHOICE_COLUMN + 99)
+    last_choice = get_column_letter(_FIRST_CHOICE_COLUMN + questions - 1)
     answers = (
         (f"F2:{last_choice}{last_row(score_sheet_name)}",)
         if last_row(score_sheet_name) >= 2
@@ -378,17 +390,19 @@ def _text_ranges(workbook: Workbook, score_sheet_name: str) -> dict[str, tuple[s
         score_sheet_name: (*column("B", score_sheet_name), *answers),
         _OUTCOME_SHEET_NAME: column("B", _OUTCOME_SHEET_NAME),
         _ITEM_SHEET_NAME: column("B", _ITEM_SHEET_NAME),
-        RESPONSE_SHEET_NAME: response_text_ranges(last_row(RESPONSE_SHEET_NAME)),
+        RESPONSE_SHEET_NAME: response_text_ranges(
+            last_row(RESPONSE_SHEET_NAME), response_questions
+        ),
         _EVIDENCE_SHEET_NAME: column("B", _EVIDENCE_SHEET_NAME),
         _ANSWER_KEY_SHEET_NAME: column("B", _ANSWER_KEY_SHEET_NAME),
     }
 
 
-def _write_answer_key(workbook: Workbook, key: AnswerKeySnapshot) -> None:
-    """The answer key this book was graded with, as its own sheet."""
+def _write_answer_key(workbook: Workbook, key: AnswerKeySnapshot, questions: int) -> None:
+    """The answer key this book was graded with, as its own sheet, for the form's questions."""
     sheet = workbook.create_sheet(_ANSWER_KEY_SHEET_NAME)
     sheet.append(list(ANSWER_KEY_HEADERS))
-    for entry in key.entries:
+    for entry in key.entries[:questions]:
         sheet.append([entry.question, _key_answer_cell(entry), Decimal(entry.points)])
     for cell in sheet[1]:
         cell.font = _HEADER_FONT
@@ -517,10 +531,11 @@ def _write_evidence(
     ordered: Sequence[EffectiveResponse],
     names_by_student_id: Mapping[str, str],
     evidence_by_work_item: Mapping[str, Sequence[CellEvidence]],
+    questions: int,
 ) -> None:
     """Per student and question, how far the darkest choice leads the second darkest."""
     sheet = workbook.create_sheet(_EVIDENCE_SHEET_NAME)
-    sheet.append([*_EVIDENCE_HEADERS, _EVIDENCE_NOTE])
+    sheet.append([*_EVIDENCE_HEAD, *question_headers(questions), _EVIDENCE_NOTE])
     for serial, response in enumerate(ordered, 1):
         student_id = _shown_student_id(response)
         name = names_by_student_id.get(student_id, "") if student_id else ""
@@ -528,10 +543,12 @@ def _write_evidence(
         row: list[object] = [serial, _display_text(student_id), _display_text(name)]
         row.extend(
             None if question not in margins else round(margins[question][1], 2)
-            for question in range(1, 101)
+            for question in range(1, questions + 1)
         )
         sheet.append(row)
         for question, (darkest, lead) in margins.items():
+            if question > questions:
+                continue
             cell = sheet.cell(serial + 1, 3 + question)
             cell.number_format = "0.00"
             if darkest >= _NO_MARK_BELOW and round(lead, 2) < _MARGIN_WATCH:
@@ -607,6 +624,7 @@ def _correction_label(target: str) -> str:
 
 __all__ = [
     "answer_margins",
+    "book_question_count",
     "final_filename",
     "score_filename",
     "scored_image_names",

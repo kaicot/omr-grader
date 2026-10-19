@@ -55,19 +55,23 @@ class GradedExam:
         return graded
 
 
-def graded_exam(tmp_path: Path, exam_name: str = "생리학 중간고사") -> GradedExam:
+def graded_exam(
+    tmp_path: Path, exam_name: str = "생리학 중간고사", questions: int = 100
+) -> GradedExam:
+    """``questions`` (a multiple of 20) sets the printed form: 40 gives two 20-row blocks."""
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     pdf = inputs / "scans.pdf"
-    answers = {question: (question * 7) % 5 + 1 for question in range(1, 101)}
-    write_pdf(pdf, [encode_png(render_sheet(answers, "20260001", seed=1))])
+    answers = {question: (question * 7) % 5 + 1 for question in range(1, questions + 1)}
+    options = {} if questions == 100 else {"layout": (20,) * (questions // 20)}
+    write_pdf(pdf, [encode_png(render_sheet(answers, "20260001", seed=1, **options))])
     key = inputs / "key.xlsx"
     book = openpyxl.Workbook()
     sheet = book.active
     assert sheet is not None
     sheet.title = "정답표"
     sheet.append(list(ANSWER_KEY_HEADERS))
-    for question in range(1, 101):
+    for question in range(1, questions + 1):
         sheet.append([question, str((question * 7) % 5 + 1), 1])
     book.save(key)
 

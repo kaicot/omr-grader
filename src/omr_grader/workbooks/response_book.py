@@ -22,7 +22,12 @@ from openpyxl.worksheet.worksheet import Worksheet
 from omr_grader.domain.enums import AnswerStatus
 from omr_grader.domain.models import AnswerValue, EffectiveResponse, ImportedResponseRef
 
-from .schemas import RESPONSE_HEADERS, RESPONSE_SHEET_NAME, escape_formula_text
+from .schemas import (
+    RESPONSE_SHEET_NAME,
+    escape_formula_text,
+    question_count,
+    response_headers,
+)
 
 # Excel's "Neutral" colors mark answers that a person still has to confirm.  Fonts repeat
 # openpyxl's default face and size so styled cells match the unstyled ones around them.
@@ -43,11 +48,11 @@ def _cell(sheet: Worksheet, row: int, column: int) -> Cell:
     return cast(Cell, sheet.cell(row, column))
 
 
-def response_text_ranges(last_row: int) -> tuple[str, ...]:
+def response_text_ranges(last_row: int, questions: int) -> tuple[str, ...]:
     """Cell ranges of a 응답원본 sheet that hold text on purpose: 학번 and every answer."""
     if last_row < 2:
         return ()
-    last_answer = get_column_letter(_FIRST_ANSWER_COLUMN + 99)
+    last_answer = get_column_letter(_FIRST_ANSWER_COLUMN + questions - 1)
     return (f"C2:C{last_row}", f"E2:{last_answer}{last_row}")
 
 
@@ -133,9 +138,16 @@ def _uncertain_questions(answers: Sequence[AnswerValue]) -> tuple[int, ...]:
     )
 
 
-def _write_answers(sheet: Worksheet, row: int, answers: Sequence[AnswerValue]) -> None:
-    """Write Q1..Q100 as text and paint the answers that are not confirmed yet."""
-    for column, answer in enumerate(answers, 5):
+def _write_header(sheet: Worksheet, questions: int) -> None:
+    for column, header in enumerate(response_headers(questions), 1):
+        _text(_cell(sheet, 1, column), header)
+
+
+def _write_answers(
+    sheet: Worksheet, row: int, answers: Sequence[AnswerValue], questions: int
+) -> None:
+    """Write Q1..Q<questions> as text and paint the answers that are not confirmed yet."""
+    for column, answer in enumerate(answers[:questions], _FIRST_ANSWER_COLUMN):
         cell = _cell(sheet, row, column)
         _text(cell, "".join(str(choice) for choice in answer.choices))
         if answer.status is AnswerStatus.UNCERTAIN:
@@ -150,14 +162,17 @@ def write_response_projection(
     revision: int,
     manifest_sha256: str,
 ) -> None:
-    """Write the exact A1:DA response projection from immutable imported truth."""
+    """Write the response projection from immutable imported truth.
+
+    The sheet has one Q column per question the answer sheets print, then 비고.
+    """
     workbook = Workbook(write_only=False)
     sheet = workbook.active
     if not isinstance(sheet, Worksheet):
         raise RuntimeError("new workbook must have an active worksheet")
     sheet.title = RESPONSE_SHEET_NAME
-    for column, header in enumerate(RESPONSE_HEADERS, 1):
-        _text(_cell(sheet, 1, column), header)
+    questions = question_count(row.answers for row in rows)
+    _write_header(sheet, questions)
     for output_row, row in enumerate(
         sorted(rows, key=lambda item: (item.input_ordinal, item.work_item_id)), 2
     ):
@@ -165,8 +180,8 @@ def write_response_projection(
         _text(_cell(sheet, output_row, 2), row.source_filename)
         _text(_cell(sheet, output_row, 3), row.raw_student_id)
         _text(_cell(sheet, output_row, 4), row.name)
-        _write_answers(sheet, output_row, row.answers)
-        _text(_cell(sheet, output_row, 105), row.note)
+        _write_answers(sheet, output_row, row.answers, questions)
+        _text(_cell(sheet, output_row, _FIRST_ANSWER_COLUMN + questions), row.note)
     style_header_row(sheet)
     workbook.properties.creator = "OMR Grader"
     custom_doc_props = cast(Any, workbook).custom_doc_props
@@ -182,7 +197,7 @@ def write_response_projection(
         save_workbook(
             workbook,
             temporary_path,
-            {RESPONSE_SHEET_NAME: response_text_ranges(len(rows) + 1)},
+            {RESPONSE_SHEET_NAME: response_text_ranges(len(rows) + 1, questions)},
         )
         os.replace(temporary_path, destination)
     finally:
@@ -196,14 +211,15 @@ def write_effective_response_sheet(
     names_by_student_id: Mapping[str, str],
     *,
     review_notes: bool,
-) -> None:
+) -> int:
     """Fill ``sheet`` in the importable 응답원본 layout from effective responses.
 
     With ``review_notes`` the 비고 also names unconfirmed answers, so a book a teacher
-    re-imports is held back until those yellow cells have been checked.
+    re-imports is held back until those yellow cells have been checked.  Returns the
+    number of Q columns written.
     """
-    for column, header in enumerate(RESPONSE_HEADERS, 1):
-        _text(_cell(sheet, 1, column), header)
+    questions = question_count(row.answers for row in rows)
+    _write_header(sheet, questions)
     for serial, row in enumerate(rows, 1):
         output_row = serial + 1
         _cell(sheet, output_row, 1).value = serial
@@ -213,15 +229,16 @@ def write_effective_response_sheet(
             _cell(sheet, output_row, 4),
             names_by_student_id.get(row.student_id, "") if row.student_id is not None else "",
         )
-        _write_answers(sheet, output_row, row.answers)
+        _write_answers(sheet, output_row, row.answers, questions)
         _text(
-            _cell(sheet, output_row, 105),
+            _cell(sheet, output_row, _FIRST_ANSWER_COLUMN + questions),
             join_notes(
                 review_note(_uncertain_questions(row.answers)) if review_notes else "",
                 "수동 수정 반영" if row.corrected_targets else "",
             ),
         )
     style_header_row(sheet)
+    return questions
 
 
 def write_effective_response_projection(
@@ -239,7 +256,9 @@ def write_effective_response_projection(
     if not isinstance(sheet, Worksheet):
         raise RuntimeError("new workbook must have an active worksheet")
     sheet.title = RESPONSE_SHEET_NAME
-    write_effective_response_sheet(sheet, rows, names_by_student_id, review_notes=False)
+    questions = write_effective_response_sheet(
+        sheet, rows, names_by_student_id, review_notes=False
+    )
     workbook.properties.creator = "OMR Grader"
     custom_doc_props = cast(Any, workbook).custom_doc_props
     custom_doc_props.append(StringProperty(name="schema", value="1"))
@@ -247,7 +266,11 @@ def write_effective_response_projection(
     custom_doc_props.append(StringProperty(name="revision", value=str(revision)))
     custom_doc_props.append(StringProperty(name="manifest_sha256", value=manifest_sha256))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    save_workbook(workbook, destination, {RESPONSE_SHEET_NAME: response_text_ranges(len(rows) + 1)})
+    save_workbook(
+        workbook,
+        destination,
+        {RESPONSE_SHEET_NAME: response_text_ranges(len(rows) + 1, questions)},
+    )
 
 
 __all__ = [

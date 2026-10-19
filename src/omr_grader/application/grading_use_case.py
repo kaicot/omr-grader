@@ -6,8 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from omr_grader.domain.enums import AnswerStatus, KeyQuestionStatus, OperationKind, SessionState
-from omr_grader.domain.errors import Err, ErrorInfo, Result
+from omr_grader.domain.enums import OperationKind, SessionState
+from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.grading import score_effective
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
 
@@ -22,6 +22,7 @@ from .dto import (
     ScoreInput,
     ScoreSet,
 )
+from .form_questions import asked_off_form, off_form_reason, printed_questions, question_ranges
 from .ports import AnswerKeyUseCase, InternalSessionCoordinator
 
 
@@ -55,6 +56,13 @@ class GradingUseCase:
         self._answer_keys = answer_keys
         self._coordinator = coordinator
 
+    def form_questions(self, session_id: str, revision: int) -> Result[tuple[int, ...]]:
+        """The questions the exam's answer sheets print, for the answer key summary."""
+        committed = self._snapshots.read_grading_snapshot(session_id, revision)
+        if isinstance(committed, Err):
+            return committed
+        return Ok(printed_questions(committed.value.responses))
+
     def regrade(
         self,
         command: RegradeCommand,
@@ -71,7 +79,8 @@ class GradingUseCase:
         if isinstance(validated, Err):
             return validated
         snapshot = committed.value
-        missing = _questions_not_on_form(snapshot.responses, validated.value.snapshot)
+        printed = printed_questions(snapshot.responses)
+        missing = asked_off_form(validated.value.snapshot, printed)
         if missing:
             return Err(
                 (
@@ -80,11 +89,8 @@ class GradingUseCase:
                         "error.answer_key_not_on_form",
                         "answer_key",
                         {
-                            "questions": _ranges(missing),
-                            "reason": (
-                                f"정답표의 {_ranges(missing)}번 문항은 답안지 양식에 없습니다. "
-                                "정답표에서 해당 문항의 정답을 비운 뒤 다시 채점하세요."
-                            ),
+                            "questions": question_ranges(missing),
+                            "reason": off_form_reason(missing, printed),
                         },
                     ),
                 )
@@ -138,41 +144,6 @@ class GradingUseCase:
 
 def _error(code: str, field_path: str) -> Err:
     return Err((ErrorInfo(code, f"error.{code.lower()}", field_path),))
-
-
-def _questions_not_on_form(
-    responses: tuple[EffectiveResponse, ...], key: AnswerKeySnapshot
-) -> tuple[int, ...]:
-    """Asked questions that some answer sheet does not print (its response reads unasked).
-
-    Grading them would give those students zero, so the key must leave them unasked. One
-    sheet is enough: a correction typed on another sheet must not unblock the question.
-    """
-    if not responses:
-        return ()
-    return tuple(
-        entry.question
-        for entry in key.entries
-        if entry.status is not KeyQuestionStatus.UNASKED
-        and any(
-            response.answers[entry.question - 1].status is AnswerStatus.UNASKED
-            for response in responses
-        )
-    )
-
-
-def _ranges(questions: tuple[int, ...]) -> str:
-    """Compact Korean-friendly ranges such as 51~60, 75."""
-    parts: list[str] = []
-    start = previous = questions[0]
-    for question in (*questions[1:], None):
-        if question is not None and question == previous + 1:
-            previous = question
-            continue
-        parts.append(str(start) if start == previous else f"{start}~{previous}")
-        if question is not None:
-            start = previous = question
-    return ", ".join(parts)
 
 
 __all__ = ["CommittedGradingSnapshot", "CommittedGradingSnapshotReader", "GradingUseCase"]

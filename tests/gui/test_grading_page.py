@@ -338,7 +338,10 @@ def test_sample_result_and_regrade_history_requests(qtbot) -> None:
         ConnectedSessionDisplay("session-1", 3, "시험", "C:/응답.xlsx", True)
     )
     page.set_grading_history("이전 채점: 2026-07-28 10:00")
-    assert "_휴지통" in page.regrade_label.text()
+    # Regrading replaces the previous results; the page points to the backup instead.
+    assert "_휴지통" not in page.regrade_label.text()
+    assert "이전 결과가 새 결과로 바뀝니다" in page.regrade_label.text()
+    assert "'백업하기'" in page.regrade_label.text()
     assert "이전 채점" in page.regrade_label.text()
     with qtbot.waitSignal(page.sample_download_requested) as sample:
         QTest.mouseClick(page.sample_button, Qt.MouseButton.LeftButton)

@@ -2171,9 +2171,20 @@ class AppController(QObject):
             return
         validation_request = AnswerKeyRequest(request.answer_key_path, request.answer_key_sheet)
         self._validation_request = validation_request
+        grading = self.services.grading
 
         def validate(_: Event, __: Callable[[object], None]) -> object:
-            display = GradingPresenter.validation(service.validate_answer_key(validation_request))
+            # The exam's answer sheets decide how many questions the summary counts.  If they
+            # cannot be read here, grading still refuses a key that asks past the form.
+            printed = (
+                grading.form_questions(request.session_id, request.revision)
+                if grading is not None
+                else None
+            )
+            display = GradingPresenter.validation(
+                service.validate_answer_key(validation_request),
+                printed.value if isinstance(printed, Ok) else None,
+            )
             return replace(
                 display,
                 source_path=validation_request.path,

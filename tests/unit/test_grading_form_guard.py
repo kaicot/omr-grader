@@ -5,11 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from omr_grader.application.dto import AnswerKeyValidation, RegradeCommand
-from omr_grader.application.grading_use_case import (
-    GradingUseCase,
-    _questions_not_on_form,
-    _ranges,
+from omr_grader.application.form_questions import (
+    asked_off_form,
+    off_form_reason,
+    printed_questions,
+    question_ranges,
 )
+from omr_grader.application.grading_use_case import GradingUseCase
 from omr_grader.domain.enums import (
     AnswerKeySnapshotKind,
     AnswerStatus,
@@ -64,6 +66,12 @@ def _key(asked: int) -> AnswerKeySnapshot:
     )
 
 
+def _questions_not_on_form(
+    responses: tuple[EffectiveResponse, ...], key: AnswerKeySnapshot
+) -> tuple[int, ...]:
+    return asked_off_form(key, printed_questions(responses))
+
+
 def test_a_key_within_the_printed_questions_passes() -> None:
     responses = (_response("wi_a"), _response("wi_b"))
 
@@ -78,9 +86,22 @@ def test_asked_questions_beyond_the_form_are_reported_as_ranges() -> None:
     missing = _questions_not_on_form(responses, _key(53))
 
     assert missing == (51, 52, 53)
-    assert _ranges(missing) == "51~53"
-    assert _ranges((51, 52, 53, 60, 75, 76)) == "51~53, 60, 75~76"
-    assert _ranges((7,)) == "7"
+    assert question_ranges(missing) == "51~53"
+    assert question_ranges((51, 52, 53, 60, 75, 76)) == "51~53, 60, 75~76"
+    assert question_ranges((7,)) == "7"
+
+
+def test_the_reason_names_the_last_printed_question() -> None:
+    printed = tuple(range(1, 41))
+
+    assert off_form_reason((41, 42, 43, 44, 45, 46, 47, 48, 49, 50), printed) == (
+        "정답표에 41~50번이 있지만 답안지에는 40번까지만 있습니다. "
+        "정답표에서 41~50번 행을 지운 뒤 다시 불러오세요."
+    )
+    # A gap inside the form cannot be told as "only up to N".
+    assert off_form_reason((5,), (1, 2, 3, 4, 6)) == (
+        "정답표의 5번 문항은 답안지 양식에 없습니다. 정답표에서 그 행을 지운 뒤 다시 불러오세요."
+    )
 
 
 def test_one_sheet_without_the_question_blocks_it_even_when_another_was_corrected() -> None:
@@ -114,5 +135,7 @@ def test_regrade_stops_before_scoring_and_names_the_questions() -> None:
     error = result.errors[0]
     assert error.code == "ANSWER_KEY_NOT_ON_FORM"
     assert error.context["questions"] == "51~100"
-    assert "정답표의 51~100번 문항은 답안지 양식에 없습니다" in str(error.context["reason"])
+    assert "정답표에 51~100번이 있지만 답안지에는 50번까지만 있습니다" in str(
+        error.context["reason"]
+    )
     assert commits == []

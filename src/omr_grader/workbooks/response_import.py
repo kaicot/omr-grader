@@ -11,6 +11,7 @@ from typing import BinaryIO, Protocol, runtime_checkable
 from zipfile import BadZipFile, ZipFile
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 
 from omr_grader.domain.enums import AnswerStatus, SourceKind
@@ -27,6 +28,7 @@ from .schemas import (
     MAX_FORMULA_CELLS,
     MAX_OTHER_COLUMNS,
     MAX_OTHER_ROWS,
+    MAX_QUESTIONS,
     MAX_RELATIONSHIPS,
     MAX_SELECTED_CELLS,
     MAX_SELECTED_ROWS,
@@ -37,11 +39,11 @@ from .schemas import (
     MAX_TOTAL_UNCOMPRESSED_BYTES,
     MAX_WORKBOOK_CELLS,
     MAX_ZIP_ENTRIES,
-    RESPONSE_COLUMN_COUNT,
-    RESPONSE_HEADERS,
+    RESPONSE_FIXED_HEADERS,
     has_prohibited_control,
     normalize_header,
     normalize_text,
+    response_headers,
     sheet_extent,
 )
 
@@ -282,19 +284,22 @@ def parse_response_book(
         sheet = workbook[sheet_name]
         if getattr(sheet, "merged_cells", None) and sheet.merged_cells.ranges:
             return _error("XLSX_HEADER_INVALID", "sheet.merged_cells")
+        # 일련번호, 원본파일명, 학번, 이름, Q1..QN, 비고: N is the form's question count, so a
+        # 40-question book has 45 columns and a book from before 4.4.0 has all 105.
+        used_rows, used_columns = sheet_extent(sheet)
+        questions = used_columns - len(RESPONSE_FIXED_HEADERS) - 1
+        if not 1 <= questions <= MAX_QUESTIONS or used_rows > MAX_SELECTED_ROWS:
+            return _error("XLSX_HEADER_INVALID", "A1")
+        last_column = get_column_letter(used_columns)
         header = tuple(
             normalize_header(cell.value)
-            for cell in next(sheet.iter_rows(min_row=1, max_row=1, max_col=RESPONSE_COLUMN_COUNT))
+            for cell in next(sheet.iter_rows(min_row=1, max_row=1, max_col=used_columns))
         )
-        used_rows, used_columns = sheet_extent(sheet)
-        if (
-            header != RESPONSE_HEADERS
-            or used_columns != RESPONSE_COLUMN_COUNT
-            or used_rows > MAX_SELECTED_ROWS
-        ):
-            return _error("XLSX_HEADER_INVALID", "A1:DA1")
-        if used_rows * RESPONSE_COLUMN_COUNT > MAX_SELECTED_CELLS:
+        if header != response_headers(questions):
+            return _error("XLSX_HEADER_INVALID", f"A1:{last_column}1")
+        if used_rows * used_columns > MAX_SELECTED_CELLS:
             return _error("XLSX_CELL_QUOTA", sheet_name)
+        note_index = used_columns - 1
         for other_name in workbook.sheetnames:
             if other_name == sheet_name:
                 continue
@@ -304,7 +309,7 @@ def parse_response_book(
         rows: list[ImportedResponseRef] = []
         serials: set[int] = set()
         for row_number, cells in enumerate(
-            sheet.iter_rows(min_row=2, max_col=RESPONSE_COLUMN_COUNT), 2
+            sheet.iter_rows(min_row=2, max_col=used_columns), 2
         ):
             if all(cell.value is None for cell in cells):
                 if rows:
@@ -322,7 +327,7 @@ def parse_response_book(
             ):
                 return _error("XLSX_ID_TEXT_REQUIRED", f"{sheet_name}!{row_number}:C")
             fields = []
-            for index in (1, 2, 3, 104):
+            for index in (1, 2, 3, note_index):
                 parsed_field = _cell_text(cells[index], f"{sheet_name}!{row_number}:{index + 1}")
                 if isinstance(parsed_field, Err):
                     return parsed_field
@@ -330,7 +335,7 @@ def parse_response_book(
             if _REVIEW_PENDING in fields[3]:
                 return _error(
                     "XLSX_REVIEW_PENDING",
-                    f"{sheet_name}!{row_number}:DA",
+                    f"{sheet_name}!{row_number}:{last_column}",
                     reason=(
                         f"{row_number}행 비고에 '{fields[3]}'가 남아 있습니다. 노란 칸은 인식이 "
                         "애매했던 답이라 그대로 가져오면 채점됩니다. 노란 칸을 답안지와 맞춰 "
@@ -338,11 +343,15 @@ def parse_response_book(
                     ),
                 )
             answers: list[AnswerValue] = []
-            for question, cell in enumerate(cells[4:104], 1):
+            for question, cell in enumerate(cells[4:note_index], 1):
                 parsed_answer = _answer(cell, f"{sheet_name}!{row_number}:Q{question}")
                 if isinstance(parsed_answer, Err):
                     return parsed_answer
                 answers.append(parsed_answer)
+            # Questions past the book's last Q column are not on the form.
+            answers.extend(
+                AnswerValue((), AnswerStatus.UNASKED) for _ in range(questions, MAX_QUESTIONS)
+            )
             item_id = stable_work_item_id(
                 session_id, SourceKind.IMPORTED_XLSX, source_sha256, None, None, len(rows), 0
             )

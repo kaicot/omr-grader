@@ -418,7 +418,8 @@ class GradingPage(QWidget):
 
     def _set_history_label(self) -> None:
         warning = (
-            "재채점하면 기존 채점 결과는 세션의 _휴지통에 백업한 뒤 새 결과를 만듭니다."
+            "다시 채점하면 이전 결과가 새 결과로 바뀝니다. 이전 결과가 필요하면 먼저 시험"
+            " 관리의 '백업하기'를 하거나 결과 엑셀을 다른 곳에 복사해 두세요."
             if self._session is not None and self._session.is_regrade
             else ""
         )

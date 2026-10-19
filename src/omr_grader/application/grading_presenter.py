@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
 from omr_grader.application.dto import AnswerKeyValidation
+from omr_grader.application.form_questions import asked_off_form, off_form_reason
 from omr_grader.domain.enums import KeyQuestionStatus
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 
@@ -133,7 +134,10 @@ class GradingPresenter:
     @staticmethod
     def validation(
         result: AnswerKeyValidation | Result[AnswerKeyValidation] | Iterable[ErrorInfo],
+        printed: Sequence[int] | None = None,
     ) -> AnswerKeyValidationDisplay:
+        """The answer key summary; ``printed`` (the questions on the exam's answer sheets)
+        makes the counts follow the form and refuses a key that asks past it."""
         if isinstance(result, Ok):
             result = result.value
         if isinstance(result, Err):
@@ -146,6 +150,17 @@ class GradingPresenter:
             asked = sum(entry.status is not KeyQuestionStatus.UNASKED for entry in snapshot.entries)
             unasked = sum(entry.status is KeyQuestionStatus.UNASKED for entry in snapshot.entries)
             total = sum((Decimal(entry.points) for entry in snapshot.entries), Decimal("0"))
+            if printed is not None:
+                # A 40-question form leaves 60 key rows unasked; they are not 미출제 on it.
+                missing = asked_off_form(snapshot, printed)
+                asked -= len(missing)
+                unasked = len(printed) - asked
+                total -= sum(
+                    (Decimal(entry.points) for entry in snapshot.entries if entry.question in missing),
+                    Decimal("0"),
+                )
+                if missing:
+                    errors = (*errors, off_form_reason(missing, printed))
             return AnswerKeyValidationDisplay(
                 None,
                 None,

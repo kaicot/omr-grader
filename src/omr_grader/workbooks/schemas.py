@@ -3,21 +3,47 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Iterable, Sequence
 from typing import Any, Final
 from xml.etree import ElementTree
 
+from omr_grader.domain.enums import AnswerStatus
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.models import AnswerValue
 
 RESPONSE_SHEET_NAME: Final = "응답원본"
-RESPONSE_HEADERS: Final = (
-    "일련번호",
-    "원본파일명",
-    "학번",
-    "이름",
-    *(f"Q{number}" for number in range(1, 101)),
-    "비고",
-)
-RESPONSE_COLUMN_COUNT: Final = 105
+MAX_QUESTIONS: Final = 100
+RESPONSE_FIXED_HEADERS: Final = ("일련번호", "원본파일명", "학번", "이름")
+
+
+def question_headers(question_count: int) -> tuple[str, ...]:
+    """``Q1`` .. ``Q<question_count>``."""
+    return tuple(f"Q{number}" for number in range(1, question_count + 1))
+
+
+def response_headers(question_count: int = MAX_QUESTIONS) -> tuple[str, ...]:
+    """The 응답원본 header row for a form with ``question_count`` questions."""
+    if not 1 <= question_count <= MAX_QUESTIONS:
+        raise ValueError("question_count must be 1..100")
+    return (*RESPONSE_FIXED_HEADERS, *question_headers(question_count), "비고")
+
+
+def question_count(answer_rows: Iterable[Sequence[AnswerValue]]) -> int:
+    """How many questions the books show: up to the last one any answer sheet prints.
+
+    Questions past the form read unasked on every sheet, so a 40-question form gives 40.
+    With no rows at all the books keep the full 100 columns.
+    """
+    last = 0
+    for answers in answer_rows:
+        for number, answer in enumerate(answers, 1):
+            if number > last and answer.status is not AnswerStatus.UNASKED:
+                last = number
+    return last or MAX_QUESTIONS
+
+
+RESPONSE_HEADERS: Final = response_headers()
+RESPONSE_COLUMN_COUNT: Final = len(RESPONSE_HEADERS)
 RESPONSE_POLICY_VERSION: Final = "response-xlsx-policy-v1"
 MAX_COMPRESSED_BYTES: Final = 64 * 1024 * 1024
 MAX_ZIP_ENTRIES: Final = 2_048
@@ -157,6 +183,16 @@ __all__ = [
     name
     for name in globals()
     if name.startswith(
-        ("MAX_", "RESPONSE_", "escape_", "has_", "normalize_", "sheet_", "validate_")
+        (
+            "MAX_",
+            "RESPONSE_",
+            "escape_",
+            "has_",
+            "normalize_",
+            "question_",
+            "response_",
+            "sheet_",
+            "validate_",
+        )
     )
 ]
