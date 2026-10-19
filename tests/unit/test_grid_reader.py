@@ -654,3 +654,33 @@ def test_a_frame_drawn_at_high_resolution_is_read_without_hitting_opencv_limits(
     marked = {a.question: a.value.choices for a in result.value.answers if a.value.status is NORMAL}
     assert marked == {1: (3,), 37: (5,), 100: (1,)}
     assert result.value.student_id.value == "20250001"
+
+
+def _evidence(scores: tuple[float, ...]) -> list[object]:
+    from omr_grader.domain.models import CellEvidence
+    from omr_grader.recognition.grid_reader import canonical_fraction
+
+    return [
+        CellEvidence(
+            index, 1, None, index + 1, None, None, canonical_fraction(score), False,
+            CellStatus.BLANK,
+        )
+        for index, score in enumerate(scores)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("scores", "status", "selected"),
+    (
+        ((0.8, 0.0, 0.78, 0.0, 0.0), FieldStatus.MULTIPLE, (0, 2)),
+        ((0.8, 0.0, 0.61, 0.0, 0.0), FieldStatus.MULTIPLE, (0, 2)),
+        ((0.8, 0.0, 0.55, 0.0, 0.0), FieldStatus.UNCERTAIN, (0, 2)),
+        ((0.8, 0.3, 0.0, 0.0, 0.0), FieldStatus.UNCERTAIN, (0, 1)),
+    ),
+)
+def test_a_second_mark_much_weaker_than_the_first_is_reviewed_not_scored_double(
+    scores: tuple[float, ...], status: FieldStatus, selected: tuple[int, ...]
+) -> None:
+    from omr_grader.recognition.grid_reader import _decide
+
+    assert _decide(_evidence(scores), make_thresholds()) == (selected, status)  # type: ignore[arg-type]

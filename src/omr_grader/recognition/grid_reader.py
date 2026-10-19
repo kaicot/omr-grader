@@ -30,6 +30,11 @@ ID_COLUMNS: Final = 8
 ID_DIGITS: Final = 10
 CHOICES: Final = 5
 _UPSIDE_DOWN_MARGIN: Final = 0.01
+# Two marks count as a double mark only when the weaker one is at least this share of the
+# stronger. Real double marks are about equal; correction-tape remnants and erased residue
+# beside a real answer measured 0.27-0.55 of it, so those go to review instead of scoring
+# the question wrong.
+_DOUBLE_MARK_RATIO: Final = 0.75
 """Upright pages print (1) 0.025-0.042 lighter than (5) in the unmarked disk density."""
 _REMAP_ROWS: Final = 30_000
 """OpenCV remap maps must stay under 32767 rows."""
@@ -501,6 +506,9 @@ def _decide(
         return tuple(sorted((*marked, *gray_zone))), FieldStatus.UNCERTAIN
     if len(marked) == 1:
         return marked, FieldStatus.NORMAL
+    strongest, second = sorted((scores[i] for i in marked), reverse=True)[:2]
+    if second < _DOUBLE_MARK_RATIO * strongest:
+        return marked, FieldStatus.UNCERTAIN
     return marked, FieldStatus.MULTIPLE
 
 
