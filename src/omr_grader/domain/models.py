@@ -412,14 +412,17 @@ class StudentIdRecognition(_Wire):
         complete = normal_count > 0 and all(
             cell.status is FieldStatus.BLANK for cell in self.cells[normal_count:]
         )
+        normal = self.status is StudentIdStatus.NORMAL
+        # Since 4.3.0 a digit prefix with blank columns after it is read as invalid; exams
+        # saved earlier keep such IDs as normal, so both stay valid records.
         if (
-            (self.status is StudentIdStatus.NORMAL) != complete
+            (normal and not complete)
             or (
-                complete
+                normal
                 and self.value
                 != "".join(cell.selected_digit or "" for cell in self.cells[:normal_count])
             )
-            or (not complete and self.value is not None)
+            or (not normal and self.value is not None)
         ):
             raise ValueError("student ID mismatch")
 

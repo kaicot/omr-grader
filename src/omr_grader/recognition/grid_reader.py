@@ -544,20 +544,19 @@ def _evidence_with_status(
 
 
 def _student_id(cells: list[IdCell], thresholds: RecognitionThresholds) -> StudentIdRecognition:
-    """Digits must run from the first column; only trailing columns may stay blank."""
-    last = max(
-        (index for index, cell in enumerate(cells) if cell.status is not FieldStatus.BLANK),
-        default=-1,
-    )
-    active = cells[: last + 1]
+    """Every column must hold one clear digit.
+
+    The form has 8 columns for 8-digit IDs; a column left blank, even the last one, would
+    otherwise pass as a shorter ID that belongs to nobody, so the ID goes to review.
+    """
     complete = (
         thresholds.has_valid_calibration_provenance
-        and bool(active)
-        and all(cell.status is FieldStatus.NORMAL for cell in active)
+        and bool(cells)
+        and all(cell.status is FieldStatus.NORMAL for cell in cells)
     )
     if complete:
         return StudentIdRecognition(
-            "".join(cell.selected_digit or "" for cell in active),
+            "".join(cell.selected_digit or "" for cell in cells),
             StudentIdStatus.NORMAL,
             tuple(cells),
         )

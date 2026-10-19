@@ -461,16 +461,18 @@ def test_a_complete_id_is_read_digit_by_digit() -> None:
 
 
 @pytest.mark.parametrize("digits", ("2025000", "20", "2"))
-def test_blank_columns_after_the_digits_are_allowed(digits: str) -> None:
+def test_blank_columns_after_the_digits_send_the_id_to_review(digits: str) -> None:
     frame = _frame()
 
-    ids = _read(_page(frame, STANDARD, digits), frame).student_id
+    reading = _read(_page(frame, STANDARD, digits), frame)
 
-    assert (ids.status, ids.value) == (StudentIdStatus.NORMAL, digits)
+    ids = reading.student_id
+    assert (ids.status, ids.value) == (StudentIdStatus.INVALID, None)
     assert [cell.status for cell in ids.cells[len(digits) :]] == [FieldStatus.BLANK] * (
         8 - len(digits)
     )
     assert len(ids.cells) == 8
+    assert reading.needs_manual_review
 
 
 @pytest.mark.parametrize("digits", ("2025 001", " 2025001", "20 50001", "  250001"))
@@ -488,12 +490,12 @@ def test_a_blank_column_before_a_digit_makes_the_id_invalid(digits: str) -> None
     assert reading.needs_manual_review
 
 
-def test_an_id_with_a_trailing_blank_after_a_full_prefix_is_still_valid() -> None:
+def test_an_id_with_its_last_column_blank_is_not_a_shorter_id() -> None:
     frame = _frame()
 
     ids = _read(_page(frame, STANDARD, "2025000 "), frame).student_id
 
-    assert (ids.status, ids.value) == (StudentIdStatus.NORMAL, "2025000")
+    assert (ids.status, ids.value) == (StudentIdStatus.INVALID, None)
 
 
 def test_an_id_column_with_two_marks_or_a_doubtful_mark_is_invalid() -> None:
