@@ -101,6 +101,32 @@ def _error(code: str, detail: str) -> ErrorInfo:
     )
 
 
+def page_coverage(
+    source_size: tuple[int, int], forward: NDArray[np.float64], normalized_size: tuple[int, int]
+) -> NDArray[np.uint8]:
+    """255 where the profile frame shows the scanned page, 0 where the scan ends.
+
+    ``warp_page`` fills the area past the scan's edge with white paper, which reads as an
+    unmarked bubble; this mask tells a cut-off bubble from a blank one.
+    """
+    width, height = normalized_size
+    if not 2 <= width <= 20_000 or not 2 <= height <= 20_000 or width * height > 100_000_000:
+        raise ValueError("normalized_size is outside the safe raster bounds")
+    source_height, source_width = source_size
+    covered = np.full((source_height, source_width), 255, dtype=np.uint8)
+    return cast(
+        NDArray[np.uint8],
+        cv2.warpPerspective(
+            covered,
+            np.asarray(forward, dtype=np.float64),
+            (width, height),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0,),
+        ),
+    )
+
+
 def warp_page(
     image: Image,
     forward: NDArray[np.float64],

@@ -43,6 +43,9 @@ _DOUBLE_MARK_RATIO: Final = 0.75
 # needs this many of them, so a nearly blank page keeps the absolute thresholds only.
 _FAINT_MARK_RATIO: Final = 0.5
 _MIN_REFERENCE_MARKS: Final = 10
+# A bubble with less of its reading disk inside the scan than this is cut off: what lies past
+# the scan's edge reads as white paper, so a mark there would silently read as blank.
+_MIN_COVERAGE: Final = 0.95
 """Upright pages print (1) 0.025-0.042 lighter than (5) in the unmarked disk density."""
 _REMAP_ROWS: Final = 30_000
 """OpenCV remap maps must stay under 32767 rows."""
@@ -66,6 +69,7 @@ def read_grid(
     bubble_radius: float,
     trusted: bool = True,
     adjacent: tuple[NDArray[np.float64], NDArray[np.int64]] | None = None,
+    coverage: NDArray[np.uint8] | None = None,
 ) -> Result[GridRecognition]:
     """Read the 8x10 ID grid and every answer row of a page warped into the profile frame.
 
@@ -76,6 +80,8 @@ def read_grid(
     ``adjacent`` holds printed bubbles right next to the answer regions (frame centers and
     choice columns); a mark on any of them withholds the page the same way, because the
     profile then leaves out a question row someone answered.
+    ``coverage`` marks where the frame shows the scanned page (``page_coverage``); a question
+    or ID column with a bubble past the scan's edge goes to review instead of reading blank.
     """
     validated = validate_thresholds(thresholds)
     if isinstance(validated, Err):
@@ -115,6 +121,24 @@ def read_grid(
         )
         answer_raw = np.array(
             [[_fill(density, cell[2], disk) for cell in cells] for _, cells in rows]
+        )
+        cut_columns = (
+            set()
+            if coverage is None
+            else {
+                column
+                for column, cells in enumerate(id_geometry)
+                if min(_covered(coverage, cell[2], disk) for cell in cells) < _MIN_COVERAGE
+            }
+        )
+        cut_questions = (
+            set()
+            if coverage is None
+            else {
+                question
+                for question, cells in rows
+                if min(_covered(coverage, cell[2], disk) for cell in cells) < _MIN_COVERAGE
+            }
         )
     except (ArithmeticError, TypeError, ValueError, cv2.error):
         # OpenCV refuses some sizes of an odd profile frame; that page is reported, not raised.
@@ -197,6 +221,14 @@ def read_grid(
         return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
 
     answers.sort(key=lambda item: item.question)
+    answers = [
+        _withheld_answer(answer) if answer.question in cut_questions else answer
+        for answer in answers
+    ]
+    id_cells = [
+        _withheld_id_cell(cell) if column in cut_columns else cell
+        for column, cell in enumerate(id_cells)
+    ]
     usual = _usual_mark_strength(answers)
     if usual is not None:
         answers = [_review_if_faint(answer, usual) for answer in answers]
@@ -452,6 +484,20 @@ def _fill(
     if not inside.any():
         raise ValueError("bubble lies outside the normalized image")
     return float(density[ys[inside], xs[inside]].sum() / disk[0].size)
+
+
+def _covered(
+    coverage: NDArray[np.uint8],
+    center: tuple[float, float],
+    disk: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> float:
+    """Share of a reading disk that lies on the scanned page."""
+    height, width = coverage.shape[:2]
+    xs = np.rint(center[0] + disk[0]).astype(np.intp)
+    ys = np.rint(center[1] + disk[1]).astype(np.intp)
+    inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+    on_page = coverage[ys[inside], xs[inside]] > 0
+    return float(on_page.sum() / disk[0].size)
 
 
 def _answer_regions_with_starts(

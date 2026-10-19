@@ -31,7 +31,7 @@ from omr_grader.ingestion.images import (
 )
 from omr_grader.recognition.form_alignment import align_page
 from omr_grader.recognition.grid_reader import _has_frozen_profile_invariants, read_grid
-from omr_grader.recognition.normalization import PAGE_JPEG_QUALITY, warp_page
+from omr_grader.recognition.normalization import PAGE_JPEG_QUALITY, page_coverage, warp_page
 from omr_grader.recognition.orientation import rotate_right_angle
 from omr_grader.recognition.overlay import render_overlay
 from omr_grader.recognition.thresholds import RecognitionThresholds
@@ -127,8 +127,9 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
             _error("FORM_NOT_FOUND", "encoded_raster", "printed bubbles do not match the form"),
         )
     page = cast(Page, task.profile.page)
+    upright = rotate_right_angle(image, alignment.rotation)
     raster = warp_page(
-        rotate_right_angle(image, alignment.rotation),
+        upright,
         alignment.forward,
         (page.source_width, page.source_height),
         alignment.inlier_ratio,
@@ -143,6 +144,11 @@ def recognize_page(task: PipelineInput) -> PipelineResult:
         bubble_radius=alignment.bubble_radius,
         trusted=alignment.trusted,
         adjacent=(alignment.adjacent_nodes, alignment.adjacent_columns),
+        coverage=page_coverage(
+            (upright.shape[0], upright.shape[1]),
+            alignment.forward,
+            (page.source_width, page.source_height),
+        ),
     )
     if isinstance(recognition, Err):
         return _failure(task.page_ref, recognition.errors[0])

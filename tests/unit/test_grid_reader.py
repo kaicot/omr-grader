@@ -717,3 +717,30 @@ def test_a_mark_far_fainter_than_the_page_usual_goes_to_review() -> None:
     assert {cell.status for cell in faint.cells} == {CellStatus.UNCERTAIN}
     # Too few marks to know the page's usual strength: the absolute thresholds decide alone.
     assert _usual_mark_strength(page[:9]) is None
+
+
+def test_a_question_past_the_scan_edge_goes_to_review_instead_of_reading_blank() -> None:
+    frame = _frame()
+    page = _page(frame, {41: 2, 1: 3})
+    coverage = np.full(page.shape[:2], 255, dtype=np.uint8)
+    # The scan ends a little left of the last answer block (questions 41-50).
+    coverage[:, page.shape[1] - round(4 * PITCH[0]) :] = 0
+
+    full = _read(page, frame)
+    cut = _read(page, frame, coverage=coverage)
+
+    assert _states(full, (41, 42, 1)) == [(NORMAL, (2,)), (BLANK, ()), (NORMAL, (3,))]
+    assert [state for state, _ in _states(cut, (41, 42, 50))] == [UNCERTAIN] * 3
+    assert _states(cut, (1,)) == [(NORMAL, (3,))]
+    assert cut.needs_manual_review
+
+
+def test_an_id_column_past_the_scan_edge_makes_the_id_invalid() -> None:
+    frame = _frame()
+    page = _page(frame)
+    coverage = np.full(page.shape[:2], 255, dtype=np.uint8)
+    coverage[:, : round(MARGIN + PITCH[0])] = 0
+
+    ids = _read(page, frame, coverage=coverage).student_id
+
+    assert ids.status is StudentIdStatus.INVALID
