@@ -207,7 +207,9 @@ def test_startup_splash_is_a_plain_window_that_closes_after_the_main_window(qapp
 
     splash.finish(window)
 
-    qtbot.waitUntil(lambda: not splash.isVisible(), timeout=1000)
+    destroyed: list[bool] = []
+    splash.destroyed.connect(lambda: destroyed.append(True))
+    qtbot.waitUntil(lambda: bool(destroyed), timeout=2000)
     window.close()
 
 

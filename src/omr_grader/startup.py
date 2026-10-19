@@ -41,6 +41,9 @@ class StartupSplash(QLabel):
         )
         self.setPixmap(pixmap)
         self.setFixedSize(pixmap.size())
+        # Closing destroys the window: a hidden splash left behind is one more top-level
+        # window that a close request to the whole application can trip over.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         screen = QApplication.primaryScreen()
         if screen is not None:
             area = screen.availableGeometry()
