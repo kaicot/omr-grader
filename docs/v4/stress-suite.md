@@ -113,3 +113,26 @@ real rates will differ, and the levels are meant for comparing engines, not for 
 a school's error rate. The suite does not cover skew, lens distortion, JPEG artifacts or
 forms without printed digits; the batch and perturbation checks in `tools/v4_baseline.py`
 remain the place for those.
+
+## 4.3.0 result
+
+Same suite, sensitivity 5, after the four 4.3.0 rules (ratio test for double marks, faint
+marks relative to the page's usual strength, coverage of the scanned page, all eight ID
+columns). Each rule was added and measured on its own; the record lines are in the private
+`results-history.jsonl`.
+
+| Scenario | cases | correct | review | silent_wrong |
+| --- | ---: | ---: | ---: | ---: |
+| `clean` | 300 | 300 | 0 | 0 |
+| `faint_mark` | 99 | 33 | 62 | 4 |
+| `residue_lone` | 99 | 14 | 79 | 6 |
+| `residue_beside_mark` | 99 | 10 | 89 | 0 |
+| `correction_tape` | 99 | 54 | 45 | 0 |
+| `double_equal` | 99 | 66 | 33 | 0 |
+| `cut_column` | 270 | 0 | 270 | 0 |
+| `truncated_id` | 12 pages | | 12 ID to review | 0 wrong IDs accepted |
+
+The remaining silent errors are residue at 0.50-0.54 of the page's usual mark (as dark as
+the faintest real answers, 0.57) and 5 px dots read blank. Faint real marks and pairs of
+small dots now go to review. The real-data gates (G1 cross-profile, G2 perturbations, E2E)
+are unchanged: 0 wrong answers and 0 review cells.

@@ -131,11 +131,11 @@ def test_config_snapshot_relocates_with_portable_root(tmp_path: Path) -> None:
     root.mkdir()
     original, _ = _services(root)
     token = CapabilityToken.for_testing(original.root)
-    assert isinstance(save_config(original, AppConfig("", 8, True), token), Ok)
+    assert isinstance(save_config(original, AppConfig("", 6, True), token), Ok)
     moved = tmp_path / "moved"
     original.root.rename(moved)
 
     relocated = ManagedPaths.from_root(moved)
     loaded = load_config_snapshot(relocated)
     assert isinstance(loaded, Ok)
-    assert loaded.value.config == AppConfig("", 8, True)
+    assert loaded.value.config == AppConfig("", 6, True)

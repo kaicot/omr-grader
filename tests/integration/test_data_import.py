@@ -113,7 +113,7 @@ def old_template(tmp_path_factory):
         old.coordinator.soft_delete(SessionMutationRequest(*trashed, uuid4().hex)), Ok
     )
     form = sorted(path.name for path in old.paths.profiles_dir.glob("*.omrtemplate"))[0]
-    assert isinstance(save_config(old.paths, AppConfig(form, 8, True), old.token), Ok)
+    assert isinstance(save_config(old.paths, AppConfig(form, 6, True), old.token), Ok)
     return old.paths.root, trashed, form
 
 
@@ -365,10 +365,10 @@ def test_forms_with_the_same_content_are_not_copied_again_and_the_default_follow
         )
         assert isinstance(imported, Ok)
         assert imported.value.profiles == 0
-        assert imported.value.settings == AppConfig(other_name, 8, True)
+        assert imported.value.settings == AppConfig(other_name, 6, True)
 
     assert sorted(path.name for path in new.paths.profiles_dir.iterdir()) == [other_name]
-    assert saved == [AppConfig(other_name, 8, True)] * 2
+    assert saved == [AppConfig(other_name, 6, True)] * 2
 
 
 def test_a_form_is_copied_once_and_a_failed_settings_save_is_not_reported_as_imported(
@@ -412,5 +412,5 @@ def test_settings_are_saved_through_the_given_saver(tmp_path, old_template):
     )
 
     assert isinstance(imported, Ok)
-    assert imported.value.settings == seen[0] == AppConfig(old_template[2], 8, True)
+    assert imported.value.settings == seen[0] == AppConfig(old_template[2], 6, True)
     assert imported.value.settings_failed is False
