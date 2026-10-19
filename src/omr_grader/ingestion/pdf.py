@@ -49,7 +49,7 @@ class _PdfiumDocument(Protocol):
 class _PdfiumApi(Protocol):
     PdfiumError: type[Exception]
 
-    def PdfDocument(self, payload: bytes) -> _PdfiumDocument: ...
+    def PdfDocument(self, payload: bytes | str) -> _PdfiumDocument: ...
 
 
 # PDFium (BSD-3/Apache-2.0) renders the pages; it is the engine Chrome uses.
@@ -165,6 +165,20 @@ def _open_pdf(payload: bytes) -> Result[_PdfiumDocument]:
             return _error("PDF_MALFORMED", str(close_error))
         return _error("PDF_PAGE_COUNT_QUOTA", "PDF page count must be between 1 and 5000")
     return Ok(document)
+
+
+def count_pdf_pages(path: Path) -> int | None:
+    """Pages in a PDF without reading or rendering them; ``None`` when it cannot be opened."""
+    try:
+        document = _pdfium.PdfDocument(str(path))
+    except _PDF_RENDERER_FAILURES:
+        return None
+    try:
+        return len(document)
+    except _PDF_RENDERER_FAILURES:
+        return None
+    finally:
+        _close_document(document)
 
 
 def enumerate_pdf(
@@ -319,6 +333,7 @@ __all__ = [
     "PdfInput",
     "PdfInputBatch",
     "RenderedPdfPage",
+    "count_pdf_pages",
     "enumerate_pdf",
     "render_pdf_page",
     "render_pdf_pages",

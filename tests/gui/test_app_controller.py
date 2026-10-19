@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Event
 from types import MappingProxyType
 
+import pytest
 from PySide6.QtCore import (
     QBuffer,
     QByteArray,
@@ -35,10 +36,10 @@ from omr_grader.application.dto import (
     ScanCommand,
     ScanProgress,
     SessionCreateResult,
-    SoftDeleteResult,
     Settings,
     SettingsSaveCommand,
     SettingsSaveResult,
+    SoftDeleteResult,
 )
 from omr_grader.application.grading_presenter import (
     ConnectedSessionDisplay,
@@ -47,9 +48,8 @@ from omr_grader.application.grading_presenter import (
 )
 from omr_grader.application.settings_use_case import SettingsState
 from omr_grader.bootstrap import _canonical_response_workbook_selection
-from omr_grader.domain.enums import AnswerStatus, IndexState
+from omr_grader.domain.enums import AnswerStatus, ExamTerm, IndexState, SessionState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok
-from omr_grader.domain.enums import ExamTerm, SessionState
 from omr_grader.domain.models import AnswerValue, DashboardIndexEntry
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
 from omr_grader.infrastructure.logging_setup import configure_logging
@@ -1279,4 +1279,38 @@ def test_a_refresh_asked_for_during_another_action_runs_after_it(qtbot):
     release.set()
 
     qtbot.waitUntil(lambda: len(loads) > before)
+    controller.close()
+
+
+def test_scan_page_count_adds_pdf_pages_and_image_files_without_rendering(tmp_path) -> None:
+    from omr_grader.ui.app_controller import scan_page_count
+    from tests.helpers.pdf_writer import write_pdf
+
+    pdf = write_pdf(tmp_path / "scans.pdf", [None, None, None])
+    folder = tmp_path / "images"
+    folder.mkdir()
+    for name in ("a.png", "b.JPG", "notes.txt"):
+        (folder / name).write_bytes(b"x")
+
+    assert scan_page_count((str(pdf), str(folder), str(tmp_path / "missing.pdf"))) == 5
+
+
+@pytest.mark.parametrize(("answer", "started"), ((False, 0), (True, 1)))
+def test_a_scan_over_two_hundred_pages_is_confirmed_first(
+    qtbot, monkeypatch, answer: bool, started: int
+) -> None:
+    import omr_grader.ui.app_controller as controller_module
+
+    window, scan, grading = _window(qtbot)
+    service = FakeScanService(_committed_scan_result)
+    controller = AppController(window, scan, grading, _ready_ports(scan=service), write_enabled=True)
+    asked: list[int] = []
+    monkeypatch.setattr(controller_module, "scan_page_count", lambda _paths: 201)
+    monkeypatch.setattr(window, "confirm_large_scan", lambda pages: asked.append(pages) or answer)
+
+    controller.start_scan(_request())
+    qtbot.waitUntil(lambda: len(service.calls) == started or not answer, timeout=3000)
+
+    assert asked == [201]
+    assert len(service.calls) == started
     controller.close()

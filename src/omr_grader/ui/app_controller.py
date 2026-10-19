@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from threading import Event
-from typing import Protocol
+from typing import Final, Protocol
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
@@ -303,6 +303,34 @@ def _mixed_form_warning(detection: FormDetection) -> str | None:
         f"{detection.pages_checked - detection.pages_matching}쪽은 양식이 달라 보입니다. "
         "다른 양식의 답안지가 섞여 있는지 확인하세요."
     )
+
+
+# More pages than this in one scan are confirmed first: rendering keeps about 15 MB per page.
+LARGE_SCAN_PAGES: Final = 200
+
+
+def scan_page_count(paths: tuple[str, ...]) -> int:
+    """Pages a scan selection holds, counted without rendering: PDF pages plus image files."""
+    from omr_grader.ingestion.images import IMAGE_EXTENSIONS
+    from omr_grader.ingestion.pdf import count_pdf_pages
+
+    total = 0
+    for raw in paths:
+        path = Path(raw)
+        try:
+            if path.is_dir():
+                total += sum(
+                    1
+                    for child in path.iterdir()
+                    if child.is_file() and child.suffix.casefold() in IMAGE_EXTENSIONS
+                )
+            elif path.suffix.casefold() == ".pdf":
+                total += count_pdf_pages(path) or 0
+            elif path.suffix.casefold() in IMAGE_EXTENSIONS:
+                total += 1
+        except OSError:
+            continue
+    return total
 
 
 def _scan_session_progress(progress: ScanProgress) -> str:
@@ -1267,6 +1295,10 @@ class AppController(QObject):
                 self.scan_page,
                 ErrorInfo("SETTINGS_UNAVAILABLE", "error.settings_unavailable"),
             )
+            return
+        pages = scan_page_count(request.source.paths)
+        if pages > LARGE_SCAN_PAGES and not self.main_window.confirm_large_scan(pages):
+            self.main_window.set_status("인식을 시작하지 않았습니다. PDF를 나눠 넣을 수 있습니다.")
             return
         command = ScanCommand(
             request.session_id or f"scan-{uuid4().hex}",

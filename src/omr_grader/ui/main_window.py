@@ -766,6 +766,27 @@ class MainWindow(QMainWindow):
         """Return to the persisted exam-management dashboard."""
         self.exam_page.setCurrentWidget(self.dashboard_page)
 
+    def confirm_large_scan(self, pages: int) -> bool:
+        """Ask before a scan big enough to run short of memory; ``True`` means go on."""
+        box = QMessageBox(
+            QMessageBox.Icon.Warning,
+            "스캔 장수가 많습니다",
+            f"한 번에 {pages}장을 인식하려고 합니다. 200장이 넘으면 메모리가 부족해 느려지거나"
+            " 멈출 수 있습니다.\n\nPDF를 나눠 따로 채점한 뒤 시험 관리에서 '합산 성적표'로 합칠 수"
+            " 있습니다. 그래도 지금 인식할까요?",
+            QMessageBox.StandardButton.NoButton,
+            self,
+        )
+        box.setObjectName("largeScanDialog")
+        proceed = box.addButton("계속", QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        box.deleteLater()
+        return clicked is proceed
+
     def confirm_detail_exit(self) -> str:
         """Ask the user to save, discard, or cancel an unsaved detail edit."""
         # The static QMessageBox helpers return plain ints in PySide6 6.11, so a
