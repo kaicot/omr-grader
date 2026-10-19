@@ -18,7 +18,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from omr_grader.domain.enums import AnswerKeySnapshotKind, AnswerStatus, KeyQuestionStatus
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import SCHEMA_VERSION, AnswerKeyEntry, AnswerKeySnapshot, AnswerValue
-from omr_grader.workbooks.schemas import validate_opc_relationships
+from omr_grader.workbooks.schemas import sheet_extent, validate_opc_relationships
 
 NORMALIZATION_VERSION = "answer-key-xlsx-v1"
 ANSWER_KEY_HEADERS = ("문항번호", "정답", "배점")
@@ -171,7 +171,8 @@ def import_answer_key_bytes(
         if sheet_name not in workbook.sheetnames:
             return Err((_error("XLSX_SHEET_NOT_FOUND", "sheet_name"),))
         sheet = workbook[sheet_name]
-        if sheet.max_row > MAX_ROWS or not 3 <= sheet.max_column <= MAX_COLUMNS:
+        rows, columns = sheet_extent(sheet)
+        if rows > MAX_ROWS or not 3 <= columns <= MAX_COLUMNS:
             return Err((_error("XLSX_DIMENSION_QUOTA", "sheet_name"),))
         # Formulas are refused in every used column (a note column too), not only A-C; the
         # package check already rejects any <f> element, this keeps the cell reader consistent.

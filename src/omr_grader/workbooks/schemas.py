@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Final
+from typing import Any, Final
 from xml.etree import ElementTree
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
@@ -132,8 +132,31 @@ def escape_formula_text(value: str) -> str:
     return f"'{value}" if value.startswith(_FORMULA_PREFIXES) else value
 
 
+def sheet_extent(sheet: Any) -> tuple[int, int]:
+    """Rows and columns a worksheet uses, counted when the file does not record them.
+
+    Excel always records the used range. Files written by some other tools leave it out, and
+    openpyxl's read-only sheets then report no size at all; the used range is then the last
+    row and column that hold a cell.
+    """
+    rows, columns = sheet.max_row, sheet.max_column
+    if isinstance(rows, int) and isinstance(columns, int):
+        return rows, columns
+    rows = columns = 0
+    for row in sheet.iter_rows():
+        for cell in row:
+            row_number = getattr(cell, "row", None)
+            column_number = getattr(cell, "column", None)
+            if isinstance(row_number, int) and isinstance(column_number, int):
+                rows = max(rows, row_number)
+                columns = max(columns, column_number)
+    return rows, columns
+
+
 __all__ = [
     name
     for name in globals()
-    if name.startswith(("MAX_", "RESPONSE_", "escape_", "has_", "normalize_", "validate_"))
+    if name.startswith(
+        ("MAX_", "RESPONSE_", "escape_", "has_", "normalize_", "sheet_", "validate_")
+    )
 ]

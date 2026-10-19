@@ -13,7 +13,7 @@ from typing import Protocol
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
-from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result, error_site
 
 Operation = Callable[[Event, Callable[[object], None]], object]
 CancelHook = Callable[[], Result[None] | None]
@@ -84,7 +84,10 @@ def _worker_error(error: object) -> WorkerError:
         "UI_OPERATION_FAILED",
         "error.ui_operation_failed",
         None,
-        (("reason", str(error) or type(error).__name__),),
+        (
+            ("reason", str(error) or type(error).__name__),
+            ("site", error_site(error) if isinstance(error, BaseException) else None),
+        ),
         False,
         type(error).__name__,
     )

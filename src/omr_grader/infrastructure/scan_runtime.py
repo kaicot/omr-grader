@@ -38,7 +38,7 @@ from omr_grader.domain.enums import (
     SessionState,
     StudentIdStatus,
 )
-from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result, error_site
 from omr_grader.domain.models import (
     AnswerKeyEntry,
     AnswerKeySnapshot,
@@ -87,6 +87,19 @@ from omr_grader.workbooks.response_book import recognition_note, write_response_
 
 def _error(code: str, field: str) -> Err:
     return Err((ErrorInfo(code, f"error.{code.lower()}", field),))
+
+
+_ROSTER_UNREADABLE = (
+    "명단 파일을 읽지 못했습니다. 첫 시트의 첫 줄이 '연번 · 학번 · 이름' 세 칸인지 확인하고, "
+    "Excel로 열어 다시 저장한 뒤 시도하세요. 명단 없이도 인식할 수 있습니다."
+)
+
+
+def _roster_failure(code: str, site: str | None = None) -> Err:
+    context: dict[str, str | int | bool | None] = {"reason": _ROSTER_UNREADABLE}
+    if site is not None:
+        context["site"] = site
+    return Err((ErrorInfo(code, f"error.{code.lower()}", "roster_path", context=context),))
 
 
 def _utc() -> str:
@@ -481,8 +494,14 @@ class ScanRuntime:
             finally:
                 workbook.close()
         except (BadZipFile, InvalidFileException, OSError, ValueError):
-            return _error("XLSX_INVALID_WORKBOOK", "roster_path")
-        return import_roster(command.roster_path, sheet_name)
+            return _roster_failure("XLSX_INVALID_WORKBOOK")
+        try:
+            imported = import_roster(command.roster_path, sheet_name)
+        except Exception as error:  # noqa: BLE001 - a roster is untrusted input; report, never crash
+            return _roster_failure(f"ROSTER_{type(error).__name__.upper()}", error_site(error))
+        if isinstance(imported, Err):
+            return _roster_failure(imported.errors[0].code)
+        return imported
 
     def _artifacts(
         self,

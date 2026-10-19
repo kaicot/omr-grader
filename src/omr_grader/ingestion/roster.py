@@ -14,7 +14,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from omr_grader.domain.enums import RosterRowStatus, RosterSnapshotKind
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import SCHEMA_VERSION, RosterEntry, RosterSnapshot
-from omr_grader.workbooks.schemas import validate_opc_relationships
+from omr_grader.workbooks.schemas import sheet_extent, validate_opc_relationships
 
 NORMALIZATION_VERSION = "roster-xlsx-v1"
 ROSTER_HEADERS = ("연번", "학번", "이름")
@@ -117,7 +117,8 @@ def import_roster(path: str, sheet_name: str) -> Result[RosterSnapshot]:
         if sheet_name not in workbook.sheetnames:
             return Err((_error("XLSX_SHEET_NOT_FOUND", "sheet_name"),))
         sheet = workbook[sheet_name]
-        if sheet.max_row > MAX_ROWS or sheet.max_column != len(ROSTER_HEADERS):
+        rows, columns = sheet_extent(sheet)
+        if rows > MAX_ROWS or columns != len(ROSTER_HEADERS):
             return Err((_error("XLSX_DIMENSION_QUOTA", "sheet_name"),))
         header_results = tuple(
             _cell_text(cell, f"A1:{index}")

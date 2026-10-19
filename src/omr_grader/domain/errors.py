@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
@@ -109,3 +110,21 @@ class Err:
 
 
 type Result[T] = Ok[T] | Err
+
+
+def error_site(error: BaseException, *, frames: int = 4) -> str:
+    """Where in the program an exception was raised, innermost first, for the log.
+
+    Only the program's own file names, line numbers and functions: an exception message can
+    carry a student's name or ID, so it is never part of the site.
+    """
+    sites: list[str] = []
+    for frame in reversed(traceback.extract_tb(error.__traceback__)):
+        parts = frame.filename.replace("\\", "/").split("/")
+        if "omr_grader" not in parts:
+            continue
+        start = len(parts) - parts[::-1].index("omr_grader")
+        sites.append(f"{'/'.join(parts[start:])}:{frame.lineno} {frame.name}")
+        if len(sites) == frames:
+            break
+    return " < ".join(sites) or type(error).__name__

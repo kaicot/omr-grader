@@ -15,7 +15,7 @@ from omr_grader.application.dto import (
     ScanProgress,
     SessionCreateResult,
 )
-from omr_grader.domain.errors import Err, ErrorInfo, Result
+from omr_grader.domain.errors import Err, ErrorInfo, Result, error_site
 from omr_grader.recognition.pipeline import PipelineFailure, PipelineResult
 from omr_grader.ui.workers import ScanWorker, WorkerBatchResult, WorkerTask
 
@@ -124,7 +124,19 @@ class ScanUseCase:
         except _PreparationCancelled:
             return _error("OPERATION_CANCELLED", "operation_id")
         except BaseException as error:  # noqa: BLE001  worker failure is reported to the caller
-            return _error(f"WORKER_{type(error).__name__.upper()}", "source")
+            code = f"WORKER_{type(error).__name__.upper()}"
+            # The site goes to the log so an unexpected failure can be traced; it holds no data.
+            return Err(
+                (
+                    ErrorInfo(
+                        code,
+                        f"error.{code.lower()}",
+                        "source",
+                        context={"site": error_site(error)},
+                        cause_type=type(error).__name__,
+                    ),
+                )
+            )
         finally:
             with self._lock:
                 self._operations.pop(command.operation_id, None)

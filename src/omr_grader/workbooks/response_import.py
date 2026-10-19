@@ -42,6 +42,7 @@ from .schemas import (
     has_prohibited_control,
     normalize_header,
     normalize_text,
+    sheet_extent,
 )
 
 _CELL_REFERENCE = re.compile(r"([A-Z]+)")
@@ -285,19 +286,20 @@ def parse_response_book(
             normalize_header(cell.value)
             for cell in next(sheet.iter_rows(min_row=1, max_row=1, max_col=RESPONSE_COLUMN_COUNT))
         )
+        used_rows, used_columns = sheet_extent(sheet)
         if (
             header != RESPONSE_HEADERS
-            or sheet.max_column != RESPONSE_COLUMN_COUNT
-            or sheet.max_row > MAX_SELECTED_ROWS
+            or used_columns != RESPONSE_COLUMN_COUNT
+            or used_rows > MAX_SELECTED_ROWS
         ):
             return _error("XLSX_HEADER_INVALID", "A1:DA1")
-        if sheet.max_row * RESPONSE_COLUMN_COUNT > MAX_SELECTED_CELLS:
+        if used_rows * RESPONSE_COLUMN_COUNT > MAX_SELECTED_CELLS:
             return _error("XLSX_CELL_QUOTA", sheet_name)
         for other_name in workbook.sheetnames:
-            other = workbook[other_name]
-            if other_name != sheet_name and (
-                other.max_row > MAX_OTHER_ROWS or other.max_column > MAX_OTHER_COLUMNS
-            ):
+            if other_name == sheet_name:
+                continue
+            other_rows, other_columns = sheet_extent(workbook[other_name])
+            if other_rows > MAX_OTHER_ROWS or other_columns > MAX_OTHER_COLUMNS:
                 return _error("XLSX_SHEET_QUOTA", other_name)
         rows: list[ImportedResponseRef] = []
         serials: set[int] = set()
