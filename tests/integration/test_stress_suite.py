@@ -44,7 +44,10 @@ def test_the_stress_suite_reads_clean_pages_right_and_keeps_equal_doubles_multip
     assert clean.background_silent_wrong == 0 and clean.id_wrong_accepted == 0
     assert clean.id_normal == 1
     pairs = totals["double_equal"]
-    assert pairs.total > 0 and pairs.correct == pairs.total
+    # A double mark is never scored as one answer; two faint dots may go to review instead.
+    assert pairs.total > 0 and pairs.silent_wrong == 0
+    dark = results["double_equal"][suite.DEFAULT_SENSITIVITY].levels["dark pair"]
+    assert dark.total > 0 and dark.correct == dark.total
     # The other scenarios are measurements: they must have run and counted their cases.
     for name, counts in totals.items():
         assert counts.pages > 0, name

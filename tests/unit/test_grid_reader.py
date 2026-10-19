@@ -684,3 +684,36 @@ def test_a_second_mark_much_weaker_than_the_first_is_reviewed_not_scored_double(
     from omr_grader.recognition.grid_reader import _decide
 
     assert _decide(_evidence(scores), make_thresholds()) == (selected, status)  # type: ignore[arg-type]
+
+
+def test_a_mark_far_fainter_than_the_page_usual_goes_to_review() -> None:
+    from omr_grader.domain.models import AnswerRecognition, AnswerValue, CellEvidence
+    from omr_grader.recognition.grid_reader import (
+        _review_if_faint,
+        _usual_mark_strength,
+        canonical_fraction,
+    )
+
+    def answer(question: int, strength: float) -> AnswerRecognition:
+        cells = tuple(
+            CellEvidence(
+                question * 5 + offset, question, None, offset + 1, None, None,
+                canonical_fraction(strength if offset == 0 else 0.0), offset == 0,
+                CellStatus.NORMAL if offset == 0 else CellStatus.BLANK,
+            )
+            for offset in range(5)
+        )
+        return AnswerRecognition(question, AnswerValue((1,), NORMAL), cells)
+
+    page = [answer(question, 0.8) for question in range(1, 11)]
+    usual = _usual_mark_strength(page)
+    assert usual == pytest.approx(0.8)
+
+    kept = _review_if_faint(answer(11, 0.45), usual)
+    faint = _review_if_faint(answer(12, 0.35), usual)
+
+    assert kept.value.status is NORMAL
+    assert faint.value.status is UNCERTAIN and faint.value.choices == (1,)
+    assert {cell.status for cell in faint.cells} == {CellStatus.UNCERTAIN}
+    # Too few marks to know the page's usual strength: the absolute thresholds decide alone.
+    assert _usual_mark_strength(page[:9]) is None

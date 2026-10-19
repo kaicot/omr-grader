@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final, cast
@@ -35,6 +36,13 @@ _UPSIDE_DOWN_MARGIN: Final = 0.01
 # beside a real answer measured 0.27-0.55 of it, so those go to review instead of scoring
 # the question wrong.
 _DOUBLE_MARK_RATIO: Final = 0.75
+# A mark below this share of the page's usual mark strength goes to review: it may be residue
+# left by an eraser or correction tape. On 24 real exam pages the faintest answer reached 0.57
+# and the faintest ID digit 0.55 of their page's median; synthetic residue that read as an
+# answer measured 0.27-0.54. The usual strength is the median of the page's single marks and
+# needs this many of them, so a nearly blank page keeps the absolute thresholds only.
+_FAINT_MARK_RATIO: Final = 0.5
+_MIN_REFERENCE_MARKS: Final = 10
 """Upright pages print (1) 0.025-0.042 lighter than (5) in the unmarked disk density."""
 _REMAP_ROWS: Final = 30_000
 """OpenCV remap maps must stay under 32767 rows."""
@@ -189,6 +197,10 @@ def read_grid(
         return _error("INVALID_PROFILE_GEOMETRY", "profile.regions")
 
     answers.sort(key=lambda item: item.question)
+    usual = _usual_mark_strength(answers)
+    if usual is not None:
+        answers = [_review_if_faint(answer, usual) for answer in answers]
+        id_cells = [_review_id_if_faint(cell, usual) for cell in id_cells]
     if upside_down or stray or not trusted:
         answers = [_withheld_answer(answer) for answer in answers]
         id_cells = [_withheld_id_cell(cell) for cell in id_cells]
@@ -204,6 +216,45 @@ def read_grid(
         or any(answer.value.status is AnswerStatus.UNCERTAIN for answer in answers)
     )
     return Ok(GridRecognition(id_result, tuple(answers), all_evidence, manual))
+
+
+def _strongest(cells: Sequence[CellEvidence]) -> float:
+    scores = (float(cell.fill_score) for cell in cells if cell.fill_score is not None)
+    return max(scores, default=0.0)
+
+
+def _usual_mark_strength(answers: Sequence[AnswerRecognition]) -> float | None:
+    strengths = [
+        _strongest(answer.cells)
+        for answer in answers
+        if answer.value.status is AnswerStatus.NORMAL
+    ]
+    if len(strengths) < _MIN_REFERENCE_MARKS:
+        return None
+    return float(np.median(strengths))
+
+
+def _review_if_faint(answer: AnswerRecognition, usual: float) -> AnswerRecognition:
+    if answer.value.status not in {AnswerStatus.NORMAL, AnswerStatus.MULTIPLE}:
+        return answer
+    if _strongest(answer.cells) >= _FAINT_MARK_RATIO * usual:
+        return answer
+    selected = tuple(index for index, cell in enumerate(answer.cells) if cell.selected)
+    cells = _evidence_with_status(list(answer.cells), selected, FieldStatus.UNCERTAIN)
+    return AnswerRecognition(
+        answer.question, AnswerValue(answer.value.choices, AnswerStatus.UNCERTAIN), cells
+    )
+
+
+def _review_id_if_faint(cell: IdCell, usual: float) -> IdCell:
+    if cell.status is not FieldStatus.NORMAL:
+        return cell
+    chosen = [item for item in cell.candidates if item.selected]
+    if not chosen or _strongest(chosen) >= _FAINT_MARK_RATIO * usual:
+        return cell
+    selected = tuple(index for index, item in enumerate(cell.candidates) if item.selected)
+    candidates = _evidence_with_status(list(cell.candidates), selected, FieldStatus.UNCERTAIN)
+    return IdCell(None, FieldStatus.UNCERTAIN, candidates)
 
 
 def _withheld_answer(answer: AnswerRecognition) -> AnswerRecognition:
