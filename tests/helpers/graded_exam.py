@@ -56,9 +56,15 @@ class GradedExam:
 
 
 def graded_exam(
-    tmp_path: Path, exam_name: str = "생리학 중간고사", questions: int = 100
+    tmp_path: Path,
+    exam_name: str = "생리학 중간고사",
+    questions: int = 100,
+    key_questions: int | None = None,
 ) -> GradedExam:
-    """``questions`` (a multiple of 20) sets the printed form: 40 gives two 20-row blocks."""
+    """``questions`` (a multiple of 20) sets the printed form: 40 gives two 20-row blocks.
+
+    ``key_questions`` makes the answer key shorter than the form (default: as long).
+    """
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     pdf = inputs / "scans.pdf"
@@ -71,7 +77,7 @@ def graded_exam(
     assert sheet is not None
     sheet.title = "정답표"
     sheet.append(list(ANSWER_KEY_HEADERS))
-    for question in range(1, questions + 1):
+    for question in range(1, (key_questions or questions) + 1):
         sheet.append([question, str((question * 7) % 5 + 1), 1])
     book.save(key)
 

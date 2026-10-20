@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -286,6 +287,8 @@ def test_the_score_book_keeps_every_question_the_key_asks() -> None:
 
     assert book_question_count(responses, _key(40)) == 40
     assert book_question_count(responses, _key(45)) == 45
+    assert book_question_count(responses, _key(30)) == 30
+    assert book_question_count((_effective(1, _answers(100)),), _key(50)) == 50
 
 
 def test_the_key_summary_counts_against_the_form() -> None:
@@ -297,14 +300,77 @@ def test_the_key_summary_counts_against_the_form() -> None:
     unknown_form = GradingPresenter.validation(AnswerKeyValidation(_key(40)))
 
     assert (exact.question_count, exact.unasked_count, exact.errors) == (40, 0, ())
-    assert (fewer.question_count, fewer.unasked_count, fewer.errors) == (35, 5, ())
+    # Rows after the key's last question are simply not on the exam, not 미출제.
+    assert (fewer.question_count, fewer.unasked_count, fewer.errors) == (35, 0, ())
     # The summary shows what this form would grade; the error names the rows past it.
     assert (longer.question_count, longer.unasked_count, longer.total_points) == (40, 0, "40")
     assert longer.errors == (
         "정답표에 41~50번이 있지만 답안지에는 40번까지만 있습니다. "
         "정답표에서 41~50번 행을 지운 뒤 다시 불러오세요.",
     )
-    assert (unknown_form.question_count, unknown_form.unasked_count) == (40, 60)
+    assert (unknown_form.question_count, unknown_form.unasked_count) == (40, 0)
+
+
+def test_the_key_summary_on_a_longer_sheet_counts_only_the_exam() -> None:
+    # A 50-question exam on the 100-question sheet: 50 asked, nothing 미출제.
+    hundred = tuple(range(1, 101))
+    fifty = GradingPresenter.validation(AnswerKeyValidation(_key(50)), hundred)
+    # A blank row inside the key is 미출제; it is still part of the exam's range.
+    gap = _key(40)
+    entries = list(gap.entries)
+    entries[29] = AnswerKeyEntry(30, UNASKED, "0", KeyQuestionStatus.UNASKED)
+    with_gap = GradingPresenter.validation(
+        AnswerKeyValidation(replace(gap, entries=tuple(entries))), hundred
+    )
+
+    assert (fifty.question_count, fifty.unasked_count, fifty.total_points) == (50, 0, "50")
+    assert fifty.errors == ()
+    assert (with_gap.question_count, with_gap.unasked_count, with_gap.total_points) == (
+        39,
+        1,
+        "39",
+    )
+
+
+def test_a_fifty_question_key_on_a_hundred_question_sheet_gives_fifty_columns(
+    tmp_path: Path,
+) -> None:
+    # Everyone leaves Q51..Q100 blank; one student has an unconfirmed mark at Q57.
+    blank = AnswerValue((), AnswerStatus.BLANK)
+    answers = tuple(
+        answer if question <= 50 else blank
+        for question, answer in enumerate(_answers(100), 1)
+    )
+    stray = list(answers)
+    stray[56] = AnswerValue((2,), AnswerStatus.UNCERTAIN)
+    responses = (_effective(1, answers), _effective(2, tuple(stray)))
+    key = _key(50)
+
+    path = write_score_book(
+        tmp_path,
+        exam_name="fifty",
+        committed_at="2026-10-21T01:02:03.123456Z",
+        session_id="session-50",
+        revision=2,
+        manifest_sha256="b" * 64,
+        responses=responses,
+        key=key,
+        scores=score_effective(ScoreInput(responses, key)),
+    )
+
+    book = load_workbook(path)
+    for title in ("채점결과", "결과OX"):
+        assert book[title].max_column == 56
+        assert book[title].cell(1, 55).value == "Q50"
+        assert _painted_columns(book[title]) == set()
+    responses_sheet = book[RESPONSE_SHEET_NAME]
+    assert tuple(cell.value for cell in responses_sheet[1]) == response_headers(50)
+    # Q57 does not count, so it is neither shown nor named; the book imports as it is.
+    assert [responses_sheet.cell(row, 55).value for row in (2, 3)] == [None, None]
+    assert book["판독 근거"].max_column == 54
+    assert book["정답표"].max_row == 51
+    assert book["채점결과"].cell(2, 4).value == 50
+    assert isinstance(_parse(path), Ok)
 
 
 def test_the_grading_use_case_reports_the_printed_questions() -> None:

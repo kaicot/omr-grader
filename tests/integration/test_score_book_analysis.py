@@ -262,11 +262,12 @@ def test_text_columns_are_exempt_from_the_number_stored_as_text_warning(tmp_path
         }
 
     score_title = book.sheetnames[0]
-    assert 'sqref="B2:B14 F2:DA14" numberStoredAsText="1"' in sheets[score_title]
+    # The key asks Q1..Q20, so the answers run F..Y (Q20) and E..X on 응답원본.
+    assert 'sqref="B2:B14 F2:Y14" numberStoredAsText="1"' in sheets[score_title]
     assert 'sqref="B2:B14" numberStoredAsText="1"' in sheets["결과OX"]
-    assert 'sqref="C2:C14 E2:CZ14" numberStoredAsText="1"' in sheets[RESPONSE_SHEET_NAME]
+    assert 'sqref="C2:C14 E2:X14" numberStoredAsText="1"' in sheets[RESPONSE_SHEET_NAME]
     assert 'sqref="B2:B14" numberStoredAsText="1"' in sheets["판독 근거"]
-    assert 'sqref="B2:B101" numberStoredAsText="1"' in sheets["정답표"]
+    assert 'sqref="B2:B21" numberStoredAsText="1"' in sheets["정답표"]
     assert 'sqref="B2:B21" numberStoredAsText="1"' in sheets["문항 분석"]
     assert "ignoredErrors" not in sheets["색 설명"]
     assert all(
@@ -339,8 +340,8 @@ def test_evidence_sheet_shows_margins_and_leaves_imported_rows_blank(tmp_path):
 
     headers = [cell.value for cell in sheet[1]]
     assert headers[:5] == ["순번", "학번", "이름", "Q1", "Q2"]
-    assert headers[102] == "Q100"
-    assert headers[103] == "가장 진한 칸과 두 번째 칸의 차이, 작을수록 판독이 애매함"
+    assert headers[22] == "Q20" and len(headers) == 24
+    assert headers[23] == "가장 진한 칸과 두 번째 칸의 차이, 작을수록 판독이 애매함"
     assert all(cell.font.b for cell in sheet[1]) and sheet.freeze_panes == "D2"
     assert [sheet.cell(2, column).value for column in (1, 2, 4, 5, 6, 7, 8)] == [
         1,

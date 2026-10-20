@@ -34,7 +34,15 @@ from omr_grader.workbooks.score_book import (
 
 
 def test_score_and_final_workbooks_have_exact_projection_shape(tmp_path):
-    key = _key()
+    # The book stops at the key's last asked question; a 0-point '전원' Q100 keeps all 100.
+    base = _key()
+    key = replace(
+        base,
+        entries=(
+            *base.entries[:99],
+            AnswerKeyEntry(100, AnswerValue((), AnswerStatus.ALL), "0", KeyQuestionStatus.ALL),
+        ),
+    )
     first = replace(
         _response("wi_first", (1, 2)),
         corrected_targets=("id_cell:0", "answer_cell:2"),
@@ -294,7 +302,8 @@ def test_outcome_sheet_says_how_each_answer_was_scored(tmp_path):
 
     # Painting never changes what a cell says.
     assert [sheet.cell(3, column).value for column in range(6, 13)] == list("OXOXXOX")
-    assert sheet.cell(3, 55).value == "제외"
+    # Q50 lies past the key's last question (Q20), so the sheet ends with 비고 after Q20.
+    assert sheet.max_column == 26 and sheet.cell(1, 26).value == "비고"
     assert [sheet.cell(4, column).value for column in (8, 9, 10, 14, 22)] == [
         "검토",
         "검토",
@@ -318,8 +327,8 @@ def test_score_sheet_shows_the_chosen_answers(tmp_path):
         1,
         "1,2",
     ]
-    # An unconfirmed Q50 is still shown, although the key does not ask it.
-    assert sheet.cell(3, 55).value == 1
+    # An unconfirmed Q50 past the key's last question is not shown.
+    assert sheet.max_column == 26
     assert [sheet.cell(4, column).value for column in (8, 9, 10, 14, 22)] == [
         2,
         None,
@@ -341,7 +350,7 @@ def test_score_book_names_the_unconfirmed_questions_in_the_note(tmp_path):
     sheet = _scenario(write_score_book, tmp_path)["채점결과"]
 
     # Q50 is unconfirmed too, but the key does not ask it, so the score and note are untouched.
-    assert [sheet.cell(row, 106).value for row in (2, 3, 4)] == [None, None, "확인 필요: 3~5, 17번"]
+    assert [sheet.cell(row, 26).value for row in (2, 3, 4)] == [None, None, "확인 필요: 3~5, 17번"]
 
 
 def test_score_book_appends_the_review_note_to_the_duplicate_id_note(tmp_path):
@@ -351,7 +360,7 @@ def test_score_book_appends_the_review_note_to_the_duplicate_id_note(tmp_path):
     sheet = _write(write_score_book, tmp_path, (review, clean))["채점결과"]
 
     # Same ID and no names: the rows keep the order they arrived in.
-    assert [sheet.cell(row, 106).value for row in (2, 3)] == [
+    assert [sheet.cell(row, 26).value for row in (2, 3)] == [
         "중복확인필요 / 확인 필요: 3, 17번",
         "중복확인필요",
     ]
@@ -402,13 +411,15 @@ def test_response_sheet_of_the_score_book_is_importable_once_reviews_are_cleared
 
     # Only unconfirmed answers are yellow here; the score colors stay on the score sheet.
     assert _painted(sheet, 2) == {}
-    assert _painted(sheet, 3) == {54: YELLOW}
+    # The unconfirmed Q50 is past the key's last question: not shown, not named in 비고.
+    assert _painted(sheet, 3) == {}
     assert _painted(sheet, 4) == {7: YELLOW, 8: YELLOW, 9: YELLOW, 21: YELLOW}
     assert [sheet.cell(3, column).value for column in (6, 7, 8, 9)] == ["3", None, None, "123"]
     assert [sheet.cell(4, column).value for column in (7, 8, 9, 21)] == ["2", None, "12", "4"]
-    assert [sheet.cell(row, 105).value for row in (2, 3, 4)] == [
+    assert sheet.max_column == 25 and sheet.cell(1, 25).value == "비고"
+    assert [sheet.cell(row, 25).value for row in (2, 3, 4)] == [
         None,
-        "확인 필요: 50번",
+        None,
         "확인 필요: 3~5, 17번",
     ]
     path = next(tmp_path.glob("*_채점결과_*.xlsx"))
@@ -426,8 +437,7 @@ def test_response_sheet_of_the_score_book_is_importable_once_reviews_are_cleared
     refused = parse()
     assert isinstance(refused, Err)
     assert refused.errors[0].code == "XLSX_REVIEW_PENDING"
-    for row in (3, 4):
-        sheet.cell(row, 105).value = None
+    sheet.cell(4, 25).value = None
     book.save(path)
     parsed = parse()
     assert isinstance(parsed, Ok)
@@ -440,13 +450,13 @@ def test_final_book_uses_the_same_colors_without_touching_its_extra_columns(tmp_
     assert _painted(sheet, 2) == {}
     assert _painted(sheet, 3) == _WRONG_ROW
     assert _painted(sheet, 4) == _REVIEW_ROW
-    assert sheet.cell(4, 106).value == "확인 필요: 3~5, 17번"
-    assert [sheet.cell(1, column).value for column in (107, 108, 109)] == [
+    assert sheet.cell(4, 26).value == "확인 필요: 3~5, 17번"
+    assert [sheet.cell(1, column).value for column in (27, 28, 29)] == [
         "수정여부",
         "수정문항",
         "확정일시",
     ]
-    assert sheet.max_column == 109
+    assert sheet.max_column == 29
 
 
 @pytest.mark.parametrize(

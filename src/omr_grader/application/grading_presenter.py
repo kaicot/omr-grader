@@ -147,20 +147,24 @@ class GradingPresenter:
             errors = tuple(
                 GradingPresenter.error_text(error) for error in snapshot.validation_errors
             )
-            asked = sum(entry.status is not KeyQuestionStatus.UNASKED for entry in snapshot.entries)
-            unasked = sum(entry.status is KeyQuestionStatus.UNASKED for entry in snapshot.entries)
-            total = sum((Decimal(entry.points) for entry in snapshot.entries), Decimal("0"))
-            if printed is not None:
-                # A 40-question form leaves 60 key rows unasked; they are not 미출제 on it.
-                missing = asked_off_form(snapshot, printed)
-                asked -= len(missing)
-                unasked = len(printed) - asked
-                total -= sum(
-                    (Decimal(entry.points) for entry in snapshot.entries if entry.question in missing),
-                    Decimal("0"),
-                )
-                if missing:
-                    errors = (*errors, off_form_reason(missing, printed))
+            # The summary shows what this exam grades: questions past the form are an error,
+            # and 미출제 counts only rows left blank up to the key's last asked question, so a
+            # 50-question key on a 100-question sheet reads 50 asked, 0 unasked.
+            missing = asked_off_form(snapshot, printed) if printed is not None else ()
+            if missing:
+                errors = (*errors, off_form_reason(missing, printed or ()))
+            graded = [
+                entry
+                for entry in snapshot.entries
+                if entry.status is not KeyQuestionStatus.UNASKED and entry.question not in missing
+            ]
+            last = max((entry.question for entry in graded), default=0)
+            asked = len(graded)
+            unasked = sum(
+                entry.status is KeyQuestionStatus.UNASKED and entry.question <= last
+                for entry in snapshot.entries
+            )
+            total = sum((Decimal(entry.points) for entry in graded), Decimal("0"))
             return AnswerKeyValidationDisplay(
                 None,
                 None,

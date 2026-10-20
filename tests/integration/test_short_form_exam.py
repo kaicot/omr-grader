@@ -59,6 +59,27 @@ def test_a_forty_question_exam_gets_forty_question_books(tmp_path: Path) -> None
     assert all(answer.status is AnswerStatus.UNASKED for answer in row.answers[40:])
 
 
+def test_a_fifty_question_key_on_the_hundred_question_sheet_gives_fifty_question_books(
+    tmp_path: Path,
+) -> None:
+    exam = graded_exam(tmp_path, "fifty", questions=100, key_questions=50)
+
+    (score_path,) = exam.folder.glob("*_채점결과_*.xlsx")
+    book = load_workbook(score_path)
+    for title in ("채점결과", "결과OX"):
+        assert book[title].max_column == 56
+        assert book[title].cell(1, 55).value == "Q50"
+    assert book["채점결과"].cell(2, 4).value == 50
+    assert tuple(cell.value for cell in book[RESPONSE_SHEET_NAME][1]) == response_headers(50)
+    assert book["정답표"].max_row == 51
+    # Before grading nobody knows the key, so the response book follows the printed sheet.
+    (response_path,) = (
+        path for path in exam.folder.rglob("*_응답결과_*.xlsx") if "generations" in path.parts
+    )
+    responses = load_workbook(response_path)[RESPONSE_SHEET_NAME]
+    assert tuple(cell.value for cell in responses[1]) == response_headers(100)
+
+
 def test_a_key_longer_than_the_form_is_refused_with_the_last_printed_question(
     tmp_path: Path,
 ) -> None:

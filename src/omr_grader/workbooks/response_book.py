@@ -211,14 +211,17 @@ def write_effective_response_sheet(
     names_by_student_id: Mapping[str, str],
     *,
     review_notes: bool,
+    questions: int | None = None,
 ) -> int:
     """Fill ``sheet`` in the importable 응답원본 layout from effective responses.
 
     With ``review_notes`` the 비고 also names unconfirmed answers, so a book a teacher
-    re-imports is held back until those yellow cells have been checked.  Returns the
-    number of Q columns written.
+    re-imports is held back until those yellow cells have been checked.  ``questions``
+    sets the Q columns (default: the questions the answer sheets print); answers past it
+    are left out, notes included.  Returns the number of Q columns written.
     """
-    questions = question_count(row.answers for row in rows)
+    if questions is None:
+        questions = question_count(row.answers for row in rows)
     _write_header(sheet, questions)
     for serial, row in enumerate(rows, 1):
         output_row = serial + 1
@@ -233,7 +236,9 @@ def write_effective_response_sheet(
         _text(
             _cell(sheet, output_row, _FIRST_ANSWER_COLUMN + questions),
             join_notes(
-                review_note(_uncertain_questions(row.answers)) if review_notes else "",
+                review_note(_uncertain_questions(row.answers[:questions]))
+                if review_notes
+                else "",
                 "수동 수정 반영" if row.corrected_targets else "",
             ),
         )

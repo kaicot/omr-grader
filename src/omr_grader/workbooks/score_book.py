@@ -257,6 +257,7 @@ def _write(
         ordered,
         names_by_student_id,
         review_notes=True,
+        questions=questions,
     )
     _write_evidence(workbook, ordered, names_by_student_id, evidence_by_work_item, questions)
     _write_answer_key(workbook, key, questions)
@@ -286,15 +287,15 @@ _FIRST_QUESTION_COLUMN = len(_SCORE_HEAD) + 1
 
 
 def book_question_count(responses: Sequence[EffectiveResponse], key: AnswerKeySnapshot) -> int:
-    """How many Q columns the score book shows.
+    """How many Q columns the score book shows: up to the last question the key asks.
 
-    Up to the last question an answer sheet prints, or the last one the key asks if that is
-    later, so no scored question is ever cut off.
+    A 50-question exam on a 100-question sheet stops at Q50; marks past it score nothing.
+    A key that asks nothing falls back to the questions the answer sheets print.
     """
-    asked = (
+    asked = [
         entry.question for entry in key.entries if entry.status is not KeyQuestionStatus.UNASKED
-    )
-    return max(question_count(response.answers for response in responses), *asked, 1)
+    ]
+    return max(asked) if asked else question_count(response.answers for response in responses)
 
 
 def student_order(
