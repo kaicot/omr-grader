@@ -102,6 +102,34 @@ def _cell_text(cell: object, field: str, *, allow_blank: bool = False) -> Result
     return Ok(value)
 
 
+def _number_text(value: object) -> str | None:
+    """An Excel number as the digits a teacher typed: 22420001 or 22420001.0 -> '22420001'.
+
+    Booleans and fractions are not numbers here.  Leading zeros are already lost in a number
+    cell, so a short result is reported as an invalid ID instead of being padded.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return None
+
+
+def _serial_or_id_text(cell: object, field: str) -> Result[str]:
+    """연번 and 학번 accept text, a whole number (Excel's default for typed digits) or blank."""
+    value = getattr(cell, "value", None)
+    if getattr(cell, "data_type", None) == "f":
+        return Err((_error("XLSX_FORMULA_FORBIDDEN", field),))
+    if value is None:
+        return Ok("")
+    number = _number_text(value)
+    if number is not None:
+        return Ok(number)
+    return _cell_text(cell, field)
+
+
 def import_roster(path: str, sheet_name: str) -> Result[RosterSnapshot]:
     """Read a roster as immutable source data; invalid workbooks are never normalized."""
     package = _read_package(path)
@@ -139,14 +167,15 @@ def import_roster(path: str, sheet_name: str) -> Result[RosterSnapshot]:
             if all(cell.value is None for cell in row):
                 continue
             values = (
-                _cell_text(row[0], f"A{row_number}"),
-                _cell_text(row[1], f"B{row_number}", allow_blank=True),
+                _serial_or_id_text(row[0], f"A{row_number}"),
+                _serial_or_id_text(row[1], f"B{row_number}"),
                 _cell_text(row[2], f"C{row_number}", allow_blank=True),
             )
             row_values: list[str] = []
             for result in values:
                 if isinstance(result, Err):
-                    return Err((_error("XLSX_CELL_TYPE", f"row[{row_number}]"),))
+                    # The failing cell (such as B5) lets the message point at it.
+                    return Err((_error("XLSX_CELL_TYPE", result.errors[0].field_path),))
                 row_values.append(result.value)
             serial, parsed_student_id, name = row_values
             if not serial and not parsed_student_id and not name:

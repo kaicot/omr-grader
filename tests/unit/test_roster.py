@@ -90,9 +90,8 @@ def test_roster_rejects_formula_and_n_plus_one_rows(tmp_path, monkeypatch):
     ("row", "code"),
     [
         (("=1", "00123456", "가"), "XLSX_FORMULA_FORBIDDEN"),
-        ((1, "00123456", "가"), "XLSX_CELL_TYPE"),
-        (("1", 12345678, "가"), "XLSX_CELL_TYPE"),
         (("1", True, "가"), "XLSX_CELL_TYPE"),
+        (("1", 2026000.5, "가"), "XLSX_CELL_TYPE"),
         (("1", "00123456", date(2026, 1, 1)), "XLSX_CELL_TYPE"),
         (("1", "00123456", "#DIV/0!"), "XLSX_CELL_TYPE"),
     ],
@@ -109,6 +108,40 @@ def test_roster_rejects_formula_and_non_text_physical_cells(tmp_path, row, code)
 
     assert isinstance(result, Err)
     assert result.errors[0].code == code
+
+
+def test_a_cell_error_names_the_cell(tmp_path):
+    path = tmp_path / "roster.xlsx"
+    _book(path, [("1", "20260001", "가"), ("2", True, "나")])
+
+    result = roster.import_roster(str(path), "명단")
+
+    assert isinstance(result, Err)
+    assert (result.errors[0].code, result.errors[0].field_path) == ("XLSX_CELL_TYPE", "B3")
+
+
+def test_numbers_typed_in_excel_are_read_as_serials_and_ids(tmp_path):
+    # Excel stores typed digits as numbers: 연번 1, 2, 3 and 학번 20260001 must still import.
+    path = tmp_path / "roster.xlsx"
+    _book(
+        path,
+        [
+            (1, 20260001, "가"),
+            (2.0, 20260002.0, "나"),
+            (None, "20260003", "다"),
+            # A leading zero is lost in a number cell; the short ID is flagged, never padded.
+            (4, 2026000, "라"),
+        ],
+    )
+
+    result = roster.import_roster(str(path), "명단")
+
+    assert isinstance(result, Ok)
+    rows = result.value.rows
+    assert [row.raw_student_id for row in rows] == ["20260001", "20260002", "20260003", "2026000"]
+    assert [row.student_id for row in rows] == ["20260001", "20260002", "20260003", None]
+    assert [row.status for row in rows[:3]] == [RosterRowStatus.NORMAL] * 3
+    assert rows[3].status is RosterRowStatus.INVALID_ID
 
 
 @pytest.mark.parametrize(

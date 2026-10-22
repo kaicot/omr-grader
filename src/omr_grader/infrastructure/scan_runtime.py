@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tempfile
 import uuid
 from collections.abc import Callable
@@ -93,10 +94,41 @@ _ROSTER_UNREADABLE = (
     "명단 파일을 읽지 못했습니다. 첫 시트의 첫 줄이 '연번 · 학번 · 이름' 세 칸인지 확인하고, "
     "Excel로 열어 다시 저장한 뒤 시도하세요. 명단 없이도 인식할 수 있습니다."
 )
+_ROSTER_WITHOUT = " 명단 없이도 인식할 수 있습니다."
+_ROSTER_COLUMNS = {"A": "연번", "B": "학번", "C": "이름"}
+_ROSTER_CELL = re.compile(r"([ABC])([0-9]+)")
 
 
-def _roster_failure(code: str, site: str | None = None) -> Err:
-    context: dict[str, str | int | bool | None] = {"reason": _ROSTER_UNREADABLE}
+def _roster_reason(code: str, field: str | None) -> str:
+    """Say what is wrong with the roster, and where, in the teacher's terms."""
+    cell = _ROSTER_CELL.fullmatch(field or "")
+    if code == "XLSX_CELL_TYPE" and cell is not None:
+        column, row = cell.groups()
+        return (
+            f"명단 {row}행 {column}칸({_ROSTER_COLUMNS[column]})을 읽지 못했습니다. 연번 · 학번은"
+            " 숫자나 글자로, 이름은 글자로 적어 주세요." + _ROSTER_WITHOUT
+        )
+    if code == "XLSX_FORMULA_FORBIDDEN":
+        where = f" {field} 칸" if cell is not None else ""
+        return (
+            f"명단{where}에 수식이 있습니다. 수식을 값으로 바꿔 저장한 뒤 다시 고르세요."
+            + _ROSTER_WITHOUT
+        )
+    if code == "XLSX_HEADERS_INVALID":
+        return (
+            "명단 첫 시트의 첫 줄이 '연번 · 학번 · 이름' 세 칸이 아닙니다. 첫 줄을 이렇게 고친 뒤"
+            " 다시 고르세요." + _ROSTER_WITHOUT
+        )
+    if code == "XLSX_DIMENSION_QUOTA":
+        return (
+            "명단 첫 시트는 연번 · 학번 · 이름 세 칸만 써야 합니다(10만 줄까지). 오른쪽에 다른 칸이 있으면"
+            " 지운 뒤 다시 고르세요." + _ROSTER_WITHOUT
+        )
+    return _ROSTER_UNREADABLE
+
+
+def _roster_failure(code: str, site: str | None = None, field: str | None = None) -> Err:
+    context: dict[str, str | int | bool | None] = {"reason": _roster_reason(code, field)}
     if site is not None:
         context["site"] = site
     return Err((ErrorInfo(code, f"error.{code.lower()}", "roster_path", context=context),))
@@ -500,7 +532,9 @@ class ScanRuntime:
         except Exception as error:  # noqa: BLE001 - a roster is untrusted input; report, never crash
             return _roster_failure(f"ROSTER_{type(error).__name__.upper()}", error_site(error))
         if isinstance(imported, Err):
-            return _roster_failure(imported.errors[0].code)
+            return _roster_failure(
+                imported.errors[0].code, field=imported.errors[0].field_path
+            )
         return imported
 
     def _artifacts(
