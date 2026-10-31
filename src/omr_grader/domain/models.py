@@ -35,6 +35,10 @@ from .enums import (
 from .errors import ErrorInfo
 
 SCHEMA_VERSION = 1
+# The data format of Data/FORMAT.json and of .omrbak archives, raised together whenever an
+# older program would misread what this one writes (2: student-ID fixes, 4.5.0).  An older
+# program opens a newer folder read-only and refuses a newer archive.
+DATA_FORMAT_VERSION = 2
 _DIGITS = re.compile(r"^[0-9]{1,8}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
@@ -1210,7 +1214,9 @@ class ArchiveManifest(_Wire):
 
     def __post_init__(self) -> None:
         _schema(self.schema_version)
-        if type(self.format_version) is not int or self.format_version != 1:
+        if type(self.format_version) is not int or not 1 <= self.format_version <= (
+            DATA_FORMAT_VERSION
+        ):
             raise ValueError("unsupported archive format version")
         _text(self.app_version, "app_version")
         _timestamp(self.exported_at)

@@ -16,9 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.models import DATA_FORMAT_VERSION
 from omr_grader.infrastructure.atomic_io import atomic_write_json
 
-DATA_FORMAT = 2
+DATA_FORMAT = DATA_FORMAT_VERSION
 FORMAT_FILENAME = "FORMAT.json"
 
 

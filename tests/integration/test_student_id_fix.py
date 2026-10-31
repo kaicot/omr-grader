@@ -7,6 +7,7 @@ the first student meant 20260009 but bubbled 20260001, the second reads 20260002
 from __future__ import annotations
 
 import json
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -33,6 +34,7 @@ from omr_grader.application.id_fix_use_case import StudentIdFixCommand, StudentI
 from omr_grader.bootstrap import bootstrap
 from omr_grader.domain.enums import ExamTerm, SnapshotPurpose, StudentIdStatus
 from omr_grader.domain.errors import Err, Ok
+from omr_grader.domain.models import DATA_FORMAT_VERSION
 from omr_grader.infrastructure.combined_report import export_combined_report
 from omr_grader.infrastructure.detail_repository import DetailRepository
 from omr_grader.infrastructure.form_detection import FormDetector
@@ -368,3 +370,20 @@ def test_a_backup_carries_the_fix_to_another_install(school: _School, tmp_path: 
     read = reader.read_grading_snapshot(restored.value.session_id, restored.value.revision)
     assert isinstance(read, Ok)
     assert {item.student_id for item in read.value.shown_responses} == {MEANT, OTHER}
+
+    # The archive says format 2, which 4.4 and older refuse; a newer one is refused here.
+    with zipfile.ZipFile(archive) as package:
+        names = package.namelist()
+        wrapper_name = next(name for name in names if name.endswith("archive_manifest.json"))
+        wrapper = json.loads(package.read(wrapper_name))
+        payloads = {name: package.read(name) for name in names}
+    assert wrapper["format_version"] == DATA_FORMAT_VERSION == 2
+    newer = tmp_path / "newer.omrbak"
+    with zipfile.ZipFile(newer, "w") as package:
+        for name, payload in payloads.items():
+            if name == wrapper_name:
+                payload = json.dumps({**wrapper, "format_version": 3}).encode("utf-8")
+            package.writestr(name, payload)
+    refused = service.validate_backup(BackupValidateRequest(str(newer)))
+    assert isinstance(refused, Err)
+    assert refused.errors[0].code == "BACKUP_FORMAT_NEWER"

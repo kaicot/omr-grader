@@ -28,6 +28,7 @@ from omr_grader.application.validation_token import (
 from omr_grader.domain.enums import ArchiveLineageMode
 from omr_grader.domain.errors import Err, ErrorContextValue, ErrorInfo, Ok, Result
 from omr_grader.domain.models import (
+    DATA_FORMAT_VERSION,
     ArchiveEntry,
     ArchiveManifest,
     CurrentPointer,
@@ -187,7 +188,8 @@ class BackupArchive:
                 entries.append(ArchiveEntry(path, item.media_type, item.size, item.sha256))
             archive_manifest = ArchiveManifest(
                 1,
-                1,
+                # A 4.4 or older program refuses any archive format but 1.
+                DATA_FORMAT_VERSION,
                 "omr-grader",
                 manifest.created_at,
                 ArchiveLineageMode.CURRENT_ONLY,
@@ -541,9 +543,17 @@ class BackupArchive:
             wrapper_info = infos.get(_ARCHIVE_MANIFEST)
             if wrapper_info is None:
                 return _error("BACKUP_ARCHIVE_INVALID")
-            archive_manifest = ArchiveManifest.from_dict(
-                _mapping(self._read_json(archive, wrapper_info, metadata=True))
-            )
+            wrapper = _mapping(self._read_json(archive, wrapper_info, metadata=True))
+            format_version = wrapper.get("format_version")
+            if type(format_version) is int and format_version > DATA_FORMAT_VERSION:
+                return _error(
+                    "BACKUP_FORMAT_NEWER",
+                    reason=(
+                        "더 새 버전 OMR Grader에서 만든 백업이라 이 버전에서는 복구할 수 없습니다."
+                        " 새 버전으로 복구하세요."
+                    ),
+                )
+            archive_manifest = ArchiveManifest.from_dict(wrapper)
             if archive_manifest.lineage_mode is not ArchiveLineageMode.CURRENT_ONLY:
                 raise ValueError("not a current-only archive")
             name = f"g{archive_manifest.revision:08d}_{archive_manifest.generation_id}"
