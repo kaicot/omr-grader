@@ -36,6 +36,7 @@ from omr_grader.domain.models import (
     CorrectionEvent,
     EffectiveResponse,
     ImportedResponseRef,
+    RosterSnapshot,
     SessionRecord,
 )
 from omr_grader.domain.score_average import with_rounded_average
@@ -55,6 +56,8 @@ class DetailListRow:
     score: str | None
     rank: int | None
     has_image: bool
+    # The ID this sheet read as when a teacher fixed it ('' if unreadable); None if not fixed.
+    fixed_from: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,6 +499,9 @@ class DetailRepository:
                         item.get("score") if isinstance(item.get("score"), str) else None,
                         item.get("rank") if type(item.get("rank")) is int else None,
                         image_path is not None,
+                        item.get("fixed_from")
+                        if isinstance(item.get("fixed_from"), str)
+                        else None,
                     )
                 )
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -549,6 +555,27 @@ class DetailRepository:
             except OSError:
                 return _error("DETAIL_IMAGE_INVALID", "선택한 이미지 자료를 읽을 수 없습니다.")
         return Ok(WorkItemDetail(work_item_id, payload, image))
+
+    def read_roster(self, handle_id: str) -> Result[tuple[tuple[str, str], ...]]:
+        """The exam's roster as (student ID, name) pairs, for finding a student by name."""
+        opened = self._opened.get(handle_id)
+        if opened is None:
+            return _error("DETAIL_HANDLE_INVALID", "상세 화면 핸들이 유효하지 않습니다.")
+        stream = opened.lease.open_allowlisted("semantic_inputs.json")
+        if isinstance(stream, Err):
+            return Ok(())
+        try:
+            with stream.value:
+                combined = _mapping(_mapping(json.load(stream.value))["combined"])
+            roster = RosterSnapshot.from_dict(_mapping(combined["roster"]))
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            # Only name search and the orange marks need the roster; the page opens without.
+            return Ok(())
+        return Ok(
+            tuple(
+                (row.student_id, row.name) for row in roster.rows if row.student_id is not None
+            )
+        )
 
     def close_detail(self, handle_id: str) -> Result[None]:
         opened = self._opened.get(handle_id)

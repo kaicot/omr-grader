@@ -32,6 +32,7 @@ from omr_grader.domain.enums import (
     SnapshotPurpose,
 )
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.id_fixes import ID_FIXES_FILE, StudentIdFix, fixes_from_wire, validate_fixes
 from omr_grader.domain.models import (
     AnswerKeyEntry,
     AnswerKeySnapshot,
@@ -444,8 +445,16 @@ class CommittedGradingSnapshotReader:
                 or lease.manifest.summary.maximum_score != format(scores.maximum_score, "f")
             ):
                 raise ValueError("canonical scores do not match manifest summary")
+            fixes: tuple[StudentIdFix, ...] = ()
+            fixes_stream = lease.open_allowlisted(ID_FIXES_FILE)
+            if not isinstance(fixes_stream, Err):
+                with fixes_stream.value:
+                    fixes = fixes_from_wire(json.load(fixes_stream.value))
+                validate_fixes(fixes, ids)
             return Ok(
-                CommittedGradingSnapshot(record.state, answer_key, responses, projection, scores)
+                CommittedGradingSnapshot(
+                    record.state, answer_key, responses, projection, scores, fixes
+                )
             )
         except (
             OSError,

@@ -17,6 +17,7 @@ from omr_grader.domain.enums import (
     SessionState,
     SnapshotPurpose,
 )
+from omr_grader.domain.id_fixes import StudentIdFix, validate_fixes
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
     AutomaticPage,
@@ -567,12 +568,30 @@ class MetadataSemanticView:
             raise TypeError("metadata view must contain a SessionRecord")
 
 
+@dataclass(frozen=True, slots=True)
+class StudentIdFixView:
+    """The full set of student-ID fixes an exam should carry after this operation."""
+
+    state: SessionState
+    fixes: tuple[StudentIdFix, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, SessionState):
+            raise TypeError("state must be SessionState")
+        if not isinstance(self.fixes, tuple) or not all(
+            isinstance(fix, StudentIdFix) for fix in self.fixes
+        ):
+            raise TypeError("fixes must be StudentIdFix values")
+        validate_fixes(self.fixes)
+
+
 type GenerationSemanticInputs = (
     RecognitionSemanticView
     | ImportSemanticView
     | CorrectionSemanticView
     | GradingSemanticView
     | MetadataSemanticView
+    | StudentIdFixView
 )
 
 
@@ -630,7 +649,8 @@ class GenerationMutation:
             | ImportSemanticView
             | CorrectionSemanticView
             | GradingSemanticView
-            | MetadataSemanticView,
+            | MetadataSemanticView
+            | StudentIdFixView,
         ):
             raise TypeError("semantic_inputs must be a typed semantic view")
         if self.projection_request is not None and not isinstance(
@@ -681,6 +701,15 @@ class GenerationMutation:
                 raise ValueError("semantic input does not match operation kind")
             if self.target_state is not self.semantic_inputs.session.state:
                 raise ValueError("METADATA_EDIT must preserve the current state")
+            return
+        if self.operation_kind is OperationKind.FIX_STUDENT_ID:
+            if not isinstance(self.semantic_inputs, StudentIdFixView):
+                raise ValueError("semantic input does not match operation kind")
+            if (
+                self.semantic_inputs.state not in (SessionState.RECOGNIZED, SessionState.GRADED)
+                or self.target_state is not self.semantic_inputs.state
+            ):
+                raise ValueError("FIX_STUDENT_ID keeps a RECOGNIZED or GRADED exam in its state")
             return
         raise AssertionError("unreachable closed OperationKind")
 

@@ -118,7 +118,8 @@ def load_part_scores(
         for entry, is_asked in zip(key.entries, asked, strict=True)
     )
     students: list[tuple[int, PartStudent]] = []
-    for position, response in enumerate(snapshot.responses):
+    # Parts are matched by student ID, so the teacher's ID fixes must count here.
+    for position, response in enumerate(snapshot.shown_responses):
         outcomes = question_outcomes(response, key)
         held_back = REVIEW in outcomes
         earned = tuple(

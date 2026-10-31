@@ -9,7 +9,7 @@ import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import cv2
 import numpy as np
@@ -23,6 +23,7 @@ from omr_grader.application.dto import (
     RecognitionSemanticView,
     ScoreInput,
     ScoreSet,
+    StudentIdFixView,
 )
 from omr_grader.domain.corrections import (
     CorrectionState,
@@ -33,6 +34,15 @@ from omr_grader.domain.corrections import (
 from omr_grader.domain.enums import AnswerStatus, CellStatus, OperationKind
 from omr_grader.domain.errors import Err
 from omr_grader.domain.grading import score_effective
+from omr_grader.domain.id_fixes import (
+    ID_FIXES_FILE,
+    StudentIdFix,
+    apply_id_fixes,
+    fixes_from_wire,
+    fixes_to_wire,
+    read_ids,
+    validate_fixes,
+)
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
     AnswerRecognition,
@@ -287,6 +297,13 @@ class GenerationMaterializer:
             )
         _materialize_correction_events(request, correction_state)
         combined = _combined(request, parent, projection, correction_state)
+        # What was read stays canonical in semantic_inputs.json; teacher ID fixes are laid
+        # over it for everything that shows a student (details, books, image names).
+        fixes = _target_id_fixes(request, combined)
+        if fixes:
+            request.token.write_json(ID_FIXES_FILE, fixes_to_wire(fixes))
+        shown = _with_id_fixes(combined, fixes)
+        id_notes = read_ids(fixes)
         review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...] = (
             projection.automatic_pages
             if projection is not None
@@ -332,22 +349,61 @@ class GenerationMaterializer:
                 )
             self._write_details(
                 request,
-                combined,
+                cast(dict[str, object], shown),
                 review_pages,
                 persist_recognition=not compact,
+                id_notes=id_notes,
             )
         if mutation.operation_kind in (
             OperationKind.REGRADE,
             OperationKind.FINALIZE,
             OperationKind.CORRECT,
+        ) or (
+            mutation.operation_kind is OperationKind.FIX_STUDENT_ID
+            and shown is not None
+            and shown.get("scores") is not None
         ):
-            self._write_workbook(request, combined, review_pages)
+            self._write_workbook(request, shown, review_pages, id_notes)
+        elif mutation.operation_kind is OperationKind.FIX_STUDENT_ID:
+            self._write_response_book(request, shown, id_notes)
+
+    def _write_response_book(
+        self,
+        request: GenerationMaterializationInput,
+        combined: dict[str, object] | None,
+        id_notes: Mapping[str, str],
+    ) -> None:
+        """Rewrite the before-grading response book of an exam whose student IDs changed."""
+        if combined is None:
+            raise ValueError("required pinned generation inputs are absent")
+        responses = tuple(
+            EffectiveResponse.from_dict(_mapping(value)) for value in _array(combined, "responses")
+        )
+        roster = RosterSnapshot.from_dict(_object(combined, "roster"))
+        names = {row.student_id: row.name for row in roster.rows if row.student_id is not None}
+        for relative in (
+            response_filename(request.record.exam_name, request.record.created_at),
+            "responses.xlsx",
+        ):
+            output = request.token.path(relative)
+            write_effective_response_projection(
+                output,
+                responses,
+                session_id=request.record.session_id,
+                revision=request.record.revision,
+                manifest_sha256=request.parent_manifest_sha256,
+                names_by_student_id=names,
+                review_notes=True,
+                id_notes=id_notes,
+            )
+            _validate_xlsx(output)
 
     def _write_workbook(
         self,
         request: GenerationMaterializationInput,
         combined: dict[str, object] | None,
         review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...],
+        id_notes: Mapping[str, str] | None = None,
     ) -> None:
         if combined is None:
             raise ValueError("required pinned generation inputs are absent")
@@ -367,6 +423,7 @@ class GenerationMaterializer:
             revision=request.record.revision,
             manifest_sha256=request.parent_manifest_sha256,
             names_by_student_id=names,
+            id_notes=id_notes,
         )
         _validate_xlsx(response_output)
         evidence = {_page_work_item_id(page): page.evidence for page in review_pages}
@@ -390,6 +447,7 @@ class GenerationMaterializer:
                 scores=scores,
                 names_by_student_id=names,
                 evidence_by_work_item=evidence,
+                id_notes=id_notes,
             )
         else:
             output = write_score_book(
@@ -404,6 +462,7 @@ class GenerationMaterializer:
                 scores=scores,
                 names_by_student_id=names,
                 evidence_by_work_item=evidence,
+                id_notes=id_notes,
             )
         _validate_xlsx(output)
         request.token.write_bytes(output.name, output.read_bytes())
@@ -417,8 +476,12 @@ class GenerationMaterializer:
         review_pages: tuple[AutomaticPage | _ReviewGeometryPage, ...],
         *,
         persist_recognition: bool = True,
+        id_notes: Mapping[str, str] | None = None,
     ) -> None:
-        """Write immutable, allowlisted detail documents from pinned canonical inputs."""
+        """Write immutable, allowlisted detail documents from pinned canonical inputs.
+
+        A sheet whose student ID was fixed records the ID it read as under ``fixed_from``.
+        """
         responses = tuple(
             EffectiveResponse.from_dict(_mapping(value)) for value in _array(combined, "responses")
         )
@@ -514,23 +577,64 @@ class GenerationMaterializer:
                     "payload": payload,
                 },
             )
-            index.append(
-                {
-                    "work_item_id": response.work_item_id,
-                    "detail_path": detail_path,
-                    "image_path": image_path,
-                    "student_id": response.student_id,
-                    "student_name": (
-                        names.get(response.student_id) if response.student_id is not None else None
-                    ),
-                    "score": score,
-                    "rank": rank,
-                }
-            )
+            entry: dict[str, object] = {
+                "work_item_id": response.work_item_id,
+                "detail_path": detail_path,
+                "image_path": image_path,
+                "student_id": response.student_id,
+                "student_name": (
+                    names.get(response.student_id) if response.student_id is not None else None
+                ),
+                "score": score,
+                "rank": rank,
+            }
+            if id_notes and response.work_item_id in id_notes:
+                entry["fixed_from"] = id_notes[response.work_item_id]
+            index.append(entry)
         request.token.write_json(
             "detail_index.json",
             {"schema_version": 1, "snapshot": snapshot, "work_items": index},
         )
+
+
+def _target_id_fixes(
+    request: GenerationMaterializationInput, combined: dict[str, object] | None
+) -> tuple[StudentIdFix, ...]:
+    """The fixes this generation carries: the operation's own, else the parent's."""
+    semantic = request.mutation.semantic_inputs
+    if isinstance(semantic, StudentIdFixView):
+        fixes = semantic.fixes
+    elif ID_FIXES_FILE in {entry.path for entry in request.parent_manifest.files}:
+        try:
+            document = json.loads(
+                (request.parent_generation / ID_FIXES_FILE).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("committed student ID fixes are unreadable") from error
+        fixes = fixes_from_wire(document)
+    else:
+        return ()
+    if combined is not None:
+        validate_fixes(
+            fixes,
+            (
+                str(_mapping(value).get("work_item_id"))
+                for value in _array(combined, "responses")
+            ),
+        )
+    return fixes
+
+
+def _with_id_fixes(
+    combined: dict[str, object] | None, fixes: tuple[StudentIdFix, ...]
+) -> dict[str, object] | None:
+    if combined is None or not fixes:
+        return combined
+    responses = tuple(
+        EffectiveResponse.from_dict(_mapping(value)) for value in _array(combined, "responses")
+    )
+    shown = apply_id_fixes(responses, fixes)
+    return {**combined, "responses": [item.to_dict() for item in shown]}
 
 
 def _page_work_item_id(page: AutomaticPage | _ReviewGeometryPage) -> str:
@@ -1119,6 +1223,7 @@ def _grading_envelope(
         OperationKind.CORRECT,
         OperationKind.REGRADE,
         OperationKind.FINALIZE,
+        OperationKind.FIX_STUDENT_ID,
     ):
         key = AnswerKeySnapshot.from_dict(_object(combined, "answer_key"))
         responses = tuple(

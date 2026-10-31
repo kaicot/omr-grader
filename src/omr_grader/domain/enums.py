@@ -18,6 +18,7 @@ class OperationKind(StrEnum):
     REGRADE = "regrade"
     FINALIZE = "finalize"
     METADATA_EDIT = "metadata_edit"
+    FIX_STUDENT_ID = "fix_student_id"
 
 
 class SourceKind(StrEnum):

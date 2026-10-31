@@ -74,6 +74,8 @@ class DetailStudentDisplay:
     cells: tuple[NormalizedCell, ...] = ()
     id_digits: tuple[int | None, ...] = ()
     id_conflict: str | None = None
+    # When a teacher fixed this sheet's ID: the ID it read as ('' if unreadable).
+    fixed_from: str | None = None
 
     def __post_init__(self) -> None:
         _text(self.work_item_id, "work_item_id")
@@ -102,6 +104,8 @@ class DetailStudentDisplay:
             raise TypeError("cells must contain NormalizedCell values")
         if self.id_conflict is not None and not isinstance(self.id_conflict, str):
             raise TypeError("id_conflict must be str or None")
+        if self.fixed_from is not None and not isinstance(self.fixed_from, str):
+            raise TypeError("fixed_from must be str or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +132,10 @@ class DetailPageDisplay:
     summary: DetailSummaryDisplay
     students: tuple[DetailStudentDisplay, ...]
     detail_handle: str | None = None
+    # (student ID, name) pairs to find a student by name when fixing an ID.
+    roster: tuple[tuple[str, str], ...] = ()
+    # Whether this exam's student IDs may be fixed (scanned or graded, write access).
+    id_fixable: bool = False
 
     def __post_init__(self) -> None:
         _text(self.session_id, "session_id")

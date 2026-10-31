@@ -19,7 +19,7 @@ from openpyxl.styles.styleable import StyleableObject
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from omr_grader.domain.enums import AnswerStatus
+from omr_grader.domain.enums import AnswerStatus, StudentIdStatus
 from omr_grader.domain.models import AnswerValue, EffectiveResponse, ImportedResponseRef
 
 from .schemas import (
@@ -122,6 +122,13 @@ def review_note(questions: Iterable[int]) -> str:
     return f"확인 필요: {', '.join(spans)}번" if spans else ""
 
 
+def id_fix_note(read_id: str | None) -> str:
+    """비고 text for a sheet whose student ID a teacher fixed ('' when not fixed)."""
+    if read_id is None:
+        return ""
+    return f"학번 수정(원래 {read_id or '판독 불가'})"
+
+
 def recognition_note(answers: Sequence[AnswerValue], *, student_id_valid: bool) -> str:
     """비고 text for a recognized row: unconfirmed answers first, then an unusable student ID."""
     return join_notes(
@@ -212,13 +219,15 @@ def write_effective_response_sheet(
     *,
     review_notes: bool,
     questions: int | None = None,
+    id_notes: Mapping[str, str] | None = None,
 ) -> int:
     """Fill ``sheet`` in the importable 응답원본 layout from effective responses.
 
     With ``review_notes`` the 비고 also names unconfirmed answers, so a book a teacher
     re-imports is held back until those yellow cells have been checked.  ``questions``
     sets the Q columns (default: the questions the answer sheets print); answers past it
-    are left out, notes included.  Returns the number of Q columns written.
+    are left out, notes included.  ``id_notes`` maps a sheet whose ID was fixed to the ID it
+    read as.  Returns the number of Q columns written.
     """
     if questions is None:
         questions = question_count(row.answers for row in rows)
@@ -239,7 +248,14 @@ def write_effective_response_sheet(
                 review_note(_uncertain_questions(row.answers[:questions]))
                 if review_notes
                 else "",
+                # As the scan-time book says it: the ID could not be read as a valid one.
+                "학번 확인 필요"
+                if review_notes
+                and row.student_id_status
+                not in (StudentIdStatus.NORMAL, StudentIdStatus.DUPLICATE)
+                else "",
                 "수동 수정 반영" if row.corrected_targets else "",
+                id_fix_note((id_notes or {}).get(row.work_item_id)),
             ),
         )
     style_header_row(sheet)
@@ -254,15 +270,21 @@ def write_effective_response_projection(
     revision: int,
     manifest_sha256: str,
     names_by_student_id: dict[str, str],
+    review_notes: bool = False,
+    id_notes: Mapping[str, str] | None = None,
 ) -> None:
-    """Write corrected effective responses as the durable regrade input workbook."""
+    """Write corrected effective responses as the durable regrade input workbook.
+
+    ``review_notes`` names unconfirmed answers in 비고, as the book a teacher sees before
+    grading does; ``id_notes`` marks sheets whose student ID was fixed.
+    """
     workbook = Workbook(write_only=False)
     sheet = workbook.active
     if not isinstance(sheet, Worksheet):
         raise RuntimeError("new workbook must have an active worksheet")
     sheet.title = RESPONSE_SHEET_NAME
     questions = write_effective_response_sheet(
-        sheet, rows, names_by_student_id, review_notes=False
+        sheet, rows, names_by_student_id, review_notes=review_notes, id_notes=id_notes
     )
     workbook.properties.creator = "OMR Grader"
     custom_doc_props = cast(Any, workbook).custom_doc_props
@@ -279,6 +301,7 @@ def write_effective_response_projection(
 
 
 __all__ = [
+    "id_fix_note",
     "join_notes",
     "mark_review",
     "recognition_note",

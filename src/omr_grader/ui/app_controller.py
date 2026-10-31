@@ -26,6 +26,7 @@ from omr_grader.application.detail_presenter import (
     DetailPageRequest,
     DetailPreviewResult,
     DetailSaveResult,
+    DetailStudentDisplay,
 )
 from omr_grader.application.dto import (
     AnswerKeyRequest,
@@ -56,6 +57,7 @@ from omr_grader.application.grading_presenter import (
     GradingPresenter,
     GradingProgressDisplay,
 )
+from omr_grader.application.id_fix_use_case import StudentIdFixCommand
 from omr_grader.application.ports import (
     AnswerKeyUseCase,
     GradingUseCase,
@@ -85,6 +87,7 @@ from omr_grader.ui.dashboard_page import DashboardGlobalRequest, DashboardPage, 
 from omr_grader.ui.detail_page import DetailPage
 from omr_grader.ui.form_confirm_dialog import FormConfirmDialog
 from omr_grader.ui.grading_page import GradingPage
+from omr_grader.ui.id_fix_dialog import IdFixDialog
 from omr_grader.ui.import_widgets import ImportKind, ImportSelection
 from omr_grader.ui.main_window import MainWindow
 from omr_grader.ui.profile_labels import form_label, form_summary
@@ -145,6 +148,14 @@ class FreshResponseIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class _IdFixOutcome:
+    """A committed student-ID fix and the detail page reopened at its revision (if it opened)."""
+
+    committed: CommitGenerationResult
+    reopened: DetailPageDisplay | None
+
+
+@dataclass(frozen=True, slots=True)
 class ServicePorts:
     """Explicit controller dependencies; page widgets never perform adapter I/O."""
 
@@ -198,6 +209,8 @@ class ServicePorts:
     update_prefs_save: Callable[[UpdatePreferences], None] | None = None
     # Copy exams, forms and settings from an older install folder.
     data_import: Callable[[str, Callable[[object], None]], Result[ImportSummary]] | None = None
+    # Fix (or undo the fix of) one answer sheet's student ID.
+    id_fix: Callable[[StudentIdFixCommand], Result[CommitGenerationResult]] | None = None
     # A fresh folder. The controller no longer asks about importing on first start; the
     # dashboard offers it while it is empty. Kept so existing callers still construct this.
     first_run: bool = False
@@ -462,6 +475,8 @@ class AppController(QObject):
         # Trash entries just loaded; the dialog opens once the loading worker has ended, so
         # the page is no longer busy and the dialog's request can start a new worker.
         self._trash_entries_pending: tuple[DashboardIndexEntry, ...] | None = None
+        self._pending_id_fix: tuple[DetailPageDisplay, str] | None = None
+        self._id_fix_running = False
         self._status_after_work: str | None = None
         # An action asked for while the previous worker's thread was only ending; it starts
         # once that thread is gone.
@@ -511,6 +526,7 @@ class AppController(QObject):
         self.detail_page.unsaved_changes_requested.connect(self._confirm_detail_exit)
         self.detail_page.work_item_load_requested.connect(self._load_detail_work_item)
         self.detail_page.preview_requested.connect(self._preview_detail)
+        self.detail_page.id_fix_requested.connect(self._fix_student_id)
         self.settings_page.save_requested.connect(self._save_settings)
         self.settings_page.profile_browse_requested.connect(self._pick_settings_profile)
         self.settings_page.profile_import_requested.connect(self._import_profile)
@@ -1063,6 +1079,108 @@ class AppController(QObject):
             self.dashboard_page.set_busy,
         )
 
+    def _fix_student_id(self, display: object, student: object) -> None:
+        """Ask for the right ID of one answer sheet and commit it as a new generation.
+
+        The commit and the reopening of the detail page at the new revision both run in the
+        worker; the detail page stays locked until the worker has finished.
+        """
+        if not isinstance(display, DetailPageDisplay) or not isinstance(
+            student, DetailStudentDisplay
+        ):
+            return
+        if self._worker_active():
+            self._refuse_busy()
+            return
+        handler = self.services.id_fix
+        if handler is None or not self.write_enabled:
+            self.main_window.show_diagnostic(_error_text(self._unavailable()))
+            return
+        others = {
+            item.student_id: item.name or f"석차 {item.rank or '-'}"
+            for item in display.students
+            if item.work_item_id != student.work_item_id and item.student_id
+        }
+        dialog = IdFixDialog(display.exam_name, student, display.roster, others, self.main_window)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        chosen, undo = dialog.chosen_id, dialog.undo
+        dialog.deleteLater()
+        if not accepted or (chosen is None and not undo):
+            return
+        command = StudentIdFixCommand(
+            display.session_id,
+            display.revision,
+            uuid4().hex,
+            student.work_item_id,
+            None if undo else chosen,
+        )
+        opener = self.services.dashboard_detail
+        invalid = self._invalid_service_result()
+
+        def operation() -> object:
+            fixed = handler(command)
+            if isinstance(fixed, Err):
+                return fixed
+            if not isinstance(fixed, Ok) or not isinstance(fixed.value, CommitGenerationResult):
+                return Err((invalid,))
+            reopened: DetailPageDisplay | None = None
+            if opener is not None:
+                opened = opener(
+                    DashboardSelection((fixed.value.session_id,), (fixed.value.revision,))
+                )
+                if isinstance(opened, Ok) and isinstance(opened.value, DetailPageDisplay):
+                    reopened = opened.value
+            return _IdFixOutcome(fixed.value, reopened)
+
+        self._pending_id_fix = (display, student.work_item_id)
+        self._id_fix_running = True
+        self.detail_page.set_busy(True)
+        started = self._start_desktop_action(
+            self.dashboard_page,
+            operation,
+            self._finish_id_fix,
+            lambda _busy: None,
+            operation_id=command.operation_id,
+        )
+        if not started:
+            self._end_id_fix()
+
+    def _end_id_fix(self) -> None:
+        self._pending_id_fix = None
+        self._id_fix_running = False
+        self.detail_page.set_busy(False)
+
+    def _finish_id_fix(self, result: object) -> None:
+        pending, self._pending_id_fix = self._pending_id_fix, None
+        if not isinstance(result, _IdFixOutcome) or pending is None:
+            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+            return
+        old, work_item_id = pending
+        # The exam list shows the new revision once this action's worker has finished.
+        self._dashboard_reload_pending = True
+        closer = self.services.detail_close
+        if result.reopened is None:
+            self.main_window.show_diagnostic(
+                "학번을 고쳤습니다. 상세 화면을 새로 열지 못해 시험 관리로 돌아갑니다."
+                " 시험 관리에서 다시 열어 확인하세요."
+            )
+            self._end_id_fix()
+            self._finish_detail_exit(
+                DetailPageRequest(
+                    old.session_id, old.revision, "back", (), old.detail_handle, uuid4().hex
+                )
+            )
+            return
+        if closer is not None and old.detail_handle is not None:
+            closer(
+                DetailPageRequest(
+                    old.session_id, old.revision, "close", (), old.detail_handle, uuid4().hex
+                )
+            )
+        self.main_window.set_status("학번을 고쳤습니다. 결과 엑셀과 채점 이미지를 새로 만들었습니다.")
+        self.detail_page.set_display(result.reopened)
+        self.detail_page.select_work_item(work_item_id)
+
     def _load_detail_work_item(self, request: object) -> None:
         if not isinstance(request, DetailLoadRequest):
             self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
@@ -1160,10 +1278,17 @@ class AppController(QObject):
         return display.session_id == request.session_id and display.revision > request.revision
 
     def _detail_back(self, request: object) -> None:
+        if self._id_fix_running:
+            self._refuse_busy()
+            return
         if isinstance(request, DetailPageRequest):
             self._finish_detail_exit(request)
 
     def _close_detail(self, request: object) -> None:
+        if self._id_fix_running:
+            self._refuse_busy()
+            self.main_window.cancel_close_request()
+            return
         if isinstance(request, DetailPageRequest):
             self._finish_detail_exit(request)
 
@@ -1186,6 +1311,9 @@ class AppController(QObject):
             self.main_window.cancel_close_request()
 
     def _detail_navigation_requested(self, page_index: int) -> None:
+        if self._id_fix_running:
+            self._refuse_busy()
+            return
         self._pending_navigation_page = page_index
         self.detail_page.request_back()
 
@@ -1545,6 +1673,8 @@ class AppController(QObject):
             self._retired_bridges.popleft().deleteLater()
         if not self._closing:
             self.main_window.set_close_requires_controller(True)
+        if self._id_fix_running:
+            self._end_id_fix()
         if self._dashboard_reload_pending and not self._closing:
             self._dashboard_reload_pending = False
             # Tied to the page so a closing window cancels it.

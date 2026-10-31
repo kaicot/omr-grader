@@ -27,7 +27,7 @@ from omr_grader.application.detail_presenter import (
     DetailStudentDisplay,
 )
 from omr_grader.domain.score_average import display_average
-from omr_grader.ui.detail_model import DetailTableModel
+from omr_grader.ui.detail_model import DetailTableModel, needs_id_check
 from omr_grader.ui.omr_graphics_view import OmrGraphicsView
 
 
@@ -46,6 +46,8 @@ class DetailPage(QWidget):
     unsaved_changes_requested = Signal(object)
     work_item_load_requested = Signal(object)
     preview_requested = Signal(object)
+    # (DetailPageDisplay, DetailStudentDisplay): the teacher wants to fix this sheet's ID.
+    id_fix_requested = Signal(object, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -53,6 +55,7 @@ class DetailPage(QWidget):
         self._selected: DetailStudentDisplay | None = None
         self._loaded_work_items: set[str] = set()
         self._load_correlations: dict[str, str] = {}
+        self._busy = False
         self._build_ui()
 
     @property
@@ -76,6 +79,15 @@ class DetailPage(QWidget):
         title_row.addWidget(self.back_button)
         title_row.addWidget(self.title_label)
         title_row.addStretch()
+        self.id_fix_button = QPushButton("학번 고치기")
+        self.id_fix_button.setObjectName("detailIdFixButton")
+        self.id_fix_button.setAccessibleName("선택한 답안지의 학번 고치기")
+        self.id_fix_button.setToolTip(
+            "학생이 학번을 잘못 칠했을 때, 고른 답안지의 학번을 바로잡습니다."
+        )
+        self.id_fix_button.setEnabled(False)
+        self.id_fix_button.clicked.connect(self.request_id_fix)
+        title_row.addWidget(self.id_fix_button)
         root.addLayout(title_row)
         self.summary_label = QLabel("요약: 표시할 결과가 없습니다.")
         self.summary_label.setAccessibleName("시험 요약")
@@ -138,6 +150,21 @@ class DetailPage(QWidget):
         if type(enabled) is not bool:
             raise TypeError("enabled must be bool")
 
+    def set_busy(self, busy: bool) -> None:
+        """Lock the page while a student-ID fix is being saved."""
+        self._busy = busy
+        self.back_button.setEnabled(not busy)
+        self.table.setEnabled(not busy)
+        self._update_id_fix_button()
+
+    def _update_id_fix_button(self) -> None:
+        self.id_fix_button.setEnabled(
+            not self._busy
+            and self._selected is not None
+            and self._display is not None
+            and self._display.id_fixable
+        )
+
     def set_display(self, display: DetailPageDisplay | None) -> None:
         if display is not None and not isinstance(display, DetailPageDisplay):
             raise TypeError("display must be DetailPageDisplay or None")
@@ -177,9 +204,12 @@ class DetailPage(QWidget):
         else:
             self.title_label.setText(f"{display.exam_name} 상세 결과")
             x = display.summary
+            roster_ids = frozenset(student_id for student_id, _ in display.roster)
+            to_check = sum(needs_id_check(student, roster_ids) for student in display.students)
             self.summary_label.setText(
                 f"요약: 총원 {x.student_count}명 | 평균 {display_average(x.average_score)}점 | "
                 f"최고점 {x.high_score}점 | 최저점 {x.low_score}점"
+                + (f" | 학번 확인 필요 {to_check}명 (주황색 행)" if to_check else "")
             )
             self._restore_selection(display.students, selected_id)
 
@@ -228,7 +258,10 @@ class DetailPage(QWidget):
     def _restore_selection(
         self, students: tuple[DetailStudentDisplay, ...], selected_id: str | None
     ) -> None:
-        self.model.set_students(students)
+        roster = () if self._display is None else self._display.roster
+        self.model.set_students(students, frozenset(student_id for student_id, _ in roster))
+        # Room for "20260203 (수정)" on a fixed row.
+        self.table.resizeColumnToContents(1)
         row = next(
             (
                 index
@@ -268,6 +301,7 @@ class DetailPage(QWidget):
 
     def _show_student(self, student: DetailStudentDisplay | None) -> None:
         self._selected = student
+        self._update_id_fix_button()
         if student is None or student.image_bytes is None:
             self.graphics_view.set_image(None)
             self.no_image_label.setVisible(True)
@@ -277,6 +311,20 @@ class DetailPage(QWidget):
         self.conflict_label.setText(
             "" if student is None or student.id_conflict is None else student.id_conflict
         )
+
+    def select_work_item(self, work_item_id: str) -> None:
+        """Select one answer sheet, as after its student ID was fixed."""
+        if self._display is not None:
+            self._restore_selection(self._display.students, work_item_id)
+
+    def request_id_fix(self) -> None:
+        if (
+            not self._busy
+            and self._display is not None
+            and self._selected is not None
+            and self._display.id_fixable
+        ):
+            self.id_fix_requested.emit(self._display, self._selected)
 
     def request_back(self) -> None:
         self._request_navigation("back")

@@ -37,6 +37,7 @@ from omr_grader.application.dto import (
     SnapshotRef,
     SnapshotRequest,
     SoftDeleteResult,
+    StudentIdFixView,
     TrashRestoreResult,
 )
 from omr_grader.application.ports import CommittedSnapshotLease as CommittedSnapshotLeasePort
@@ -49,6 +50,7 @@ from omr_grader.domain.enums import (
     SnapshotPurpose,
 )
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
+from omr_grader.domain.id_fixes import ID_FIXES_FILE, validate_fixes
 from omr_grader.domain.models import (
     AnswerKeySnapshot,
     CurrentPointer,
@@ -934,7 +936,19 @@ class _NoGate:
 
 
 def _preserved_artifact(path: str, operation: OperationKind) -> bool:
-    """Carry only compact, user-recoverable inputs into a lifecycle generation."""
+    """Carry only compact, user-recoverable inputs into a lifecycle generation.
+
+    The student-ID fixes are written afresh by every generation, and a fix rewrites
+    everything that shows a student ID: books, details and scored image names.
+    """
+    if path == ID_FIXES_FILE:
+        return False
+    if operation is OperationKind.FIX_STUDENT_ID:
+        return not (
+            path.startswith((f"{SCORE_IMAGE_DIR}/", "details/"))
+            or path in {"detail_index.json", "responses.xlsx"}
+            or result_workbook_kind(path) is not None
+        )
     if operation not in _LIFECYCLE_OPERATIONS:
         return True
     if (
@@ -1827,6 +1841,19 @@ class SessionStore:
             if type(semantic) is not GradingSemanticView or semantic.state is not parent.state:
                 raise ValueError("finalize semantic view or source state mismatch")
             fields = self._grading_manifest_fields(parent, semantic)
+        elif mutation.operation_kind is OperationKind.FIX_STUDENT_ID:
+            if type(semantic) is not StudentIdFixView or semantic.state is not parent.state:
+                raise ValueError("student ID fix view or source state mismatch")
+            validate_fixes(semantic.fixes, parent.base_response_ids)
+            fields = (
+                parent.base_response_ids,
+                parent.profile_sha256,
+                parent.roster_sha256,
+                parent.key_sha256,
+                parent.threshold_version,
+                parent.threshold_sha256,
+                parent.summary,
+            )
         elif mutation.operation_kind is OperationKind.METADATA_EDIT:
             if (
                 type(semantic) is not MetadataSemanticView

@@ -38,6 +38,7 @@ from omr_grader.infrastructure.result_layout import (
 
 from .answer_key import ANSWER_KEY_HEADERS
 from .response_book import (
+    id_fix_note,
     join_notes,
     mark_review,
     response_text_ranges,
@@ -112,6 +113,7 @@ def write_score_book(
     scores: ScoreSet,
     names_by_student_id: Mapping[str, str] | None = None,
     evidence_by_work_item: Mapping[str, Sequence[CellEvidence]] | None = None,
+    id_notes: Mapping[str, str] | None = None,
 ) -> Path:
     """Write the exact score projection to a generation-owned path.
 
@@ -132,6 +134,7 @@ def write_score_book(
         names_by_student_id=names_by_student_id or {},
         evidence_by_work_item=evidence_by_work_item or {},
         finalized_at=None,
+        id_notes=id_notes or {},
     )
 
 
@@ -148,6 +151,7 @@ def write_final_book(
     scores: ScoreSet,
     names_by_student_id: Mapping[str, str] | None = None,
     evidence_by_work_item: Mapping[str, Sequence[CellEvidence]] | None = None,
+    id_notes: Mapping[str, str] | None = None,
 ) -> Path:
     """Write the exact final projection to a generation-owned path.
 
@@ -167,6 +171,7 @@ def write_final_book(
         names_by_student_id=names_by_student_id or {},
         evidence_by_work_item=evidence_by_work_item or {},
         finalized_at=committed_at,
+        id_notes=id_notes or {},
     )
 
 
@@ -184,6 +189,7 @@ def _write(
     names_by_student_id: Mapping[str, str],
     evidence_by_work_item: Mapping[str, Sequence[CellEvidence]],
     finalized_at: str | None,
+    id_notes: Mapping[str, str] | None = None,
 ) -> Path:
     if not isinstance(key, AnswerKeySnapshot) or not isinstance(scores, ScoreSet):
         raise TypeError("key and scores must be committed snapshots")
@@ -227,6 +233,7 @@ def _write(
         note = join_notes(
             "중복확인필요" if response.student_id in duplicate_ids else "",
             review_note(number for number, outcome in enumerate(outcomes, 1) if outcome == REVIEW),
+            id_fix_note((id_notes or {}).get(response.work_item_id)),
         )
         head: list[object] = [
             serial,
@@ -258,6 +265,7 @@ def _write(
         names_by_student_id,
         review_notes=True,
         questions=questions,
+        id_notes=id_notes,
     )
     _write_evidence(workbook, ordered, names_by_student_id, evidence_by_work_item, questions)
     _write_answer_key(workbook, key, questions)

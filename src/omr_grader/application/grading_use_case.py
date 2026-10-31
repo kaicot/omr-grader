@@ -9,6 +9,7 @@ from typing import Protocol
 from omr_grader.domain.enums import OperationKind, SessionState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.grading import score_effective
+from omr_grader.domain.id_fixes import StudentIdFix, apply_id_fixes
 from omr_grader.domain.models import AnswerKeySnapshot, EffectiveResponse
 
 from .dto import (
@@ -35,6 +36,12 @@ class CommittedGradingSnapshot:
     responses: tuple[EffectiveResponse, ...]
     projection_request: EffectiveResponseProjection | None
     scores: ScoreSet | None
+    id_fixes: tuple[StudentIdFix, ...] = ()
+
+    @property
+    def shown_responses(self) -> tuple[EffectiveResponse, ...]:
+        """The responses with the teacher's student-ID fixes laid over what was read."""
+        return apply_id_fixes(self.responses, self.id_fixes)
 
 
 class CommittedGradingSnapshotReader(Protocol):

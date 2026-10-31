@@ -3,6 +3,10 @@
 Version 4.2.0 introduced it. A folder without the marker was written by 4.0–4.1, which use the
 same layout as format 1, so the marker is simply added. A folder marked with a newer format than
 this program understands is opened read-only so an older program never rewrites newer data.
+
+Format 2 (4.5.0) adds student-ID fixes, which 4.4 and older cannot read.  A format-1 folder is
+raised to format 2 when this program opens it for writing, so an older program opened on it
+afterwards protects the fixes by going read-only.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from pathlib import Path
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.infrastructure.atomic_io import atomic_write_json
 
-DATA_FORMAT = 1
+DATA_FORMAT = 2
 FORMAT_FILENAME = "FORMAT.json"
 
 
@@ -68,13 +72,14 @@ def ensure_data_format(data_dir: Path, version: str) -> Result[DataFormat]:
     if found.value is not None:
         if found.value.data_format > DATA_FORMAT:
             return _error("DATA_FORMAT_NEWER", newer_format_reason(found.value))
-        return Ok(found.value)
+        if found.value.data_format == DATA_FORMAT:
+            return Ok(found.value)
     marker = DataFormat(DATA_FORMAT, version)
     written = atomic_write_json(
         data_dir / FORMAT_FILENAME, {"data_format": DATA_FORMAT, "written_by": version}
     )
     if isinstance(written, Err):
-        # Not fatal: the folder is still format 1; the marker is written on a later start.
+        # Not fatal: the folder keeps its old marker until a later start writes this one.
         return Ok(
             marker,
             (

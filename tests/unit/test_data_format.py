@@ -30,8 +30,21 @@ def test_an_unmarked_folder_gets_the_current_format(tmp_path):
     assert ensure_data_format(tmp_path, "4.3.0") == Ok(DataFormat(DATA_FORMAT, "4.2.0"))
 
 
+def test_an_older_format_is_raised_so_older_programs_protect_it(tmp_path):
+    (tmp_path / "FORMAT.json").write_text('{"data_format": 1, "written_by": "4.4.2"}')
+
+    raised = ensure_data_format(tmp_path, "4.5.0")
+
+    assert raised == Ok(DataFormat(DATA_FORMAT, "4.5.0"))
+    assert DATA_FORMAT == 2
+    assert json.loads((tmp_path / "FORMAT.json").read_text(encoding="utf-8")) == {
+        "data_format": 2,
+        "written_by": "4.5.0",
+    }
+
+
 def test_newer_and_damaged_markers_refuse_writing(tmp_path):
-    (tmp_path / "FORMAT.json").write_text('{"data_format": 2, "written_by": "5.0.0"}')
+    (tmp_path / "FORMAT.json").write_text('{"data_format": 3, "written_by": "5.0.0"}')
     newer = ensure_data_format(tmp_path, "4.2.0")
     assert isinstance(newer, Err) and newer.errors[0].code == "DATA_FORMAT_NEWER"
     assert "5.0.0" in str(newer.errors[0].context["reason"])

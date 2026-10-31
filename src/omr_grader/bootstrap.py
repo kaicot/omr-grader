@@ -408,6 +408,7 @@ def run(
         ConnectedSessionDisplay,
     )
     from omr_grader.application.grading_use_case import GradingUseCase
+    from omr_grader.application.id_fix_use_case import StudentIdFixUseCase
     from omr_grader.application.profile_use_case import ProfileApplicationService
     from omr_grader.application.response_import_use_case import ResponseImportUseCase
     from omr_grader.application.settings_use_case import SettingsApplicationService, SettingsState
@@ -533,6 +534,7 @@ def run(
     scan_context = None
     response_import_service = None
     grading_service = None
+    id_fix_service: StudentIdFixUseCase | None = None
     grading_context = None
     answer_key_service = None
     import_response_selection = None
@@ -624,9 +626,14 @@ def run(
                     row.rank,
                     row.score or "",
                     (),
+                    fixed_from=row.fixed_from,
                 )
                 for row in rows
             )
+            roster = detail_repository.read_roster(handle.handle_id)
+            if isinstance(roster, Err):
+                detail_repository.close_detail(handle.handle_id)
+                return roster
             display = DetailPageDisplay(
                 session_id,
                 revision,
@@ -639,6 +646,8 @@ def run(
                 ),
                 students,
                 handle.handle_id,
+                roster.value,
+                write_enabled and entry.state in {SessionState.RECOGNIZED, SessionState.GRADED},
             )
             displays[handle.handle_id] = display
             detail_answer_keys[handle.handle_id] = answer_key
@@ -724,6 +733,7 @@ def run(
                         answers,
                         loaded.value.image,
                         cells,
+                        fixed_from=student.fixed_from,
                     ),
                 )
             )
@@ -754,6 +764,9 @@ def run(
             scan_service = bind_scan_runtime(scan_runtime)
             response_import_service = ResponseImportUseCase(ResponseImportCommitCoordinator(store))
             answer_key_service = AnswerKeyWorkbookUseCase()
+            id_fix_service = StudentIdFixUseCase(
+                CommittedGradingSnapshotReader(coordinator), coordinator
+            )
             grading_service = GradingUseCase(
                 CommittedGradingSnapshotReader(coordinator),
                 answer_key_service,
@@ -1356,6 +1369,7 @@ def run(
         detail_preview=detail_preview,
         detail_save=detail_save,
         detail_close=detail_close,
+        id_fix=None if id_fix_service is None else id_fix_service.fix,
     )
     if isinstance(outcome, Ok):
         window.set_diagnostic_log_path(str(daily_log_path(outcome.value.paths.root)))
