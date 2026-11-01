@@ -236,6 +236,16 @@ class BackupArchive:
                         destination,
                         "같은 이름의 백업 파일이 이미 있습니다.",
                     )
+                except OSError:
+                    # exFAT/FAT32 USB sticks have no hard links: move the finished file into
+                    # place instead, still never over an existing backup.
+                    if target.exists():
+                        return _error(
+                            "BACKUP_DESTINATION_EXISTS",
+                            destination,
+                            "같은 이름의 백업 파일이 이미 있습니다.",
+                        )
+                    os.replace(temporary, target)
             return Ok(archive_sha256)
         except (
             OSError,

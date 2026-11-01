@@ -72,6 +72,7 @@ class SettingsPage(QWidget):
     update_check_toggled = Signal(bool)
     update_check_requested = Signal()
     data_import_requested = Signal()
+    backup_reminder_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -233,6 +234,13 @@ class SettingsPage(QWidget):
         self.import_note.setObjectName("dataImportNote")
         self.import_note.setWordWrap(True)
         update_layout.addWidget(self.import_note)
+        self.backup_reminder_box = QCheckBox(
+            "전체 백업 후 30일이 지나고 바뀐 시험이 있으면 알려 주기", self.update_card
+        )
+        self.backup_reminder_box.setObjectName("backupReminderBox")
+        self.backup_reminder_box.setChecked(True)
+        update_layout.addWidget(self.backup_reminder_box)
+        self.backup_reminder_box.toggled.connect(self.backup_reminder_toggled)
         root.addWidget(self.update_card)
         self.update_check_box.toggled.connect(self.update_check_toggled)
         self.update_now_button.clicked.connect(self.update_check_requested)
@@ -347,6 +355,12 @@ class SettingsPage(QWidget):
         self.update_check_box.blockSignals(blocked)
         if message is not None:
             self.update_status_label.setText(message)
+
+    def set_backup_reminder(self, enabled: bool) -> None:
+        """Show the stored reminder preference without echoing a toggle back."""
+        blocked = self.backup_reminder_box.blockSignals(True)
+        self.backup_reminder_box.setChecked(enabled)
+        self.backup_reminder_box.blockSignals(blocked)
 
     def set_busy(self, busy: bool, message: str | None = None) -> None:
         """Mark a running action; its text goes away again unless a result replaced it."""
@@ -494,6 +508,7 @@ class SettingsPage(QWidget):
         self.multiprocessing_checkbox.setEnabled(editable)
         self.update_check_box.setEnabled(self._write_enabled and not self._busy)
         self.import_button.setEnabled(self._write_enabled and not self._busy)
+        self.backup_reminder_box.setEnabled(self._write_enabled and not self._busy)
         self.save_button.setEnabled(self._can_save())
 
     def _request_profile_browse(self) -> None:

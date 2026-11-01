@@ -19,6 +19,7 @@ from uuid import uuid4
 from omr_grader import __version__
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.infrastructure.atomic_io import atomic_write_bytes
+from omr_grader.infrastructure.backup_prefs import BACKUP_PREFS_FILENAME, BackupPreferences
 from omr_grader.infrastructure.capabilities import (
     CapabilityToken,
     bootstrap_managed_paths,
@@ -27,6 +28,12 @@ from omr_grader.infrastructure.capabilities import (
 from omr_grader.infrastructure.config_store import AppConfig, load_config, save_config
 from omr_grader.infrastructure.data_format import ensure_data_format
 from omr_grader.infrastructure.data_import import ImportSummary, import_previous_install
+from omr_grader.infrastructure.full_backup import (
+    FullBackupSummary,
+    FullRestoreSummary,
+    backup_all,
+    restore_all,
+)
 from omr_grader.infrastructure.logging_setup import configure_logging, daily_log_path
 from omr_grader.infrastructure.paths import ManagedPaths, resolve_portable_root
 from omr_grader.infrastructure.update_check import (
@@ -1285,8 +1292,37 @@ def run(
     update_prefs_load = None
     update_prefs_save = None
     data_import = None
+    full_backup = None
+    full_restore = None
+    backup_prefs_load = None
+    backup_prefs_save = None
     if runtime_paths is not None:
         prefs_path = runtime_paths.root / UPDATE_PREFS_FILENAME
+        backup_prefs_path = runtime_paths.root / BACKUP_PREFS_FILENAME
+
+        def load_backup_prefs() -> BackupPreferences:
+            try:
+                return BackupPreferences.from_json(backup_prefs_path.read_bytes())
+            except OSError:
+                return BackupPreferences()
+
+        def save_backup_prefs(prefs: BackupPreferences) -> None:
+            atomic_write_bytes(backup_prefs_path, prefs.to_json())
+
+        backup_prefs_load = load_backup_prefs
+        backup_prefs_save = save_backup_prefs
+        if store is not None:
+            # A backup only reads the exams, so a read-only install can still make one.
+            backup_store, backup_paths = store, runtime_paths
+
+            def back_up_everything(
+                folder: str, report: Callable[[object], None]
+            ) -> Result[FullBackupSummary]:
+                return backup_all(
+                    backup_paths, backup_store, folder, datetime.now().astimezone(), __version__, report
+                )
+
+            full_backup = back_up_everything
 
         def load_update_prefs() -> UpdatePreferences:
             try:
@@ -1325,11 +1361,31 @@ def run(
 
             data_import = import_install
 
+            def restore_everything(
+                folder: str, report: Callable[[object], None]
+            ) -> Result[FullRestoreSummary]:
+                return restore_all(
+                    folder,
+                    import_paths,
+                    import_store,
+                    form_store.save_generated,
+                    report,
+                    save_settings=lambda settings: save_config(
+                        import_paths, settings, import_token
+                    ),
+                )
+
+            full_restore = restore_everything
+
     services = ServicePorts(
         update_fetch=update_fetch,
         update_prefs_load=update_prefs_load,
         update_prefs_save=update_prefs_save,
         data_import=data_import,
+        full_backup=full_backup,
+        full_restore=full_restore,
+        backup_prefs_load=backup_prefs_load,
+        backup_prefs_save=backup_prefs_save,
         first_run=isinstance(outcome, Ok) and outcome.value.first_run and not smoke_run,
         scan=scan_service,
         scan_context=scan_context,

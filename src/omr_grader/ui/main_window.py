@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
     detail_navigation_requested = Signal(int)
     update_download_requested = Signal()
     update_skip_requested = Signal()
+    backup_now_requested = Signal()
 
     SCAN_PAGE = 0
     GRADING_PAGE = 1
@@ -448,6 +449,31 @@ class MainWindow(QMainWindow):
         self.update_skip_button.clicked.connect(self.update_skip_requested.emit)
         self.update_banner.hide()
         layout.addWidget(self.update_banner)
+
+        # Shown when the last full backup is old and some exam changed since.
+        self.backup_banner = QFrame(sidebar)
+        self.backup_banner.setObjectName("backupBanner")
+        self.backup_banner.setAccessibleName("백업 알림")
+        backup_layout = QVBoxLayout(self.backup_banner)
+        backup_layout.setContentsMargins(14, 12, 14, 12)
+        backup_layout.setSpacing(8)
+        self.backup_label = QLabel(self.backup_banner)
+        self.backup_label.setObjectName("backupLabel")
+        self.backup_label.setWordWrap(True)
+        backup_buttons = QHBoxLayout()
+        self.backup_now_button = QPushButton("지금 백업", self.backup_banner)
+        self.backup_now_button.setObjectName("backupNowButton")
+        self.backup_later_button = QPushButton("나중에", self.backup_banner)
+        self.backup_later_button.setObjectName("backupLaterButton")
+        self.backup_later_button.setToolTip("다음에 프로그램을 켤 때 다시 알립니다.")
+        backup_buttons.addWidget(self.backup_now_button)
+        backup_buttons.addWidget(self.backup_later_button)
+        backup_layout.addWidget(self.backup_label)
+        backup_layout.addLayout(backup_buttons)
+        self.backup_now_button.clicked.connect(self.backup_now_requested.emit)
+        self.backup_later_button.clicked.connect(self.backup_banner.hide)
+        self.backup_banner.hide()
+        layout.addWidget(self.backup_banner)
         layout.addSpacing(8)
 
         self.session_card = QFrame(sidebar)
@@ -705,6 +731,16 @@ class MainWindow(QMainWindow):
             " 환경 설정에서 이전 버전 자료를 가져오세요."
         )
         self.update_banner.show()
+
+    def show_backup_reminder(self, text: str | None) -> None:
+        """Show the backup reminder in the sidebar, or hide it with ``None``."""
+        if text is None:
+            self.backup_banner.hide()
+            return
+        self.backup_label.setText(
+            f"{text}\n시험 자료는 이 PC에만 있습니다. 다른 드라이브나 USB에 전체 백업하세요."
+        )
+        self.backup_banner.show()
 
     def show_help(self, section: str | None = None) -> None:
         """Open the manual at ``section`` or at the chapter for the current screen."""

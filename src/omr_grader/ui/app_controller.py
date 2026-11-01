@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox, QWidget
 
 from omr_grader import __version__
 from omr_grader.application.detail_presenter import (
@@ -68,9 +68,25 @@ from omr_grader.application.settings_use_case import SettingsState
 from omr_grader.domain.enums import ExamTerm, SessionState
 from omr_grader.domain.errors import Err, ErrorInfo, Ok, Result
 from omr_grader.domain.models import DashboardIndexEntry
+from omr_grader.infrastructure.backup_prefs import BackupPreferences, reminder_text
+from omr_grader.infrastructure.backup_prefs import now_text as backup_now_text
 from omr_grader.infrastructure.dashboard_repository import DashboardListing
 from omr_grader.infrastructure.data_import import ImportProgress, ImportSummary
+from omr_grader.infrastructure.disk_space import (
+    LOW_SPACE_BYTES,
+    free_bytes,
+    same_drive,
+    scan_needs,
+    shortfall,
+    size_text,
+)
 from omr_grader.infrastructure.form_detection import FormDetection
+from omr_grader.infrastructure.full_backup import (
+    FullBackupProgress,
+    FullBackupSummary,
+    FullRestoreProgress,
+    FullRestoreSummary,
+)
 from omr_grader.infrastructure.profile_store import ProfileCatalogItem
 from omr_grader.infrastructure.update_check import (
     RELEASES_PAGE_URL,
@@ -209,6 +225,12 @@ class ServicePorts:
     update_prefs_save: Callable[[UpdatePreferences], None] | None = None
     # Copy exams, forms and settings from an older install folder.
     data_import: Callable[[str, Callable[[object], None]], Result[ImportSummary]] | None = None
+    # 전체 백업 into a chosen folder and 전체 복구 from such a folder (progress-reporting).
+    full_backup: Callable[[str, Callable[[object], None]], Result[FullBackupSummary]] | None = None
+    full_restore: Callable[[str, Callable[[object], None]], Result[FullRestoreSummary]] | None = None
+    # backup.json beside the program: last full backup and the reminder switch.
+    backup_prefs_load: Callable[[], BackupPreferences] | None = None
+    backup_prefs_save: Callable[[BackupPreferences], None] | None = None
     # Fix (or undo the fix of) one answer sheet's student ID.
     id_fix: Callable[[StudentIdFixCommand], Result[CommitGenerationResult]] | None = None
     # A fresh folder. The controller no longer asks about importing on first start; the
@@ -417,6 +439,8 @@ _SETTINGS_BUSY_TEXT = {
     "profile-import": "OMR 프로필을 가져오고 있습니다.",
     "data-import": "이전 버전 자료를 가져오고 있습니다.",
 }
+# Long dashboard jobs that report progress and finish with their own summary dialog.
+_FULL_BACKUP_KINDS = frozenset({"full-backup", "full-restore"})
 
 # What the status bar says once a dashboard action has gone through.
 _DASHBOARD_DONE: dict[type[object], str] = {
@@ -476,6 +500,7 @@ class AppController(QObject):
         # the page is no longer busy and the dialog's request can start a new worker.
         self._trash_entries_pending: tuple[DashboardIndexEntry, ...] | None = None
         self._pending_id_fix: tuple[DetailPageDisplay, str] | None = None
+        self._backup_reminder_checked = False
         self._id_fix_running = False
         self._status_after_work: str | None = None
         # An action asked for while the previous worker's thread was only ending; it starts
@@ -536,6 +561,8 @@ class AppController(QObject):
         self.settings_page.data_import_requested.connect(self._import_previous)
         self.main_window.update_download_requested.connect(self._open_release_page)
         self.main_window.update_skip_requested.connect(self._skip_release)
+        self.main_window.backup_now_requested.connect(self._backup_all)
+        self.settings_page.backup_reminder_toggled.connect(self._set_backup_reminder)
         if self.services.data_dir is not None:
             self.settings_page.set_data_path_display(str(self.services.data_dir))
         self.main_window.write_authority_requested.connect(self.set_write_authority)
@@ -592,6 +619,147 @@ class AppController(QObject):
             return
         self.dashboard_page.set_entries(result.entries)
         self._present_warnings(result.warnings)
+        self._show_space_warning()
+        if not self._backup_reminder_checked and self.write_enabled:
+            # A read-only install cannot record a backup, so it would remind at every start.
+            # Once per start: '나중에' hides it until the program is opened again.
+            self._backup_reminder_checked = True
+            self.main_window.show_backup_reminder(
+                reminder_text(
+                    self._backup_prefs(),
+                    [(e.session_id, e.revision, e.display_folder) for e in result.entries],
+                    datetime.now(UTC),
+                )
+            )
+
+    def _show_space_warning(self) -> None:
+        folder = self.services.data_dir
+        free = None if folder is None else free_bytes(folder)
+        self.dashboard_page.set_space_warning(
+            None
+            if free is None or free >= LOW_SPACE_BYTES
+            else f"프로그램이 있는 드라이브에 남은 공간이 {size_text(free)}뿐입니다. 공간이 모자라면"
+            " 스캔과 채점을 할 수 없으니 필요 없는 파일을 지우세요."
+        )
+
+    def _backup_prefs(self) -> BackupPreferences:
+        load = self.services.backup_prefs_load
+        return BackupPreferences() if load is None else load()
+
+    def _save_backup_prefs(self, prefs: BackupPreferences) -> None:
+        save = self.services.backup_prefs_save
+        if save is not None and self.write_enabled:
+            save(prefs)
+
+    def _set_backup_reminder(self, enabled: bool) -> None:
+        prefs = self._backup_prefs()
+        self._save_backup_prefs(BackupPreferences(enabled, prefs.last_full_backup_at, prefs.revisions))
+        if not enabled:
+            self.main_window.show_backup_reminder(None)
+
+    def _backup_all(self) -> None:
+        operation = self.services.full_backup
+        if operation is None:
+            self.main_window.show_error_dialog("전체 백업", _error_text(self._unavailable()))
+            return
+        if self._worker_active():
+            self._refuse_busy()
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self.main_window, "전체 백업을 저장할 폴더 선택 (다른 드라이브나 USB 권장)"
+        )
+        if not folder:
+            return
+        data_dir = self.services.data_dir
+        if (
+            data_dir is not None
+            and same_drive(Path(folder), data_dir)
+            and QMessageBox.question(
+                self.main_window,
+                "같은 드라이브",
+                "프로그램과 같은 드라이브입니다. 디스크가 고장 나면 백업도 함께 잃습니다.\n"
+                "다른 드라이브나 USB를 권장합니다. 그래도 여기에 백업할까요?",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        started = self._start_reporting_action(
+            self.dashboard_page,
+            partial(operation, folder),
+            self._finish_full_backup,
+            self.dashboard_page.set_busy,
+            kind="full-backup",
+        )
+        if started:
+            self.main_window.set_status("전체 백업을 하고 있습니다. 시험이 많으면 몇 분 걸립니다.")
+
+    def _finish_full_backup(self, result: object) -> None:
+        if not isinstance(result, FullBackupSummary):
+            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+            return
+        lines = [f"시험 {result.total}개 중 {result.exams}개를 백업했습니다."]
+        if result.failed:
+            lines.append(f"백업하지 못한 시험: {', '.join(result.failed)}")
+        if result.profiles:
+            lines.append(f"답안지 양식 {result.profiles}개와 설정도 함께 담았습니다.")
+        lines.append(f"백업 폴더: {result.folder}")
+        lines.append("복구할 때는 '백업 복구하기'에서 '전체 백업 폴더'를 고르세요.")
+        prefs = self._backup_prefs()
+        if result.exams:
+            # Exams that failed keep their old revision, so they still count as not backed up.
+            self._save_backup_prefs(
+                BackupPreferences(prefs.enabled, backup_now_text(), dict(result.revisions))
+            )
+            self.main_window.show_backup_reminder(None)
+        self.main_window.set_status(lines[0])
+        self.main_window.show_info_dialog("전체 백업", "\n".join(lines))
+
+    def _restore_all(self) -> None:
+        operation = self.services.full_restore
+        if operation is None or not self.write_enabled:
+            self.main_window.show_error_dialog("전체 복구", _error_text(self._unavailable()))
+            return
+        if self._worker_active():
+            self._refuse_busy()
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self.main_window, "전체 백업 폴더 선택 (OMR-Grader-backup-…)"
+        )
+        if not folder:
+            return
+        started = self._start_reporting_action(
+            self.dashboard_page,
+            partial(operation, folder),
+            self._finish_full_restore,
+            self.dashboard_page.set_busy,
+            kind="full-restore",
+        )
+        if started:
+            self.main_window.set_status("전체 백업에서 복구하고 있습니다. 시험이 많으면 몇 분 걸립니다.")
+
+    def _finish_full_restore(self, result: object) -> None:
+        if not isinstance(result, FullRestoreSummary):
+            self.main_window.show_diagnostic(_error_text(self._invalid_service_result()))
+            return
+        lines = [f"시험 {result.exams}개를 복구했습니다."]
+        if result.already_present:
+            lines.append(
+                f"이미 있는 시험 {result.already_present}개(휴지통에 있는 것 포함)는 건너뛰었습니다."
+            )
+        if result.failed:
+            lines.append(f"복구하지 못한 시험: {', '.join(result.failed)}")
+        if result.profiles:
+            lines.append(f"답안지 양식 {result.profiles}개를 가져왔습니다.")
+        if result.settings is not None:
+            lines.append("환경 설정도 복구했습니다.")
+        elif result.settings_failed:
+            lines.append("환경 설정은 저장하지 못해 복구하지 않았습니다.")
+        else:
+            lines.append("환경 설정은 지금 쓰는 설정을 그대로 두었습니다.")
+        self.main_window.set_status(lines[0])
+        self.main_window.show_info_dialog("전체 복구", "\n".join(lines))
+        self._dashboard_reload_pending = True
+        self._reload_settings_page()
 
     def _handle_dashboard_request(
         self, request: DashboardRequest | DashboardGlobalRequest
@@ -604,6 +772,12 @@ class AppController(QObject):
             return
         if request.action == "import_previous":
             self._import_previous()
+            return
+        if request.action == "backup_all":
+            self._backup_all()
+            return
+        if request.action == "restore_all":
+            self._restore_all()
             return
         if isinstance(request, DashboardRequest) and request.action in {
             "grade",
@@ -751,6 +925,7 @@ class AppController(QObject):
     def _start_update_features(self) -> None:
         prefs = self._update_prefs()
         self.settings_page.set_update_state(prefs.enabled)
+        self.settings_page.set_backup_reminder(self._backup_prefs().enabled)
         if self.services.update_fetch is None:
             self.settings_page.update_check_box.setEnabled(False)
             self.settings_page.update_now_button.setEnabled(False)
@@ -1426,6 +1601,20 @@ class AppController(QObject):
             )
             return
         pages = scan_page_count(request.source.paths)
+        data_dir = self.services.data_dir
+        short = (
+            None
+            if data_dir is None
+            else shortfall(data_dir, scan_needs(request.source.paths, pages))
+        )
+        if short is not None:
+            self.main_window.show_error_dialog(
+                "공간 부족",
+                f"프로그램이 있는 드라이브에 공간이 모자라 인식을 시작하지 않았습니다.\n{short}\n"
+                "필요 없는 파일을 지우거나 PDF를 나눠 넣으세요.",
+            )
+            self.main_window.set_status("공간이 모자라 인식을 시작하지 않았습니다.")
+            return
         if pages > LARGE_SCAN_PAGES and not self.main_window.confirm_large_scan(pages):
             self.main_window.set_status("인식을 시작하지 않았습니다. PDF를 나눠 넣을 수 있습니다.")
             return
@@ -1700,6 +1889,10 @@ class AppController(QObject):
     def _progress(self, progress: object) -> None:
         if self._closing or self._active_page is None:
             return
+        if isinstance(progress, FullBackupProgress | FullRestoreProgress):
+            verb = "백업" if isinstance(progress, FullBackupProgress) else "복구"
+            self.main_window.set_status(f"전체 {verb} 중… 시험 {progress.done}/{progress.total}")
+            return
         if isinstance(progress, ImportProgress):
             self.settings_page.set_update_state(
                 self._update_prefs().enabled,
@@ -1744,6 +1937,7 @@ class AppController(QObject):
             "data-import",
             "form-detection",
             "dashboard-action",
+            *_FULL_BACKUP_KINDS,
         }:
             callback = self._desktop_success
             if callback is not None:
@@ -1885,9 +2079,16 @@ class AppController(QObject):
             "profile-import",
             "data-import",
             "dashboard-action",
+            *_FULL_BACKUP_KINDS,
         }:
             text = _error_text(error)
             self.main_window.show_diagnostic(text)
+            if self._active_kind in _FULL_BACKUP_KINDS:
+                title = "전체 백업" if self._active_kind == "full-backup" else "전체 복구"
+                self.main_window.show_error_dialog(title, f"끝내지 못했습니다. {text}")
+                if self._active_kind == "full-restore":
+                    # Exams restored before the failure are listed once the list is read again.
+                    self._dashboard_reload_pending = True
             if self._active_kind == "dashboard-action":
                 self.main_window.show_error_dialog("작업을 완료하지 못했습니다", text)
                 if self._refresh_after_action:
@@ -1920,7 +2121,12 @@ class AppController(QObject):
     def _cancelled(self) -> None:
         if self._closing:
             return
-        if self._active_kind in {"desktop-service", "dashboard-action", "data-import"}:
+        if self._active_kind in {
+            "desktop-service",
+            "dashboard-action",
+            "data-import",
+            *_FULL_BACKUP_KINDS,
+        }:
             self.main_window.set_status("작업이 취소되었습니다")
             return
         if self._closing or self._active_page is None:

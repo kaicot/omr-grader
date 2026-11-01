@@ -58,9 +58,13 @@ _DASHBOARD_ACTIONS = frozenset(
         "refresh",
         "combine",
         "import_previous",
+        "backup_all",
+        "restore_all",
     }
 )
-_GLOBAL_DASHBOARD_ACTIONS = frozenset({"restore", "trash", "refresh", "import_previous"})
+_GLOBAL_DASHBOARD_ACTIONS = frozenset(
+    {"restore", "trash", "refresh", "import_previous", "backup_all", "restore_all"}
+)
 # Actions that first ask the user for a file or a confirmation, so a running job is
 # reported before that question instead of after it.
 _ASKING_ACTIONS = frozenset({"delete", "backup", "restore"})
@@ -176,6 +180,12 @@ class DashboardPage(QWidget):
         self.summary_label.setObjectName("dashboardSummary")
         self.summary_label.setAccessibleName("시험 현황 요약")
         root.addWidget(self.summary_label)
+        self.space_label = QLabel()
+        self.space_label.setObjectName("dashboardSpaceWarning")
+        self.space_label.setProperty("role", "warning")
+        self.space_label.setWordWrap(True)
+        self.space_label.hide()
+        root.addWidget(self.space_label)
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("dashboardSearch")
@@ -192,6 +202,10 @@ class DashboardPage(QWidget):
         root.addLayout(toolbar)
         actions = QHBoxLayout()
         self.backup_button = self._button("백업하기", "dashboardBackupButton", "backup")
+        self.backup_all_button = self._button("전체 백업", "dashboardBackupAllButton", "backup_all")
+        self.backup_all_button.setToolTip(
+            "모든 시험과 답안지 양식·설정을 한 폴더에 백업합니다. 다른 드라이브나 USB를 권장합니다."
+        )
         self.restore_button = self._button("백업 복구하기", "dashboardRestoreButton", "restore")
         self.trash_button = self._button("휴지통 보기", "dashboardTrashButton", "trash")
         self.refresh_button = self._button("새로고침", "dashboardRefreshButton", "refresh")
@@ -199,6 +213,7 @@ class DashboardPage(QWidget):
         self.combine_button.setToolTip("체크한 시험(파트) 둘 이상을 학번 기준으로 합칩니다.")
         for button in (
             self.backup_button,
+            self.backup_all_button,
             self.restore_button,
             self.trash_button,
             self.combine_button,
@@ -422,14 +437,18 @@ class DashboardPage(QWidget):
         if action not in _DASHBOARD_ACTIONS:
             raise ValueError("unsupported dashboard action")
         if self._busy or (
-            action in _ASKING_ACTIONS | {"import_previous"} and not self._write_enabled
+            action in _ASKING_ACTIONS | {"import_previous", "restore_all"} and not self._write_enabled
         ):
             return
         if action in _ASKING_ACTIONS and self._busy_probe is not None and self._busy_probe():
             self.busy_blocked.emit()
             return
         if action == "restore":
-            self._open_file_dialog(action, None)
+            choice = self._ask_restore_kind()
+            if choice == "file":
+                self._open_file_dialog(action, None)
+            elif choice == "folder":
+                self.request_emitted.emit(DashboardGlobalRequest("restore_all"))
             return
         if action in _GLOBAL_DASHBOARD_ACTIONS:
             self.request_emitted.emit(DashboardGlobalRequest(action))
@@ -465,6 +484,26 @@ class DashboardPage(QWidget):
             self._open_file_dialog(action, selection)
             return
         self.request_emitted.emit(DashboardRequest(action, selection))
+
+    def _ask_restore_kind(self) -> str | None:
+        """'file' for one .omrbak, 'folder' for a whole 전체 백업 folder, None to cancel."""
+        box = QMessageBox(self)
+        box.setWindowTitle("백업 복구하기")
+        box.setText("무엇을 복구할까요?")
+        box.setInformativeText(
+            "전체 백업 폴더를 고르면 그 안의 모든 시험을 복구합니다. 이미 있는 시험은 건너뜁니다."
+        )
+        one = box.addButton("백업 파일 하나", QMessageBox.ButtonRole.AcceptRole)
+        everything = box.addButton("전체 백업 폴더", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        return "file" if clicked is one else "folder" if clicked is everything else None
+
+    def set_space_warning(self, text: str | None) -> None:
+        """Warn that the program's drive is nearly full, or hide the warning with None."""
+        self.space_label.setText(text or "")
+        self.space_label.setVisible(bool(text))
 
     def _open_file_dialog(
         self, action: str, selection: DashboardSelection | None
@@ -665,6 +704,8 @@ class DashboardPage(QWidget):
         )
         self.delete_button.setEnabled(writable and one)
         self.backup_button.setEnabled(writable and selected_count == 1)
+        # A full backup only reads the exams, so a read-only install can make one too.
+        self.backup_all_button.setEnabled(available)
         self.restore_button.setEnabled(writable)
         self.trash_button.setEnabled(available)
         # Empty means no exam at all: a search or year filter that hides every row is not.
